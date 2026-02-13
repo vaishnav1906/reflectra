@@ -1,0 +1,229 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reflectra Design System - Research-grade cognitive companion aesthetic */
+
+@layer base {
+  :root {
+    /* Core palette - Deep, calm, intelligent */
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 47% 10%;
+    --popover-foreground: 210 40% 96%;
+
+    /* Primary - Soft cyan for intelligence/clarity */
+    --primary: 187 70% 55%;
+    --primary-foreground: 222 47% 6%;
+
+    /* Secondary - Muted slate for depth */
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 90%;
+
+    --muted: 217 33% 14%;
+    --muted-foreground: 215 20% 55%;
+
+    /* Accent - Warm amber for human touch */
+    --accent: 38 92% 60%;
+    --accent-foreground: 222 47% 6%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 18%;
+    --input: 217 33% 15%;
+    --ring: 187 70% 55%;
+
+    --radius: 0.75rem;
+
+    /* Custom tokens */
+    --glow-primary: 187 70% 55%;
+    --glow-accent: 38 92% 60%;
+    --surface-elevated: 222 47% 11%;
+    --surface-subtle: 222 47% 7%;
+    
+    /* Trait colors */
+    --trait-analytical: 210 80% 60%;
+    --trait-empathetic: 340 65% 60%;
+    --trait-creative: 280 65% 60%;
+    --trait-consistent: 160 55% 50%;
+    --trait-introspective: 260 50% 60%;
+
+    /* Sidebar */
+    --sidebar-background: 222 47% 5%;
+    --sidebar-foreground: 210 40% 85%;
+    --sidebar-primary: 187 70% 55%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 217 33% 12%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 217 33% 15%;
+    --sidebar-ring: 187 70% 55%;
+  }
+
+  /* Light mode override - keeping dark as default for this app */
+  .light {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 187 70% 40%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 38 92% 50%;
+    --accent-foreground: 222 47% 11%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  /* Glow effects */
+  .glow-primary {
+    box-shadow: 0 0 20px -5px hsl(var(--glow-primary) / 0.3),
+                0 0 40px -10px hsl(var(--glow-primary) / 0.2);
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 20px -5px hsl(var(--glow-accent) / 0.3),
+                0 0 40px -10px hsl(var(--glow-accent) / 0.2);
+  }
+
+  .glow-subtle {
+    box-shadow: 0 0 30px -10px hsl(var(--primary) / 0.15);
+  }
+
+  /* Gradient backgrounds */
+  .gradient-mesh {
+    background: 
+      radial-gradient(ellipse at 20% 0%, hsl(var(--primary) / 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, hsl(var(--accent) / 0.05) 0%, transparent 50%),
+      hsl(var(--background));
+  }
+
+  .gradient-card {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--card)) 0%,
+      hsl(var(--surface-elevated)) 100%
+    );
+  }
+
+  /* Trait badge colors */
+  .trait-analytical { background: hsl(var(--trait-analytical) / 0.15); color: hsl(var(--trait-analytical)); }
+  .trait-empathetic { background: hsl(var(--trait-empathetic) / 0.15); color: hsl(var(--trait-empathetic)); }
+  .trait-creative { background: hsl(var(--trait-creative) / 0.15); color: hsl(var(--trait-creative)); }
+  .trait-consistent { background: hsl(var(--trait-consistent) / 0.15); color: hsl(var(--trait-consistent)); }
+  .trait-introspective { background: hsl(var(--trait-introspective) / 0.15); color: hsl(var(--trait-introspective)); }
+
+  /* Subtle border glow on hover */
+  .border-glow {
+    @apply transition-all duration-300;
+  }
+  .border-glow:hover {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.3),
+                0 0 20px -5px hsl(var(--primary) / 0.2);
+  }
+
+  /* Chat bubble styles */
+  .chat-bubble-user {
+    @apply bg-primary/10 border border-primary/20;
+  }
+
+  .chat-bubble-ai {
+    @apply bg-card border border-border;
+  }
+
+  /* Indicator pulse */
+  .pulse-indicator {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  /* Smooth fade in */
+  .fade-in {
+    animation: fadeIn 0.4s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Slide in from left */
+  .slide-in-left {
+    animation: slideInLeft 0.3s ease-out;
+  }
+
+  @keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-12px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Typing indicator */
+  .typing-dot {
+    animation: typingBounce 1.4s ease-in-out infinite;
+  }
+
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-4px); }
+  }
+
+  /* Timeline connector */
+  .timeline-connector {
+    @apply absolute left-4 top-8 bottom-0 w-px bg-gradient-to-b from-border to-transparent;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted)) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted));
+    border-radius: 3px;
+  }
+}
