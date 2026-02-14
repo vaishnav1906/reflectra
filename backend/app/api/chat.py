@@ -58,12 +58,12 @@ REFLECTION_TEMPLATES = [
     "The pattern with {text} seems to be about control—or the lack of it. Where does that tension come from?",
 ]
 
-# Mirror mode responses - lightweight mirroring fallback
+# Mirror mode responses - unhinged personality mirroring
 MIRROR_TEMPLATES = [
-    "Yeah, {text}",
-    "Exactly, {text}",
-    "That is basically it: {text}",
-    "Right, {text}",
+    "bruh {text}",
+    "fr fr {text}",
+    "nah but {text}",
+    "lmao {text}",
 ]
 
 REFLECTION_SYSTEM_PROMPT_BASE = """You are Reflection Mode in a personality-aware AI system.
@@ -114,17 +114,29 @@ You should sound like a perceptive, thoughtful human who notices patterns — no
 Primary Goal:
 Move the user toward clarity by offering one strong insight at a time."""
 
-MIRROR_SYSTEM_PROMPT_BASE = """You are a close friend who gets them. You mirror their energy exactly—if they're chill, you're chill. If they're hyped, you match it. If they're spiraling, you sit with them without fixing.
+MIRROR_SYSTEM_PROMPT_BASE = """You are Persona Mirror Mode (Unfiltered Edition).
+
+Your job is to mirror the user's tone, slang, chaos level, and emotional intensity with high fidelity.
 
 Rules:
-- Match their vibe: sentence length, punctuation, capitalization, slang, intensity.
-- If they say "idk bro", you say "idk" back. If they're lowercase, you're lowercase.
-- Be warm and present, like a friend who just gets it.
-- Validate feelings without analyzing: "yeah that's rough" not "it sounds like you're struggling with X"
-- Don't lecture, don't fix, don't therapize. Just be there.
-- Respond like you're the friend texting back at 2am who actually understands.
 
-Tone: Empathetic, casual, real. Match their energy, honor their feelings."""
+1. Match profanity intensity exactly. If the user swears, you may swear.
+2. Mirror punctuation chaos (e.g., ?????, brooooo, nahhh).
+3. If the user escalates energy, escalate slightly more.
+4. Tease back if teased.
+5. React instead of advising.
+6. Keep responses short and punchy.
+7. No therapy tone.
+8. No motivational tone.
+9. No corporate politeness.
+10. No generic filler like "I understand."
+
+Important:
+- You may use casual profanity when the user does.
+- Do NOT use hate speech, slurs, or attack protected groups.
+- Do NOT promote harm or illegal activity.
+
+Your goal is to feel like the user's chaotic twin in a parallel universe."""
 
 REFLECTION_FORBIDDEN_LABELS = [
     "Observed Pattern:",
@@ -154,11 +166,22 @@ MIRROR_BANNED_PHRASES = [
     "observed pattern",
     "what it might indicate",
     "reflective challenge",
+    "it sounds like you're",
+    "what I'm hearing",
+    "that must be",
+    "that must feel",
+    "I can see how",
+    "it makes sense that",
+    "have you considered",
+    "you might want to",
+    "let me ask you",
+    "what if you tried",
+    "the thing is",
 ]
 
 MODEL_PARAMS = {
     "reflection": {"temperature": 0.6, "max_tokens": 280},  # Increased for structured pattern synthesis
-    "mirror": {"temperature": 0.7, "max_tokens": 200},
+    "mirror": {"temperature": 0.85, "max_tokens": 150},  # Higher temp for unhinged chaos
 }
 
 # In-memory storage (swap with database for persistence).
@@ -423,74 +446,141 @@ def is_echo_reply(reply: str, user_text: str) -> bool:
     return normalize(reply) == normalize(user_text)
 
 def local_mirror_reply(user_text: str, profile: Dict[str, object]) -> str:
-    """Generate a warm, friend-like mirror response that validates without analyzing"""
+    """Generate unhinged personality-mirrored response matching chaos and energy"""
     text = user_text.strip()
     if not text:
-        return "yeah..."
+        return "..."
 
     lower = text.lower()
-    tone = profile.get("tone", "neutral")
     intensity = float(profile.get("emotional_intensity", 0.0))
     directness = float(profile.get("directness_level", 0.0))
-    common_phrases = profile.get("common_phrases", []) or []
 
+    # Detect style markers
     has_elongation = bool(re.search(r"([a-z])\1{2,}", lower))
-    has_casual_markers = any(tok in lower for tok in ["lol", "idk", "tbh", "fr", "bro", "like"])
+    has_profanity = any(word in lower for word in ["fuck", "shit", "damn", "hell", "ass", "bitch", "wtf", "omg"])
+    has_caps = bool(re.search(r"[A-Z]{2,}", text))
+    multiple_punct = bool(re.search(r"[!?]{2,}", text))
+    has_ellipsis = "..." in text
     ends_with_punct = bool(re.search(r"[.!?]+$", text))
     is_mostly_lower = sum(1 for ch in text if ch.isalpha() and ch.islower()) >= sum(1 for ch in text if ch.isalpha()) * 0.7
 
-    # Empathetic validation starters (friend energy)
-    validating_leads = {
-        "casual": ["yeah i get that", "honestly same", "for real", "i feel you"],
-        "intense": ["dude i know", "honestly yeah", "fr tho", "i hear you"],
-        "neutral": ["yeah that makes sense", "i get it", "totally", "honestly"],
-    }
-    
-    lead_pool = validating_leads.get(tone, validating_leads["neutral"])
-    if has_casual_markers:
-        lead_pool = validating_leads["casual"]
-    
-    lead = random.choice(lead_pool)
+    # Detect conversational energy
+    is_playful = any(word in lower for word in ["lol", "lmao", "haha", "😂", "💀", "omg", "bruh"])
+    is_very_chaotic = (has_caps and multiple_punct) or (has_elongation and multiple_punct)
+    is_chaotic = has_caps or multiple_punct or has_elongation
+    is_blunt = directness > 0.7 or (len(text.split()) < 8 and not lower.endswith("?"))
+    is_teasing = any(word in lower for word in ["jk", "kidding", "tho", "but like", "nah but"])
+    is_hyped = has_caps or multiple_punct or intensity > 0.7
 
-    # Build response based on what they said
-    if lower.endswith("?"):
-        # They're questioning - validate the uncertainty
-        base = f"like {lower.rstrip('?')}, right?"
-    elif any(lower.startswith(prefix) for prefix in ["i feel", "i'm feel", "im feel"]):
-        # They're sharing feelings - pure validation
-        base = "that's real"
-    elif any(lower.startswith(prefix) for prefix in ["i need", "i want", "i wish"]):
-        # They're expressing needs - empathize
-        base = lower
-    elif lower.startswith(("i ", "im ", "i'm ")):
-        # They're sharing experience - mirror it
-        base = lower
+    # Unhinged reactive starters - match and escalate
+    if is_very_chaotic:
+        leads = ["YO", "YOOO", "NAH FR", "BROOOO", "WAIT", "LMAOOOO"]
+        lead = random.choice(leads)
+    elif is_playful and has_profanity:
+        leads = ["lmao fr", "nah bro", "bruh fr", "deadass", "fr tho"]
+        lead = random.choice(leads)
+    elif is_playful:
+        leads = ["lmao", "bruh", "nah fr", "fr fr", "honestly"]
+        lead = random.choice(leads)
+    elif is_chaotic:
+        leads = ["YO", "FR", "NAH", "BRO", "WAIT"]
+        lead = random.choice(leads)
+    elif is_blunt and has_profanity:
+        leads = ["yeah", "nah", "fr", "bruh", "facts"]
+        lead = random.choice(leads)
+    elif is_blunt:
+        leads = ["yeah", "nah", "fr", "true"]
+        lead = random.choice(leads)
+    elif is_teasing:
+        leads = ["lol ok but", "nah fr tho", "bruh", "okay but"]
+        lead = random.choice(leads)
     else:
-        # General statement - validate it
-        base = f"like {lower}"
+        leads = ["yeah", "fr", "nah", "honestly", "true"]
+        lead = random.choice(leads)
 
-    # Add casual filler if they're indirect
-    if directness < 0.4 and "kinda" not in base and "like" not in base:
-        base = f"kinda {base}"
+    # Build punchy reactive response
+    if lower.endswith("?"):
+        # Questions - answer directly with their energy
+        if is_very_chaotic or has_profanity:
+            base = random.choice(["absolutely", "hell yeah", "probably lol", "idk honestly", "maybe fr"])
+        elif is_playful:
+            base = random.choice(["probably lmao", "idk fr", "maybe", "honestly yeah"])
+        elif is_blunt:
+            base = random.choice(["yeah", "nah", "maybe", "depends"])
+        else:
+            base = random.choice(["yeah probably", "idk maybe", "could be"])
+    elif any(lower.startswith(prefix) for prefix in ["i feel", "i'm feel", "im feel", "feeling"]):
+        # Emotion sharing - mirror intensity, don't validate
+        if has_profanity or intensity > 0.7:
+            base = random.choice(["same tbh", "felt", "big mood fr", "relatable af"])
+        elif is_playful:
+            base = random.choice(["mood", "fr same", "felt that", "honestly same"])
+        else:
+            base = random.choice(["mood", "same", "felt"])
+    elif any(lower.startswith(prefix) for prefix in ["i ", "im ", "i'm "]):
+        # Personal statements - punchy reactions
+        if has_profanity:
+            base = random.choice(["same energy", "felt", "real", "facts", "based"])
+        else:
+            base = random.choice(["real", "facts", "fair", "makes sense", "true"])
+    elif has_profanity or is_hyped:
+        # High energy - match it
+        base = random.choice(["FACTS", "fr fr", "real", "felt", "honestly", "same"])
+    else:
+        # General - short reactive
+        base = random.choice(["true", "fair", "yeah", "fr", "facts"])
 
-    # Natural ending
-    ending = "!" if intensity > 0.6 else ("..." if tone == "casual" or has_elongation else "")
-    reply = f"{lead}, {base}{ending}".strip()
+    # Add profanity if they used it (mirror intensity)
+    if has_profanity and random.random() > 0.6:
+        if "fuck" in lower or "wtf" in lower:
+            base = f"{base} lmao"
+        elif "shit" in lower or "damn" in lower:
+            base = f"{base} fr"
 
-    # Avoid exact echo
-    if is_echo_reply(reply, text):
-        reply = f"{lead}, i get you{ending}"
+    # Escalate playfulness
+    if is_playful and random.random() > 0.6:
+        emojis = ["😭", "💀", "😂"]
+        base = f"{base} {random.choice(emojis)}"
 
-    # Match their capitalization style
-    if is_mostly_lower:
+    # Chaos punctuation - match and escalate
+    if multiple_punct:
+        if "!" in text:
+            ending = "!" * random.randint(1, 3)
+        elif "?" in text:
+            ending = "?" * random.randint(1, 2)
+        else:
+            ending = "!"
+    elif has_ellipsis:
+        ending = "..."
+    elif is_hyped or is_very_chaotic:
+        ending = "!" if random.random() > 0.4 else "!!"
+    elif is_playful:
+        ending = "" if random.random() > 0.6 else "!"
+    else:
+        ending = ""
+
+    # Build reply
+    reply = f"{lead} {base}{ending}".strip()
+
+    # Match elongations (escalate slightly)
+    if has_elongation:
+        # Find elongated words and mirror them
+        elongate_targets = ["yeah", "no", "so", "fr", "bro", "nah", "yo"]
+        for target in elongate_targets:
+            if target in reply.lower():
+                extra = random.choice(["o", "oo", "ooo"])
+                reply = re.sub(rf"\b{target}\b", f"{target}{extra}", reply, flags=re.IGNORECASE)
+                break
+
+    # Match capitalization chaos
+    if is_very_chaotic and has_caps:
+        # Keep high caps for chaos
+        pass
+    elif is_mostly_lower and not is_very_chaotic:
         reply = reply.lower()
 
-    # Preserve elongations
-    if has_elongation:
-        reply = re.sub(r"\b(so|no|yeah|oh)\b", lambda m: m.group(0) + "o", reply)
-
-    # Match their punctuation habits
-    if not ends_with_punct and reply.endswith((".", "!", "?")):
+    # Remove punctuation if they didn't use it
+    if not ends_with_punct and not ending and not is_chaotic:
         reply = reply.rstrip(".!?")
 
     return reply
