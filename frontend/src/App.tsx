@@ -2,24 +2,20 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import Index from "./pages/Index";
+import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { LandingPage } from "./pages/LandingPage";
 import { ChatPage } from "./pages/ChatPage";
 import { PersonalityPage } from "./pages/PersonalityPage";
 import { MemoryPage } from "./pages/MemoryPage";
 import { ReflectionsPage } from "./pages/ReflectionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ArchitecturePage } from "./pages/ArchitecturePage";
-import { Login } from "./pages/Login";
 import NotFound from "./pages/NotFound";
 
 const App = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(() => {
-    return !!localStorage.getItem("user_id");
-  });
-
   // Create QueryClient once and memoize it to prevent recreation on every render
   const [queryClient] = useState(
     () =>
@@ -35,40 +31,28 @@ const App = () => {
       })
   );
 
-  const handleLoginSuccess = () => {
-    setIsLoggedIn(true);
-  };
-
-  if (!isLoggedIn) {
-    return (
-      <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <Toaster />
-          <Sonner />
-          <Login onLoginSuccess={handleLoginSuccess} />
-        </TooltipProvider>
-      </QueryClientProvider>
-    );
-  }
-
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <AppLayout>
-            <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/architecture" element={<ArchitecturePage />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/personality" element={<PersonalityPage />} />
-              <Route path="/memory" element={<MemoryPage />} />
-              <Route path="/reflections" element={<ReflectionsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </AppLayout>
+          <Routes>
+            {/* Landing Page */}
+            <Route path="/" element={<LandingPage />} />
+            
+            {/* Main App Routes - Protected */}
+            <Route path="/app" element={<ProtectedRoute><AppLayout><Navigate to="/app/chat" replace /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/chat" element={<ProtectedRoute><AppLayout><ChatPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/architecture" element={<ProtectedRoute><AppLayout><ArchitecturePage /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/personality" element={<ProtectedRoute><AppLayout><PersonalityPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/memory" element={<ProtectedRoute><AppLayout><MemoryPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/reflections" element={<ProtectedRoute><AppLayout><ReflectionsPage /></AppLayout></ProtectedRoute>} />
+            <Route path="/app/settings" element={<ProtectedRoute><AppLayout><SettingsPage /></AppLayout></ProtectedRoute>} />
+            
+            {/* 404 */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
         </BrowserRouter>
       </TooltipProvider>
     </QueryClientProvider>

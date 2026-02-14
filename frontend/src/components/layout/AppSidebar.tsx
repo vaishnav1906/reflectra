@@ -5,33 +5,25 @@ import {
   Calendar,
   TrendingUp,
   Settings,
-  Home,
   Layers,
-  LogOut,
+  Home,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelStatePanel } from "./ModelStatePanel";
-import { Button } from "@/components/ui/button";
+import { ProfileMenu } from "./ProfileMenu";
 
 const navItems = [
   { title: "Home", path: "/", icon: Home },
-  { title: "Architecture", path: "/architecture", icon: Layers },
-  { title: "Conversation", path: "/chat", icon: MessageSquare },
-  { title: "Persona Profile", path: "/personality", icon: User },
-  { title: "Timeline", path: "/memory", icon: Calendar },
-  { title: "Reflections", path: "/reflections", icon: TrendingUp },
-  { title: "Settings", path: "/settings", icon: Settings },
+  { title: "Architecture", path: "/app/architecture", icon: Layers },
+  { title: "Conversation", path: "/app/chat", icon: MessageSquare },
+  { title: "Persona Profile", path: "/app/personality", icon: User },
+  { title: "Timeline", path: "/app/memory", icon: Calendar },
+  { title: "Reflections", path: "/app/reflections", icon: TrendingUp },
+  { title: "Settings", path: "/app/settings", icon: Settings },
 ];
 
 export function AppSidebar() {
   const location = useLocation();
-
-  const handleLogout = () => {
-    localStorage.removeItem("user_id");
-    localStorage.removeItem("display_name");
-    localStorage.removeItem("email");
-    window.location.reload();
-  };
 
   return (
     <aside className="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col">
@@ -67,7 +59,7 @@ export function AppSidebar() {
             >
               <item.icon className={cn("w-4 h-4", isActive && "text-primary")} />
               <span>{item.title}</span>
-              {item.path === "/chat" && (
+              {item.path === "/app/chat" && (
                 <span className="ml-auto w-2 h-2 rounded-full bg-primary pulse-indicator" />
               )}
             </NavLink>
@@ -80,16 +72,9 @@ export function AppSidebar() {
         <ModelStatePanel />
       </div>
 
-      {/* Logout Button */}
+      {/* Profile Menu */}
       <div className="p-4 border-t border-sidebar-border">
-        <Button
-          variant="outline"
-          className="w-full justify-start gap-3"
-          onClick={handleLogout}
-        >
-          <LogOut className="w-4 h-4" />
-          <span>Logout</span>
-        </Button>
+        <ProfileMenu />
       </div>
     </aside>
   );

@@ -1,8 +1,23 @@
 import { Brain, ArrowRight, Sparkles } from "lucide-react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 
-export function HeroSection() {
+interface HeroSectionProps {
+  onShowLogin: () => void;
+}
+
+export function HeroSection({ onShowLogin }: HeroSectionProps) {
+  const navigate = useNavigate();
+
+  const handleStartConversation = () => {
+    const userId = localStorage.getItem("user_id");
+    if (userId) {
+      navigate("/app/chat");
+    } else {
+      onShowLogin();
+    }
+  };
+
   return (
     <section className="relative min-h-[90vh] flex items-center justify-center overflow-hidden">
       {/* Background Effects */}
@@ -40,12 +55,14 @@ export function HeroSection() {
 
         {/* CTAs */}
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 fade-in" style={{ animationDelay: "0.3s" }}>
-          <Link to="/chat">
-            <Button size="lg" className="gap-2 px-8 py-6 text-base bg-primary hover:bg-primary/90 glow-primary">
-              <Sparkles className="w-5 h-5" />
-              Start a Conversation
-            </Button>
-          </Link>
+          <Button 
+            size="lg" 
+            className="gap-2 px-8 py-6 text-base bg-primary hover:bg-primary/90 glow-primary"
+            onClick={handleStartConversation}
+          >
+            <Sparkles className="w-5 h-5" />
+            Start a Conversation
+          </Button>
           <a href="#how-it-works">
             <Button variant="outline" size="lg" className="gap-2 px-8 py-6 text-base border-border hover:bg-muted">
               Explore How It Works

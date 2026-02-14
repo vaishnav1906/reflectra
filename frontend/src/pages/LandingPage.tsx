@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { ProblemSection } from "@/components/landing/ProblemSection";
 import { SolutionSection } from "@/components/landing/SolutionSection";
@@ -9,13 +10,16 @@ import { PrivacySection } from "@/components/landing/PrivacySection";
 import { CTASection } from "@/components/landing/CTASection";
 import { LandingHeader } from "@/components/landing/LandingHeader";
 import { LandingFooter } from "@/components/landing/LandingFooter";
+import { LoginModal } from "@/components/LoginModal";
 
 export function LandingPage() {
+  const [showLogin, setShowLogin] = useState(false);
+
   return (
     <div className="min-h-screen bg-background">
-      <LandingHeader />
+      <LandingHeader onShowLogin={() => setShowLogin(true)} />
       <main>
-        <HeroSection />
+        <HeroSection onShowLogin={() => setShowLogin(true)} />
         <ProblemSection />
         <SolutionSection />
         <HowItWorksSection />
@@ -23,9 +27,10 @@ export function LandingPage() {
         <WhyReflectSection />
         <UseCasesSection />
         <PrivacySection />
-        <CTASection />
+        <CTASection onShowLogin={() => setShowLogin(true)} />
       </main>
       <LandingFooter />
+      <LoginModal isOpen={showLogin} onClose={() => setShowLogin(false)} />
     </div>
   );
 }

@@ -1,18 +1,47 @@
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { X } from "lucide-react";
 
 const API_BASE = "/api";
 
-export function Login() {
+interface LoginModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Prevent body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "unset";
+    }
+    return () => {
+      document.body.style.overflow = "unset";
+    };
+  }, [isOpen]);
+
+  // Handle ESC key
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [isOpen, onClose]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -52,9 +81,30 @@ export function Login() {
     }
   };
 
+  if (!isOpen) return null;
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background gradient-mesh">
-      <Card className="w-full max-w-md">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-background/80 backdrop-blur-md" />
+      
+      {/* Modal Card */}
+      <Card 
+        className="w-full max-w-md relative z-10 animate-in zoom-in-95 duration-200 shadow-2xl border-border/50"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 p-1 rounded-lg hover:bg-muted transition-colors"
+          aria-label="Close"
+        >
+          <X className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+        </button>
+
         <CardHeader>
           <div className="flex items-center gap-3 mb-4">
             <img

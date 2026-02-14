@@ -1,8 +1,32 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { ArrowRight, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export function CTASection() {
+interface CTASectionProps {
+  onShowLogin: () => void;
+}
+
+export function CTASection({ onShowLogin }: CTASectionProps) {
+  const navigate = useNavigate();
+
+  const handleStartJourney = () => {
+    const userId = localStorage.getItem("user_id");
+    if (userId) {
+      navigate("/app/chat");
+    } else {
+      onShowLogin();
+    }
+  };
+
+  const handleExploreFeatures = () => {
+    const userId = localStorage.getItem("user_id");
+    if (userId) {
+      navigate("/app/personality");
+    } else {
+      onShowLogin();
+    }
+  };
+
   return (
     <section className="py-32 px-6 relative">
       {/* Background effects */}
@@ -23,18 +47,23 @@ export function CTASection() {
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Link to="/chat">
-            <Button size="lg" className="gap-2 px-10 py-6 text-lg bg-primary hover:bg-primary/90 glow-primary">
-              <Sparkles className="w-5 h-5" />
-              Start Your Journey
-            </Button>
-          </Link>
-          <Link to="/personality">
-            <Button variant="outline" size="lg" className="gap-2 px-8 py-6 text-base">
-              Explore Features
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </Link>
+          <Button 
+            size="lg" 
+            className="gap-2 px-10 py-6 text-lg bg-primary hover:bg-primary/90 glow-primary"
+            onClick={handleStartJourney}
+          >
+            <Sparkles className="w-5 h-5" />
+            Start Your Journey
+          </Button>
+          <Button 
+            variant="outline" 
+            size="lg" 
+            className="gap-2 px-8 py-6 text-base"
+            onClick={handleExploreFeatures}
+          >
+            Explore Features
+            <ArrowRight className="w-4 h-4" />
+          </Button>
         </div>
 
         <p className="mt-8 text-sm text-muted-foreground/60">
