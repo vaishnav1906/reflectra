@@ -76,3 +76,17 @@ class PersonalityProfileOut(BaseModel):
     values: Dict[str, Any]
     stressors: Dict[str, Any]
     updated_at: str
+
+
+class ConversationListItem(BaseModel):
+    """Lightweight conversation item for list view"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    title: Optional[str] = None
+    created_at: str
+
+
+class ConversationListOut(BaseModel):
+    """List of conversations"""
+    conversations: List[ConversationListItem]

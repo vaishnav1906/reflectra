@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import random
 import os
@@ -9,6 +9,12 @@ import re
 from collections import Counter
 from dotenv import load_dotenv
 from pathlib import Path
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.database import get_db
+from app.db import crud
+from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
 
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
@@ -21,10 +27,13 @@ router = APIRouter()
 
 class ChatRequest(BaseModel):
     user_id: str
+    conversation_id: Optional[str] = None
     text: str
     mode: str  # "reflection" or "mirror"
 
 class ChatResponse(BaseModel):
+    conversation_id: str
+    title: Optional[str] = None
     reply: str
     mirror_active: bool
     confidence_level: str
@@ -612,10 +621,44 @@ async def generate_llm_response(system_prompt: str, model_params: Dict[str, obje
     
     return None
 
+
+async def generate_conversation_title(user_message: str) -> str:
+    """Generate a 3-5 word summary title for a conversation"""
+    if MISTRAL_AVAILABLE and os.getenv("MISTRAL_API_KEY"):
+        try:
+            logger.info("📝 Generating conversation title with AI")
+            
+            system_prompt = "You are a helpful assistant that creates very short conversation titles. Generate a 3-5 word title that summarizes the topic. Return ONLY the title, nothing else."
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Create a 3-5 word title for this message: {user_message}"}
+            ]
+            
+            response = mistral_client.chat.complete(
+                model="mistral-small-latest",
+                messages=messages,
+                max_tokens=20,
+                temperature=0.7,
+            )
+            
+            title = response.choices[0].message.content.strip()
+            # Remove quotes if present
+            title = title.strip('"\'')
+            logger.info(f"✅ Generated title: {title}")
+            return title
+            
+        except Exception as e:
+            logger.error(f"❌ Title generation error: {e}")
+    
+    # Fallback: use first 40 characters
+    return user_message[:40] + ("..." if len(user_message) > 40 else "")
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
     """
     Process chat message and return AI response.
+    Creates new conversation if conversation_id is None.
+    Stores all messages in database.
     Falls back to templates if LLM is not available.
     """
     logger.info(f"💬 Received message in {request.mode} mode from user {request.user_id}")
@@ -623,9 +666,42 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if request.mode not in {"reflection", "mirror"}:
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'reflection' or 'mirror'.")
 
+    user_id_uuid = UUID(request.user_id)
+    conversation_id_uuid = UUID(request.conversation_id) if request.conversation_id else None
+    conversation_title = None
+
+    # Handle conversation creation or retrieval
+    if conversation_id_uuid is None:
+        # Generate title for new conversation
+        conversation_title = await generate_conversation_title(request.text)
+        logger.info(f"📝 Creating new conversation with title: {conversation_title}")
+        
+        # Create new conversation
+        conversation = await crud.create_conversation(
+            db=db,
+            user_id=user_id_uuid,
+            title=conversation_title,
+            mode=request.mode,
+            metadata={},
+        )
+        conversation_id_uuid = conversation.id
+        logger.info(f"✅ Created conversation {conversation_id_uuid}")
+    else:
+        # Get existing conversation
+        conversation = await crud.get_conversation_by_id(
+            db=db,
+            conversation_id=conversation_id_uuid,
+            user_id=user_id_uuid,
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        conversation_title = conversation.title
+
+    # Get conversation history from in-memory storage (for AI context)
     history = get_user_history(request.user_id, request.mode)
     history.append({"role": "user", "content": request.text})
 
+    # Update profiles
     personality_profile = get_personality_profile(request.user_id)
     communication_profile = get_communication_profile(request.user_id)
     update_communication_profile(communication_profile, request.text)
@@ -637,7 +713,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         system_prompt = build_mirror_system_prompt(communication_profile)
         model_params = MODEL_PARAMS["mirror"]
 
-    # Try to use LLM first
+    # Generate AI response
     reply = await generate_llm_response(system_prompt, model_params, history)
     if reply and is_echo_reply(reply, request.text):
         logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
@@ -661,11 +737,100 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     history.append({"role": "assistant", "content": reply})
 
-    logger.info(f"✅ Generated response: {reply[:50]}...")
+    # Store user message in database
+    await crud.create_message(
+        db=db,
+        user_id=user_id_uuid,
+        conversation_id=conversation_id_uuid,
+        role="user",
+        content=request.text,
+        embedding=None,
+        token_count=None,
+    )
+
+    # Store AI response in database
+    await crud.create_message(
+        db=db,
+        user_id=user_id_uuid,
+        conversation_id=conversation_id_uuid,
+        role="assistant",
+        content=reply,
+        embedding=None,
+        token_count=None,
+    )
+
+    logger.info(f"✅ Generated response and stored messages for conversation {conversation_id_uuid}")
     
     return ChatResponse(
+        conversation_id=str(conversation_id_uuid),
+        title=conversation_title,
         reply=reply,
         mirror_active=request.mode == "mirror",
         confidence_level="medium",
         mode=request.mode
     )
+
+
+@router.get("/conversations", response_model=ConversationListOut)
+async def list_conversations(user_id: str, db: AsyncSession = Depends(get_db)) -> ConversationListOut:
+    """Get list of all conversations for a user"""
+    logger.info(f"📋 Fetching conversations for user {user_id}")
+    
+    try:
+        user_id_uuid = UUID(user_id)
+        conversations = await crud.get_user_conversations(db=db, user_id=user_id_uuid)
+        
+        conversation_list = [
+            ConversationListItem(
+                id=str(conv.id),
+                title=conv.title,
+                created_at=str(conv.created_at),
+            )
+            for conv in conversations
+        ]
+        
+        logger.info(f"✅ Found {len(conversation_list)} conversations")
+        return ConversationListOut(conversations=conversation_list)
+    
+    except Exception as e:
+        logger.error(f"❌ Error fetching conversations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[MessageOut])
+async def get_conversation_messages(
+    conversation_id: str,
+    user_id: str,
+    db: AsyncSession = Depends(get_db)
+) -> List[MessageOut]:
+    """Get all messages for a specific conversation"""
+    logger.info(f"📨 Fetching messages for conversation {conversation_id}")
+    
+    try:
+        conversation_id_uuid = UUID(conversation_id)
+        user_id_uuid = UUID(user_id)
+        
+        # Verify conversation belongs to user
+        conversation = await crud.get_conversation_by_id(
+            db=db,
+            conversation_id=conversation_id_uuid,
+            user_id=user_id_uuid,
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Get messages
+        messages = await crud.get_conversation_history(
+            db=db,
+            user_id=user_id_uuid,
+            conversation_id=conversation_id_uuid,
+        )
+        
+        logger.info(f"✅ Found {len(messages)} messages")
+        return messages
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except Exception as e:
+        logger.error(f"❌ Error fetching messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

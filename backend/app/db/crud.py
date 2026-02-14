@@ -146,3 +146,51 @@ async def get_or_create_user(
     
     # Create new user
     return await create_user(db, email, display_name)
+
+
+async def get_user_conversations(
+    db: AsyncSession,
+    user_id: UUID,
+) -> List[models.Conversation]:
+    """Get all conversations for a user, ordered by most recent"""
+    result = await db.execute(
+        select(models.Conversation)
+        .where(models.Conversation.user_id == user_id)
+        .order_by(models.Conversation.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_conversation_by_id(
+    db: AsyncSession,
+    conversation_id: UUID,
+    user_id: UUID,
+) -> Optional[models.Conversation]:
+    """Get a specific conversation by ID, ensuring it belongs to the user"""
+    result = await db.execute(
+        select(models.Conversation)
+        .where(
+            models.Conversation.id == conversation_id,
+            models.Conversation.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_conversation_title(
+    db: AsyncSession,
+    conversation_id: UUID,
+    title: str,
+) -> models.Conversation:
+    """Update conversation title"""
+    result = await db.execute(
+        select(models.Conversation).where(models.Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one_or_none()
+    if not conversation:
+        raise ValueError("Conversation not found")
+    
+    conversation.title = title
+    await db.commit()
+    await db.refresh(conversation)
+    return conversation

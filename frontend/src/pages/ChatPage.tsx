@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
@@ -19,10 +20,27 @@ interface Message {
 }
 
 export function ChatPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [mode, setMode] = useState<InteractionMode>("reflection");
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationTitle, setConversationTitle] = useState<string | null>(null);
+
+  // Get conversation_id from URL params
+  useEffect(() => {
+    const convId = searchParams.get("conversation_id");
+    if (convId && convId !== conversationId) {
+      setConversationId(convId);
+      loadConversationMessages(convId);
+    } else if (!convId && conversationId) {
+      // New chat - clear everything
+      setConversationId(null);
+      setMessages([]);
+      setConversationTitle(null);
+    }
+  }, [searchParams]);
 
   // Check backend connection on mount
   useEffect(() => {
@@ -43,6 +61,35 @@ export function ChatPage() {
     };
     checkBackend();
   }, []);
+
+  const loadConversationMessages = async (convId: string) => {
+    try {
+      const userId = localStorage.getItem("user_id") || "anonymous";
+      const res = await fetch(
+        `${API_BASE}/conversations/${convId}/messages?user_id=${userId}`
+      );
+
+      if (!res.ok) {
+        throw new Error("Failed to load conversation");
+      }
+
+      const data = await res.json();
+      const loadedMessages: Message[] = data.map((msg: any) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        timestamp: new Date(msg.created_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      }));
+
+      setMessages(loadedMessages);
+      console.log(`✅ Loaded ${loadedMessages.length} messages`);
+    } catch (err) {
+      console.error("❌ Error loading conversation:", err);
+    }
+  };
 
   const handleSend = async (content: string) => {
     const userMessage: Message = {
@@ -65,9 +112,10 @@ export function ChatPage() {
         headers: {
           "Content-Type": "application/json",
         },
-        credentials: "include", // Include cookies for session management
+        credentials: "include",
         body: JSON.stringify({
           user_id: userId,
+          conversation_id: conversationId,
           text: content,
           mode,
         }),
@@ -87,10 +135,20 @@ export function ChatPage() {
       const data = await res.json();
       console.log("✅ Received response from backend:", {
         reply_preview: data.reply?.substring(0, 50) + "...",
+        conversation_id: data.conversation_id,
+        title: data.title,
         mode: data.mode,
         mirror_active: data.mirror_active,
-        full_response: data
+        full_response: data,
       });
+
+      // Update conversation ID if this is a new conversation
+      if (!conversationId && data.conversation_id) {
+        setConversationId(data.conversation_id);
+        setConversationTitle(data.title);
+        // Update URL without navigation
+        setSearchParams({ conversation_id: data.conversation_id });
+      }
 
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -106,9 +164,8 @@ export function ChatPage() {
     } catch (err) {
       console.error("❌ Chat error:", err);
 
-      const errorMessage = err instanceof Error 
-        ? err.message 
-        : "Unknown error occurred";
+      const errorMessage =
+        err instanceof Error ? err.message : "Unknown error occurred";
 
       setMessages((prev) => [
         ...prev,
@@ -133,7 +190,9 @@ export function ChatPage() {
         <header className="px-8 py-4 border-b border-border">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-lg font-semibold">Conversation</h1>
+              <h1 className="text-lg font-semibold">
+                {conversationTitle || "New Conversation"}
+              </h1>
               <p className="text-sm text-muted-foreground">
                 {mode === "mirror"
                   ? "Persona mirroring active"
@@ -166,6 +225,18 @@ export function ChatPage() {
 
         <ScrollArea className="flex-1 px-8 py-6">
           <div className="max-w-3xl mx-auto space-y-6">
+            {messages.length === 0 && !isTyping && (
+              <div className="text-center py-12">
+                <h2 className="text-2xl font-semibold mb-2">
+                  Start a Conversation
+                </h2>
+                <p className="text-muted-foreground">
+                  {mode === "mirror"
+                    ? "Your persona will mirror your communication style"
+                    : "Reflect on your thoughts and feelings"}
+                </p>
+              </div>
+            )}
             {messages.map((msg) => (
               <ChatMessage key={msg.id} {...msg} className={cn()} />
             ))}
