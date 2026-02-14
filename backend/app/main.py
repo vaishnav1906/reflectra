@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.dbms import router as db_router
 from dotenv import load_dotenv
+from pathlib import Path
 import os
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 app = FastAPI(title="Reflectra Backend", version="1.0.0")
 

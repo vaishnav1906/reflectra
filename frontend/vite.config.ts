@@ -17,10 +17,17 @@ export default defineConfig(({ mode }) => {
   return {
     server: {
       host: "0.0.0.0",
-      port: 5173,
+      port: 8080,
       strictPort: true,
+      watch: {
+        usePolling: true,
+        interval: 1000,
+        binaryInterval: 1000,
+        ignored: ['**/node_modules/**', '**/dist/**', '**/.git/**', '**/.venv/**'],
+      },
       hmr: {
         overlay: false,
+        timeout: 30000,
         ...(codespaceHost
           ? {
               protocol: "wss",

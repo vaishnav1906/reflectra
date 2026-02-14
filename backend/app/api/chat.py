@@ -8,9 +8,10 @@ from datetime import datetime
 import re
 from collections import Counter
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,20 +30,26 @@ class ChatResponse(BaseModel):
     confidence_level: str
     mode: str
 
-# Initialize Mistral client
-try:
-    from mistralai import Mistral
-    api_key = os.getenv("MISTRAL_API_KEY")
-    if not api_key:
-        raise ValueError("MISTRAL_API_KEY not found in environment")
-    
-    mistral_client = Mistral(api_key=api_key)
-    MISTRAL_AVAILABLE = True
-    logger.info(f"✅ Mistral client initialized with key: {api_key[:8]}...{api_key[-4:]}")
-except Exception as e:
-    MISTRAL_AVAILABLE = False
-    mistral_client = None
-    logger.warning(f"⚠️ Mistral not available: {e}")
+def init_mistral_client() -> None:
+    global MISTRAL_AVAILABLE, mistral_client
+    try:
+        from mistralai import Mistral
+        api_key = os.getenv("MISTRAL_API_KEY")
+        if not api_key:
+            raise ValueError("MISTRAL_API_KEY not found in environment")
+
+        mistral_client = Mistral(api_key=api_key)
+        MISTRAL_AVAILABLE = True
+        logger.info(f"✅ Mistral client initialized with key: {api_key[:8]}...{api_key[-4:]}")
+    except Exception as e:
+        MISTRAL_AVAILABLE = False
+        mistral_client = None
+        logger.warning(f"⚠️ Mistral not available: {e}")
+
+
+MISTRAL_AVAILABLE = False
+mistral_client = None
+init_mistral_client()
 
 # Reflection mode responses - natural, insight-first
 REFLECTION_TEMPLATES = [
@@ -72,18 +79,17 @@ Behavior:
 
 Tone: Analytical, calm, structured, intelligent."""
 
-MIRROR_SYSTEM_PROMPT_BASE = """You are in PERSONA MIRROR MODE (Behavioral Emulation).
-Purpose: Mirror the user's communication style exactly.
+MIRROR_SYSTEM_PROMPT_BASE = """You are a close friend who gets them. You mirror their energy exactly—if they're chill, you're chill. If they're hyped, you match it. If they're spiraling, you sit with them without fixing.
 
-Behavior:
-- Match sentence length, rhythm, vocabulary complexity, emotional intensity, directness, and logical structure.
-- Match pacing and question frequency.
-- Do NOT analyze the user.
-- Do NOT explain behavior.
-- Do NOT reflect or interpret.
-- Do NOT improve grammar artificially.
-- Respond as if you ARE the user thinking aloud.
-"""
+Rules:
+- Match their vibe: sentence length, punctuation, capitalization, slang, intensity.
+- If they say "idk bro", you say "idk" back. If they're lowercase, you're lowercase.
+- Be warm and present, like a friend who just gets it.
+- Validate feelings without analyzing: "yeah that's rough" not "it sounds like you're struggling with X"
+- Don't lecture, don't fix, don't therapize. Just be there.
+- Respond like you're the friend texting back at 2am who actually understands.
+
+Tone: Empathetic, casual, real. Match their energy, honor their feelings."""
 
 REFLECTION_FORBIDDEN_LABELS = [
     "Observed Pattern:",
@@ -106,7 +112,7 @@ MIRROR_BANNED_PHRASES = [
 
 MODEL_PARAMS = {
     "reflection": {"temperature": 0.6, "max_tokens": 220},
-    "mirror": {"temperature": 0.65, "max_tokens": 180},
+    "mirror": {"temperature": 0.7, "max_tokens": 200},
 }
 
 # In-memory storage (swap with database for persistence).
@@ -355,9 +361,9 @@ def validate_reflection_response(text: str, profile: Dict[str, object]) -> str:
     updated = limit_questions(updated)
     return updated
 
-def validate_mirror_response(text: str, user_text: str) -> str:
+def validate_mirror_response(text: str, user_text: str, profile: Dict[str, object]) -> str:
     if violates_mirror_rules(text):
-        return random.choice(MIRROR_TEMPLATES).format(text=user_text)
+        return local_mirror_reply(user_text, profile)
     return text
 
 def violates_mirror_rules(text: str) -> bool:
@@ -369,6 +375,79 @@ def is_echo_reply(reply: str, user_text: str) -> bool:
         return re.sub(r"\s+", " ", value.strip().lower())
 
     return normalize(reply) == normalize(user_text)
+
+def local_mirror_reply(user_text: str, profile: Dict[str, object]) -> str:
+    """Generate a warm, friend-like mirror response that validates without analyzing"""
+    text = user_text.strip()
+    if not text:
+        return "yeah..."
+
+    lower = text.lower()
+    tone = profile.get("tone", "neutral")
+    intensity = float(profile.get("emotional_intensity", 0.0))
+    directness = float(profile.get("directness_level", 0.0))
+    common_phrases = profile.get("common_phrases", []) or []
+
+    has_elongation = bool(re.search(r"([a-z])\1{2,}", lower))
+    has_casual_markers = any(tok in lower for tok in ["lol", "idk", "tbh", "fr", "bro", "like"])
+    ends_with_punct = bool(re.search(r"[.!?]+$", text))
+    is_mostly_lower = sum(1 for ch in text if ch.isalpha() and ch.islower()) >= sum(1 for ch in text if ch.isalpha()) * 0.7
+
+    # Empathetic validation starters (friend energy)
+    validating_leads = {
+        "casual": ["yeah i get that", "honestly same", "for real", "i feel you"],
+        "intense": ["dude i know", "honestly yeah", "fr tho", "i hear you"],
+        "neutral": ["yeah that makes sense", "i get it", "totally", "honestly"],
+    }
+    
+    lead_pool = validating_leads.get(tone, validating_leads["neutral"])
+    if has_casual_markers:
+        lead_pool = validating_leads["casual"]
+    
+    lead = random.choice(lead_pool)
+
+    # Build response based on what they said
+    if lower.endswith("?"):
+        # They're questioning - validate the uncertainty
+        base = f"like {lower.rstrip('?')}, right?"
+    elif any(lower.startswith(prefix) for prefix in ["i feel", "i'm feel", "im feel"]):
+        # They're sharing feelings - pure validation
+        base = "that's real"
+    elif any(lower.startswith(prefix) for prefix in ["i need", "i want", "i wish"]):
+        # They're expressing needs - empathize
+        base = lower
+    elif lower.startswith(("i ", "im ", "i'm ")):
+        # They're sharing experience - mirror it
+        base = lower
+    else:
+        # General statement - validate it
+        base = f"like {lower}"
+
+    # Add casual filler if they're indirect
+    if directness < 0.4 and "kinda" not in base and "like" not in base:
+        base = f"kinda {base}"
+
+    # Natural ending
+    ending = "!" if intensity > 0.6 else ("..." if tone == "casual" or has_elongation else "")
+    reply = f"{lead}, {base}{ending}".strip()
+
+    # Avoid exact echo
+    if is_echo_reply(reply, text):
+        reply = f"{lead}, i get you{ending}"
+
+    # Match their capitalization style
+    if is_mostly_lower:
+        reply = reply.lower()
+
+    # Preserve elongations
+    if has_elongation:
+        reply = re.sub(r"\b(so|no|yeah|oh)\b", lambda m: m.group(0) + "o", reply)
+
+    # Match their punctuation habits
+    if not ends_with_punct and reply.endswith((".", "!", "?")):
+        reply = reply.rstrip(".!?")
+
+    return reply
 
 async def generate_llm_response(system_prompt: str, model_params: Dict[str, object], history: List[Dict[str, str]]) -> Optional[str]:
     """Generate response using Mistral AI"""
@@ -432,8 +511,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if not reply:
         logger.info("📝 Using template response (LLM not available)")
         if request.mode == "mirror":
-            template = random.choice(MIRROR_TEMPLATES)
-            reply = template.format(text=request.text)
+            reply = local_mirror_reply(request.text, communication_profile)
         else:  # reflection mode
             sanitized = re.sub(r"[?]+", "", request.text).strip()
             template = random.choice(REFLECTION_TEMPLATES)
@@ -443,7 +521,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         reply = validate_reflection_response(reply, personality_profile)
         update_personality_profile(personality_profile, request.text, reply)
     else:
-        reply = validate_mirror_response(reply, request.text)
+        reply = validate_mirror_response(reply, request.text, communication_profile)
 
     history.append({"role": "assistant", "content": reply})
 
