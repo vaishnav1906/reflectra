@@ -7,9 +7,11 @@ import {
   Settings,
   Home,
   Layers,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelStatePanel } from "./ModelStatePanel";
+import { Button } from "@/components/ui/button";
 
 const navItems = [
   { title: "Home", path: "/", icon: Home },
@@ -23,6 +25,13 @@ const navItems = [
 
 export function AppSidebar() {
   const location = useLocation();
+
+  const handleLogout = () => {
+    localStorage.removeItem("user_id");
+    localStorage.removeItem("display_name");
+    localStorage.removeItem("email");
+    window.location.reload();
+  };
 
   return (
     <aside className="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col">
@@ -69,6 +78,18 @@ export function AppSidebar() {
       {/* Model State Panel */}
       <div className="p-4 border-t border-sidebar-border">
         <ModelStatePanel />
+      </div>
+
+      {/* Logout Button */}
+      <div className="p-4 border-t border-sidebar-border">
+        <Button
+          variant="outline"
+          className="w-full justify-start gap-3"
+          onClick={handleLogout}
+        >
+          <LogOut className="w-4 h-4" />
+          <span>Logout</span>
+        </Button>
       </div>
     </aside>
   );

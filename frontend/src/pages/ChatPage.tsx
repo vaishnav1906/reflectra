@@ -59,6 +59,7 @@ export function ChatPage() {
     setIsTyping(true);
 
     try {
+      const userId = localStorage.getItem("user_id") || "anonymous";
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
@@ -66,7 +67,7 @@ export function ChatPage() {
         },
         credentials: "include", // Include cookies for session management
         body: JSON.stringify({
-          user_id: "vaishnav",
+          user_id: userId,
           text: content,
           mode,
         }),

@@ -12,9 +12,14 @@ import { MemoryPage } from "./pages/MemoryPage";
 import { ReflectionsPage } from "./pages/ReflectionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ArchitecturePage } from "./pages/ArchitecturePage";
+import { Login } from "./pages/Login";
 import NotFound from "./pages/NotFound";
 
 const App = () => {
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    return !!localStorage.getItem("user_id");
+  });
+
   // Create QueryClient once and memoize it to prevent recreation on every render
   const [queryClient] = useState(
     () =>
@@ -29,6 +34,22 @@ const App = () => {
         },
       })
   );
+
+  const handleLoginSuccess = () => {
+    setIsLoggedIn(true);
+  };
+
+  if (!isLoggedIn) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Sonner />
+          <Login onLoginSuccess={handleLoginSuccess} />
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
