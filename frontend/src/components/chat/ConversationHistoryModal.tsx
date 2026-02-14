@@ -144,15 +144,15 @@ export function ConversationHistoryModal({
                       key={conv.id}
                       onClick={() => handleSelectConversation(conv.id)}
                       className={cn(
-                        "w-full text-left p-4 rounded-lg border",
-                        "hover:bg-accent hover:border-primary/50",
+                        "w-full text-left p-4 rounded-lg border border-border",
+                        "hover:bg-primary/30 hover:border-primary",
                         "transition-all duration-200",
                         "focus:outline-none focus:ring-2 focus:ring-primary"
                       )}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
-                          <h3 className="font-medium truncate">
+                          <h3 className="font-medium truncate text-foreground">
                             {conv.title || "Untitled Conversation"}
                           </h3>
                           <p className="text-sm text-muted-foreground mt-1">
