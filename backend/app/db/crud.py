@@ -1,10 +1,13 @@
 from typing import List, Optional
 from uuid import UUID
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models
+
+logger = logging.getLogger(__name__)
 
 
 async def create_conversation(
@@ -35,6 +38,8 @@ async def create_message(
     embedding: Optional[List[float]],
     token_count: Optional[int],
 ) -> models.Message:
+    """Create a new message in a conversation"""
+    # Validate conversation exists and belongs to user
     conversation_result = await db.execute(
         select(models.Conversation).where(
             models.Conversation.id == conversation_id,
@@ -43,8 +48,10 @@ async def create_message(
     )
     conversation = conversation_result.scalar_one_or_none()
     if not conversation:
+        logger.error(f"Conversation {conversation_id} not found for user {user_id}")
         raise ValueError("Conversation not found for user")
-
+    
+    logger.info(f"Creating message: role={role}, conv={conversation_id}, user={user_id}")
     message = models.Message(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -56,6 +63,7 @@ async def create_message(
     db.add(message)
     await db.commit()
     await db.refresh(message)
+    logger.info(f"Message created successfully: id={message.id}")
     return message
 
 
@@ -151,14 +159,21 @@ async def get_or_create_user(
 async def get_user_conversations(
     db: AsyncSession,
     user_id: UUID,
+    mode: Optional[str] = None,
 ) -> List[models.Conversation]:
-    """Get all conversations for a user, ordered by most recent"""
-    result = await db.execute(
-        select(models.Conversation)
-        .where(models.Conversation.user_id == user_id)
-        .order_by(models.Conversation.created_at.desc())
-    )
-    return list(result.scalars().all())
+    """Get conversations for a user, optionally filtered by mode, ordered by most recent"""
+    query = select(models.Conversation).where(models.Conversation.user_id == user_id)
+    
+    # Filter by mode if provided
+    if mode:
+        query = query.where(models.Conversation.mode == mode)
+    
+    query = query.order_by(models.Conversation.created_at.desc())
+    
+    result = await db.execute(query)
+    conversations = list(result.scalars().all())
+    logger.info(f"Found {len(conversations)} conversations for user {user_id} with mode filter: {mode}")
+    return conversations
 
 
 async def get_conversation_by_id(

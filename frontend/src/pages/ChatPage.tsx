@@ -28,9 +28,46 @@ export function ChatPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
 
+  // Sync mode with URL params on mount
+  useEffect(() => {
+    const urlMode = searchParams.get("mode");
+    if (urlMode === "reflection" || urlMode === "mirror" || urlMode === "persona_mirror") {
+      // Normalize persona_mirror to mirror
+      const normalizedMode = urlMode === "persona_mirror" ? "mirror" : urlMode;
+      if (normalizedMode !== mode) {
+        setMode(normalizedMode as InteractionMode);
+      }
+    } else if (!urlMode) {
+      // Set default mode in URL
+      setSearchParams((prev) => {
+        const newParams = new URLSearchParams(prev);
+        newParams.set("mode", mode);
+        return newParams;
+      }, { replace: true });
+    }
+  }, []);
+
+  // Handle mode changes - clear state and update URL
+  const handleModeChange = (newMode: InteractionMode) => {
+    console.log(`🔄 Switching mode from ${mode} to ${newMode}`);
+    
+    // Clear state
+    setConversationId(null);
+    setMessages([]);
+    setConversationTitle(null);
+    
+    // Update mode
+    setMode(newMode);
+    
+    // Update URL - remove conversation_id, update mode
+    setSearchParams({ mode: newMode });
+  };
+
   // Get conversation_id from URL params
   useEffect(() => {
     const convId = searchParams.get("conversation_id");
+    const urlMode = searchParams.get("mode");
+    
     if (convId && convId !== conversationId) {
       setConversationId(convId);
       loadConversationMessages(convId);
@@ -39,6 +76,13 @@ export function ChatPage() {
       setConversationId(null);
       setMessages([]);
       setConversationTitle(null);
+    }
+    
+    // Sync mode from URL
+    if (urlMode === "reflection" || urlMode === "mirror") {
+      if (urlMode !== mode) {
+        setMode(urlMode as InteractionMode);
+      }
     }
   }, [searchParams]);
 
@@ -146,8 +190,11 @@ export function ChatPage() {
       if (!conversationId && data.conversation_id) {
         setConversationId(data.conversation_id);
         setConversationTitle(data.title);
-        // Update URL without navigation
-        setSearchParams({ conversation_id: data.conversation_id });
+        // Update URL with both conversation_id and mode
+        setSearchParams({ 
+          conversation_id: data.conversation_id,
+          mode: mode 
+        });
       }
 
       const aiMessage: Message = {
@@ -212,7 +259,7 @@ export function ChatPage() {
                   <span className="text-xs text-red-600">Disconnected</span>
                 </div>
               )}
-              <ModeToggle mode={mode} onModeChange={setMode} />
+              <ModeToggle mode={mode} onModeChange={handleModeChange} />
               {mode === "mirror" && (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10">
                   <Users className="w-4 h-4 text-primary" />

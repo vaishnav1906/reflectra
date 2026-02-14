@@ -1,4 +1,4 @@
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useState } from "react";
 import {
   MessageSquare,
@@ -27,9 +27,11 @@ const navItems = [
 export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [showConversationModal, setShowConversationModal] = useState(false);
 
   const userId = localStorage.getItem("user_id") || "";
+  const currentMode = searchParams.get("mode") || "reflection";
 
   const handleNavClick = (e: React.MouseEvent, item: typeof navItems[0]) => {
     if (item.hasModal && item.path === "/app/chat") {
@@ -39,11 +41,11 @@ export function AppSidebar() {
   };
 
   const handleSelectConversation = (conversationId: string) => {
-    navigate(`/app/chat?conversation_id=${conversationId}`);
+    navigate(`/app/chat?conversation_id=${conversationId}&mode=${currentMode}`);
   };
 
   const handleNewChat = () => {
-    navigate("/app/chat");
+    navigate(`/app/chat?mode=${currentMode}`);
   };
 
   return (
@@ -106,6 +108,7 @@ export function AppSidebar() {
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
         userId={userId}
+        mode={currentMode}
       />
     </aside>
   );

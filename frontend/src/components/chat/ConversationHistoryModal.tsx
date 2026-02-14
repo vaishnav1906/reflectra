@@ -18,6 +18,7 @@ interface ConversationHistoryModalProps {
   onSelectConversation: (conversationId: string) => void;
   onNewChat: () => void;
   userId: string;
+  mode?: string; // "reflection" or "mirror"
 }
 
 const API_BASE = "/api";
@@ -28,6 +29,7 @@ export function ConversationHistoryModal({
   onSelectConversation,
   onNewChat,
   userId,
+  mode,
 }: ConversationHistoryModalProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -37,13 +39,15 @@ export function ConversationHistoryModal({
     if (isOpen && userId) {
       fetchConversations();
     }
-  }, [isOpen, userId]);
+  }, [isOpen, userId, mode]);
 
   const fetchConversations = async () => {
     setIsLoading(true);
     setError("");
     try {
-      const res = await fetch(`${API_BASE}/conversations?user_id=${userId}`);
+      // Add mode parameter if provided
+      const modeParam = mode ? `&mode=${mode}` : "";
+      const res = await fetch(`${API_BASE}/conversations?user_id=${userId}${modeParam}`);
       if (!res.ok) {
         throw new Error("Failed to fetch conversations");
       }

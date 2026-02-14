@@ -685,7 +685,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             metadata={},
         )
         conversation_id_uuid = conversation.id
-        logger.info(f"✅ Created conversation {conversation_id_uuid}")
+        logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {request.mode}")
     else:
         # Get existing conversation
         conversation = await crud.get_conversation_by_id(
@@ -695,7 +695,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Validate that conversation mode matches request mode
+        if conversation.mode != request.mode:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Conversation mode '{conversation.mode}' does not match request mode '{request.mode}'"
+            )
+        
         conversation_title = conversation.title
+        logger.info(f"✅ Using existing conversation {conversation_id_uuid} with mode: {conversation.mode}")
 
     # Get conversation history from in-memory storage (for AI context)
     history = get_user_history(request.user_id, request.mode)
@@ -738,28 +747,40 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     history.append({"role": "assistant", "content": reply})
 
     # Store user message in database
-    await crud.create_message(
-        db=db,
-        user_id=user_id_uuid,
-        conversation_id=conversation_id_uuid,
-        role="user",
-        content=request.text,
-        embedding=None,
-        token_count=None,
-    )
+    logger.info(f"💾 Storing user message for conversation {conversation_id_uuid}")
+    try:
+        user_message = await crud.create_message(
+            db=db,
+            user_id=user_id_uuid,
+            conversation_id=conversation_id_uuid,
+            role="user",
+            content=request.text,
+            embedding=None,
+            token_count=None,
+        )
+        logger.info(f"✅ Stored user message {user_message.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to store user message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to store user message: {str(e)}")
 
     # Store AI response in database
-    await crud.create_message(
-        db=db,
-        user_id=user_id_uuid,
-        conversation_id=conversation_id_uuid,
-        role="assistant",
-        content=reply,
-        embedding=None,
-        token_count=None,
-    )
+    logger.info(f"💾 Storing assistant message for conversation {conversation_id_uuid}")
+    try:
+        assistant_message = await crud.create_message(
+            db=db,
+            user_id=user_id_uuid,
+            conversation_id=conversation_id_uuid,
+            role="assistant",
+            content=reply,
+            embedding=None,
+            token_count=None,
+        )
+        logger.info(f"✅ Stored assistant message {assistant_message.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to store assistant message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to store assistant message: {str(e)}")
 
-    logger.info(f"✅ Generated response and stored messages for conversation {conversation_id_uuid}")
+    logger.info(f"✅ Generated response and stored 2 messages for conversation {conversation_id_uuid}")
     
     return ChatResponse(
         conversation_id=str(conversation_id_uuid),
@@ -772,13 +793,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
 
 
 @router.get("/conversations", response_model=ConversationListOut)
-async def list_conversations(user_id: str, db: AsyncSession = Depends(get_db)) -> ConversationListOut:
-    """Get list of all conversations for a user"""
-    logger.info(f"📋 Fetching conversations for user {user_id}")
+async def list_conversations(
+    user_id: str, 
+    mode: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+) -> ConversationListOut:
+    """Get list of conversations for a user, optionally filtered by mode"""
+    logger.info(f"📋 Fetching conversations for user {user_id} with mode filter: {mode}")
     
     try:
         user_id_uuid = UUID(user_id)
-        conversations = await crud.get_user_conversations(db=db, user_id=user_id_uuid)
+        conversations = await crud.get_user_conversations(
+            db=db, 
+            user_id=user_id_uuid,
+            mode=mode
+        )
         
         conversation_list = [
             ConversationListItem(
