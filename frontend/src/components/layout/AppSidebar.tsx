@@ -33,9 +33,9 @@ export function AppSidebar() {
   const userId = localStorage.getItem("user_id") || "";
   const currentMode = searchParams.get("mode") || "reflection";
 
-  const handleNavClick = (e: React.MouseEvent, item: typeof navItems[0]) => {
+  const handleNavContextMenu = (e: React.MouseEvent, item: typeof navItems[0]) => {
     if (item.hasModal && item.path === "/app/chat") {
-      e.preventDefault();
+      e.preventDefault(); // Prevent browser context menu
       setShowConversationModal(true);
     }
   };
@@ -73,7 +73,7 @@ export function AppSidebar() {
             <NavLink
               key={item.path}
               to={item.path}
-              onClick={(e) => handleNavClick(e, item)}
+              onContextMenu={(e) => handleNavContextMenu(e, item)}
               className={cn(
                 "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
                 isActive
