@@ -1,4 +1,5 @@
 from typing import List, Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,3 +95,54 @@ async def upsert_personality_profile(
     await db.commit()
     await db.refresh(profile)
     return profile
+
+
+async def get_user_by_email(
+    db: AsyncSession,
+    email: str,
+) -> Optional[models.User]:
+    """Get user by email address"""
+    result = await db.execute(
+        select(models.User).where(models.User.email == email)
+    )
+    return result.scalar_one_or_none()
+
+
+async def create_user(
+    db: AsyncSession,
+    email: str,
+    display_name: str,
+) -> models.User:
+    """Create a new user"""
+    user = models.User(
+        email=email,
+        display_name=display_name,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+async def get_or_create_user(
+    db: AsyncSession,
+    email: str,
+    display_name: str,
+) -> models.User:
+    """Get existing user or create new one"""
+    # Clean and normalize email
+    email = email.strip().lower()
+    display_name = display_name.strip()
+    
+    # Try to get existing user
+    user = await get_user_by_email(db, email)
+    if user:
+        # Update display name if changed
+        if user.display_name != display_name:
+            user.display_name = display_name
+            await db.commit()
+            await db.refresh(user)
+        return user
+    
+    # Create new user
+    return await create_user(db, email, display_name)
