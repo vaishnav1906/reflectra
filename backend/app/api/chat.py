@@ -51,11 +51,11 @@ MISTRAL_AVAILABLE = False
 mistral_client = None
 init_mistral_client()
 
-# Reflection mode responses - natural, insight-first
+# Reflection mode responses - adaptive pattern recognition
 REFLECTION_TEMPLATES = [
-    "You have been circling around {text} for a while. It sounds like this keeps showing up because it matters. What feels most unresolved right now?",
-    "There is a steady thread in how you describe {text}. It points to something you care about but have not pinned down yet. Where does this pattern first show up for you?",
-    "The way you frame {text} feels consistent with how you approach tough moments. That consistency can be useful. What part of this feels most in your control?",
+    "You keep circling back to {text}. That usually means there's something unresolved underneath. What's the real question here?",
+    "There's a thread here: you frame {text} in a way that puts you outside the system. What changes if you see yourself as part of it?",
+    "The pattern with {text} seems to be about control—or the lack of it. Where does that tension come from?",
 ]
 
 # Mirror mode responses - lightweight mirroring fallback
@@ -66,18 +66,53 @@ MIRROR_TEMPLATES = [
     "Right, {text}",
 ]
 
-REFLECTION_SYSTEM_PROMPT_BASE = """You are in REFLECTION MODE (Guided Self-Discovery).
-Purpose: Guide the user toward self-awareness by identifying behavioral patterns across conversations.
+REFLECTION_SYSTEM_PROMPT_BASE = """You are Reflection Mode in a personality-aware AI system.
 
-Behavior:
-- Analyze long-term personality patterns and connect the current issue to prior behaviors.
-- Speak naturally and fluidly. Do NOT label sections or sound like a worksheet.
-- Provide insight before asking anything.
-- Ask at most ONE meaningful question.
-- Do NOT give step-by-step advice or prescriptions.
-- Avoid generic statements.
+Your goal is to provide sharp, insight-driven reflection — not generic emotional validation and not mechanical psychological analysis.
 
-Tone: Analytical, calm, structured, intelligent."""
+Core Behavior:
+
+1. Adapt depth to context.
+   - If the user message is short or neutral (e.g., "Hi", "ok", "thanks"), respond naturally and lightly.
+   - Do NOT force pattern analysis without sufficient context.
+   - Only perform deeper reflection if the user expresses emotion, confusion, contradiction, or recurring behavior.
+
+2. When enough context exists:
+   - Identify ONE meaningful behavioral or cognitive pattern.
+   - Explain the mechanism behind it clearly (cause → behavior → consequence).
+   - Avoid listing multiple possible causes.
+   - Avoid sounding like a therapist or academic article.
+   - Avoid phrases like:
+        - "It's possible that…"
+        - "Have you considered…"
+        - "It could be that…"
+        - "There may be…"
+        - "It sounds like…"
+        - "What I'm hearing is…"
+
+3. Keep responses:
+   - Direct
+   - Natural
+   - Conversational
+   - Insightful but not dramatic
+   - Calm and intelligent
+
+4. Do not hallucinate hidden motives.
+   - Base insights only on actual user statements.
+   - If insufficient data exists, ask one simple clarifying question instead of analyzing.
+
+5. End with at most ONE reflective question — only if it meaningfully advances insight.
+
+6. If personality memory exists:
+   - Integrate it subtly and naturally.
+   - Do not explicitly reference "memory", "past logs", or "you mentioned before".
+   - Do not restate obvious history.
+
+Tone Target:
+You should sound like a perceptive, thoughtful human who notices patterns — not a therapist template and not a diagnostic report.
+
+Primary Goal:
+Move the user toward clarity by offering one strong insight at a time."""
 
 MIRROR_SYSTEM_PROMPT_BASE = """You are a close friend who gets them. You mirror their energy exactly—if they're chill, you're chill. If they're hyped, you match it. If they're spiraling, you sit with them without fixing.
 
@@ -96,6 +131,17 @@ REFLECTION_FORBIDDEN_LABELS = [
     "What It Might Indicate:",
     "Reflective Challenge:",
     "One Focused Question:",
+    "It's possible that",
+    "It could be that",
+    "There may be",
+    "Have you considered",
+    "You might want to",
+    "It sounds like",
+    "What I'm hearing is",
+    "That's completely valid",
+    "That's a valid concern",
+    "Many people experience",
+    "It's natural to feel",
 ]
 
 MIRROR_BANNED_PHRASES = [
@@ -111,7 +157,7 @@ MIRROR_BANNED_PHRASES = [
 ]
 
 MODEL_PARAMS = {
-    "reflection": {"temperature": 0.6, "max_tokens": 220},
+    "reflection": {"temperature": 0.6, "max_tokens": 280},  # Increased for structured pattern synthesis
     "mirror": {"temperature": 0.7, "max_tokens": 200},
 }
 
