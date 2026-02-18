@@ -4,8 +4,11 @@ import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { ModeToggle, InteractionMode } from "@/components/chat/ModeToggle";
+import { ActiveMirrorIndicator, MirrorStyle } from "@/components/chat/ActiveMirrorIndicator";
+import { ConversationHistoryModal } from "@/components/chat/ConversationHistoryModal";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Users } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { MessageSquare, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Use /api prefix which will be proxied by Vite to the backend
@@ -23,27 +26,34 @@ export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [isTyping, setIsTyping] = useState(false);
-  const [mode, setMode] = useState<InteractionMode>("reflection");
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [activeMirrorStyle, setActiveMirrorStyle] = useState<MirrorStyle>("dominant");
+  const [detectedEmotion, setDetectedEmotion] = useState<string | null>(null);
 
-  // Sync mode with URL params on mount
+  // Get userId safely
+  const userId = localStorage.getItem("user_id") || "";
+
+  // Centralized mode reading from URL
+  const mode = (searchParams.get("mode") || "reflection") as InteractionMode;
+
+  // Debug logs
+  console.log("📊 ChatPage render:", {
+    mode,
+    conversationId,
+    messagesCount: messages?.length || 0,
+    userId: userId || "none",
+    urlParams: window.location.search,
+  });
+
+  // Ensure mode is always in URL (run once on mount)
   useEffect(() => {
     const urlMode = searchParams.get("mode");
-    if (urlMode === "reflection" || urlMode === "mirror" || urlMode === "persona_mirror") {
-      // Normalize persona_mirror to mirror
-      const normalizedMode = urlMode === "persona_mirror" ? "mirror" : urlMode;
-      if (normalizedMode !== mode) {
-        setMode(normalizedMode as InteractionMode);
-      }
-    } else if (!urlMode) {
-      // Set default mode in URL
-      setSearchParams((prev) => {
-        const newParams = new URLSearchParams(prev);
-        newParams.set("mode", mode);
-        return newParams;
-      }, { replace: true });
+    if (!urlMode) {
+      console.log("🔧 Setting default mode in URL");
+      setSearchParams({ mode: "reflection" }, { replace: true });
     }
   }, []);
 
@@ -51,40 +61,39 @@ export function ChatPage() {
   const handleModeChange = (newMode: InteractionMode) => {
     console.log(`🔄 Switching mode from ${mode} to ${newMode}`);
     
+    if (newMode === mode) return; // Prevent unnecessary updates
+    
     // Clear state
     setConversationId(null);
     setMessages([]);
     setConversationTitle(null);
     
-    // Update mode
-    setMode(newMode);
-    
     // Update URL - remove conversation_id, update mode
     setSearchParams({ mode: newMode });
   };
 
-  // Get conversation_id from URL params
+  // Load conversation when URL changes
   useEffect(() => {
     const convId = searchParams.get("conversation_id");
-    const urlMode = searchParams.get("mode");
+    
+    console.log("🔄 URL changed:", {
+      conversationId: convId,
+      mode,
+      currentState: conversationId,
+    });
     
     if (convId && convId !== conversationId) {
+      console.log("📥 Loading conversation:", convId);
       setConversationId(convId);
       loadConversationMessages(convId);
     } else if (!convId && conversationId) {
       // New chat - clear everything
+      console.log("🆕 New chat - clearing state");
       setConversationId(null);
       setMessages([]);
       setConversationTitle(null);
     }
-    
-    // Sync mode from URL
-    if (urlMode === "reflection" || urlMode === "mirror") {
-      if (urlMode !== mode) {
-        setMode(urlMode as InteractionMode);
-      }
-    }
-  }, [searchParams]);
+  }, [searchParams.get("conversation_id")]);
 
   // Check backend connection on mount
   useEffect(() => {
@@ -109,29 +118,50 @@ export function ChatPage() {
   const loadConversationMessages = async (convId: string) => {
     try {
       const userId = localStorage.getItem("user_id") || "anonymous";
-      const res = await fetch(
-        `${API_BASE}/conversations/${convId}/messages?user_id=${userId}`
-      );
+      const url = `${API_BASE}/conversations/${convId}/messages?user_id=${userId}`;
+      
+      console.log("\n=== LOADING CONVERSATION MESSAGES ===");
+      console.log("📥 Conversation ID:", convId);
+      console.log("👤 User ID:", userId);
+      console.log("📡 URL:", url);
+      
+      const res = await fetch(url);
+      
+      console.log("📨 Response status:", res.status, res.statusText);
 
       if (!res.ok) {
-        throw new Error("Failed to load conversation");
+        const errorText = await res.text();
+        console.error("❌ Error response body:", errorText);
+        throw new Error(`Failed to load conversation: ${res.status} - ${errorText}`);
       }
 
       const data = await res.json();
-      const loadedMessages: Message[] = data.map((msg: any) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        timestamp: new Date(msg.created_at).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      }));
+      console.log("✅ Raw API response:", JSON.stringify(data, null, 2));
+      console.log("📊 Array.isArray(data):", Array.isArray(data));
+      console.log("📊 Number of messages:", data?.length || 0);
+      
+      const loadedMessages: Message[] = (data || []).map((msg: any) => {
+        console.log("  - Message:", { id: msg.id, role: msg.role, content_preview: msg.content?.substring(0, 50) });
+        return {
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          timestamp: new Date(msg.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        };
+      });
 
       setMessages(loadedMessages);
-      console.log(`✅ Loaded ${loadedMessages.length} messages`);
+      console.log(`✅ Loaded and set ${loadedMessages.length} messages in state\n`);
     } catch (err) {
       console.error("❌ Error loading conversation:", err);
+      console.error("❌ Error details:", {
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined
+      });
+      setMessages([]);
     }
   };
 
@@ -183,8 +213,18 @@ export function ChatPage() {
         title: data.title,
         mode: data.mode,
         mirror_active: data.mirror_active,
+        active_mirror_style: data.active_mirror_style,
+        detected_emotion: data.detected_emotion,
         full_response: data,
       });
+
+      // Update active mirror style and detected emotion
+      if (data.active_mirror_style) {
+        setActiveMirrorStyle(data.active_mirror_style);
+      }
+      if (data.detected_emotion) {
+        setDetectedEmotion(data.detected_emotion);
+      }
 
       // Update conversation ID if this is a new conversation
       if (!conversationId && data.conversation_id) {
@@ -231,6 +271,30 @@ export function ChatPage() {
     }
   };
 
+  const handleSelectConversation = (conversationId: string) => {
+    console.log(`📂 Selecting conversation: ${conversationId}`);
+    setSearchParams({ conversation_id: conversationId, mode });
+  };
+
+  const handleNewChat = () => {
+    console.log("🆕 Starting new chat");
+    setSearchParams({ mode });
+  };
+
+  // Fallback if no userId
+  if (!userId || userId === "anonymous") {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <h2 className="text-2xl font-semibold">Login Required</h2>
+          <p className="text-muted-foreground">
+            Please log in to access the chat feature.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex">
       <div className="flex-1 flex flex-col">
@@ -247,6 +311,26 @@ export function ChatPage() {
               </p>
             </div>
             <div className="flex items-center gap-4">
+              {/* Mode Toggle */}
+              <ModeToggle mode={mode} onModeChange={handleModeChange} />
+              
+              {/* Active Mirror Archetype Indicator - auto-detected, no manual override */}
+              {mode === "mirror" && activeMirrorStyle && (
+                <ActiveMirrorIndicator
+                  activeStyle={activeMirrorStyle}
+                  detectedEmotion={detectedEmotion || undefined}
+                />
+              )}
+              
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowHistoryModal(true)}
+                className="gap-2"
+              >
+                <MessageSquare className="w-4 h-4" />
+                Past Conversations
+              </Button>
               {backendStatus === "connected" && (
                 <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-green-500/10">
                   <div className="w-2 h-2 rounded-full bg-green-500"></div>
@@ -257,13 +341,6 @@ export function ChatPage() {
                 <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-red-500/10">
                   <div className="w-2 h-2 rounded-full bg-red-500"></div>
                   <span className="text-xs text-red-600">Disconnected</span>
-                </div>
-              )}
-              <ModeToggle mode={mode} onModeChange={handleModeChange} />
-              {mode === "mirror" && (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10">
-                  <Users className="w-4 h-4 text-primary" />
-                  <span className="text-xs">Mirroring Active</span>
                 </div>
               )}
             </div>
@@ -284,7 +361,7 @@ export function ChatPage() {
                 </p>
               </div>
             )}
-            {messages.map((msg) => (
+            {(messages || []).map((msg) => (
               <ChatMessage key={msg.id} {...msg} className={cn()} />
             ))}
             {isTyping && <TypingIndicator />}
@@ -297,6 +374,16 @@ export function ChatPage() {
           </div>
         </div>
       </div>
+
+      {/* Conversation History Modal */}
+      <ConversationHistoryModal
+        isOpen={showHistoryModal}
+        onClose={() => setShowHistoryModal(false)}
+        onSelectConversation={handleSelectConversation}
+        onNewChat={handleNewChat}
+        userId={userId}
+        mode={mode}
+      />
     </div>
   );
 }

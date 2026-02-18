@@ -37,6 +37,19 @@ export function ConversationHistoryModal({
 
   useEffect(() => {
     if (isOpen && userId) {
+      console.log("\n=== CONVERSATION HISTORY MODAL OPENED ===");
+      console.log("👤 userId from props:", userId);
+      console.log("📦 userId type:", typeof userId);
+      console.log("🔢 userId length:", userId?.length || 0);
+      console.log("🎯 mode:", mode);
+      console.log("📧 email from localStorage:", localStorage.getItem("email"));
+      
+      if (!userId || userId === "" || userId === "anonymous") {
+        console.warn("⚠️ Invalid or anonymous userId, skipping fetch");
+        setError("Please log in to view conversation history");
+        return;
+      }
+      
       fetchConversations();
     }
   }, [isOpen, userId, mode]);
@@ -47,15 +60,44 @@ export function ConversationHistoryModal({
     try {
       // Add mode parameter if provided
       const modeParam = mode ? `&mode=${mode}` : "";
-      const res = await fetch(`${API_BASE}/conversations?user_id=${userId}${modeParam}`);
+      const url = `${API_BASE}/conversations?user_id=${userId}${modeParam}`;
+      
+      console.log("\n=== FETCHING CONVERSATIONS ===");
+      console.log("📡 URL:", url);
+      console.log("👤 User ID:", userId);
+      console.log("🎯 Mode:", mode);
+      
+      const res = await fetch(url);
+      
+      console.log("📨 Response status:", res.status, res.statusText);
+      console.log("📨 Response headers:", Object.fromEntries(res.headers.entries()));
+      
       if (!res.ok) {
-        throw new Error("Failed to fetch conversations");
+        const errorText = await res.text();
+        console.error("❌ Error response body:", errorText);
+        throw new Error(`Failed to fetch conversations: ${res.status} ${errorText}`);
       }
+      
       const data = await res.json();
-      setConversations(data.conversations || []);
+      console.log("✅ Raw API response:", JSON.stringify(data, null, 2));
+      console.log("📊 data.conversations:", data.conversations);
+      console.log("📊 Array.isArray(data.conversations):", Array.isArray(data.conversations));
+      console.log("📊 Number of conversations:", data.conversations?.length || 0);
+      
+      // Try both data.conversations and data (in case backend format changes)
+      const conversationsList = data.conversations || data || [];
+      console.log("📋 Final conversations list:", conversationsList);
+      
+      setConversations(conversationsList);
+      console.log("✅ State updated with", conversationsList.length, "conversations\n");
     } catch (err) {
-      console.error("Error fetching conversations:", err);
-      setError("Failed to load conversations");
+      console.error("❌ Fetch conversations error:", err);
+      console.error("❌ Error details:", {
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined
+      });
+      setError(err instanceof Error ? err.message : "Failed to load conversations");
+      setConversations([]);
     } finally {
       setIsLoading(false);
     }
@@ -124,12 +166,17 @@ export function ConversationHistoryModal({
                 )}
 
                 {error && (
-                  <div className="text-center py-8 text-destructive">
-                    {error}
+                  <div className="text-center py-8">
+                    <div className="text-destructive mb-2">{error}</div>
+                    {error.includes("log in") && (
+                      <p className="text-sm text-muted-foreground">
+                        User ID: {userId || "not set"}
+                      </p>
+                    )}
                   </div>
                 )}
 
-                {!isLoading && !error && conversations.length === 0 && (
+                {!isLoading && !error && (conversations || []).length === 0 && (
                   <div className="text-center py-8 text-muted-foreground">
                     <MessageSquare className="w-12 h-12 mx-auto mb-3 opacity-50" />
                     <p>No conversations yet</p>
@@ -139,7 +186,7 @@ export function ConversationHistoryModal({
 
                 {!isLoading &&
                   !error &&
-                  conversations.map((conv) => (
+                  (conversations || []).map((conv) => (
                     <button
                       key={conv.id}
                       onClick={() => handleSelectConversation(conv.id)}

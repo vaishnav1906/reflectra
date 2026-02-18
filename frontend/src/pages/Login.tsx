@@ -121,10 +121,20 @@ export function Login() {
 
       const data = await res.json();
       
+      console.log("🔐 Login successful!");
+      console.log("👤 User ID:", data.id);
+      console.log("📧 Email:", data.email);
+      console.log("✨ Display Name:", data.display_name);
+      
       // Save to localStorage
       localStorage.setItem("user_id", data.id);
       localStorage.setItem("display_name", data.display_name);
       localStorage.setItem("email", data.email);
+      
+      console.log("💾 Saved to localStorage");
+      console.log("  - user_id:", localStorage.getItem("user_id"));
+      console.log("  - display_name:", localStorage.getItem("display_name"));
+      console.log("  - email:", localStorage.getItem("email"));
 
       // Navigate to main app
       navigate("/app/chat");

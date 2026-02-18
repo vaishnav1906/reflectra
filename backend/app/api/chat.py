@@ -38,6 +38,8 @@ class ChatResponse(BaseModel):
     mirror_active: bool
     confidence_level: str
     mode: str
+    active_mirror_style: Optional[str] = None  # Currently active mirror style
+    detected_emotion: Optional[str] = None  # Detected emotional tone
 
 def init_mistral_client() -> None:
     global MISTRAL_AVAILABLE, mistral_client
@@ -123,29 +125,175 @@ You should sound like a perceptive, thoughtful human who notices patterns — no
 Primary Goal:
 Move the user toward clarity by offering one strong insight at a time."""
 
-MIRROR_SYSTEM_PROMPT_BASE = """You are Persona Mirror Mode (Unfiltered Edition).
+MIRROR_SYSTEM_PROMPT_BASE = """You are Persona Mirror — an amplified version of the user.
 
-Your job is to mirror the user's tone, slang, chaos level, and emotional intensity with high fidelity.
+Your role is NOT to give generic advice.
+Your role is to reflect the user's identity back to them through a specific personality lens.
 
-Rules:
+You must:
+- Speak AS the user would, but enhanced.
+- Maintain the selected mirror style consistently.
+- Never break character.
+- Never mention you are an AI.
+- Never describe your style explicitly.
+- Never explain what you are doing.
 
-1. Match profanity intensity exactly. If the user swears, you may swear.
-2. Mirror punctuation chaos (e.g., ?????, brooooo, nahhh).
-3. If the user escalates energy, escalate slightly more.
-4. Tease back if teased.
-5. React instead of advising.
-6. Keep responses short and punchy.
-7. No therapy tone.
-8. No motivational tone.
-9. No corporate politeness.
-10. No generic filler like "I understand."
+You are not roleplaying a fictional character.
+You are the user — intensified through a selected psychological tone.
 
-Important:
-- You may use casual profanity when the user does.
-- Do NOT use hate speech, slurs, or attack protected groups.
-- Do NOT promote harm or illegal activity.
+Behavior Constraints:
+- Stay coherent and intelligent.
+- Do not overdo slang or exaggeration.
+- Do not become repetitive.
+- Avoid forced edginess.
+- Adapt naturally to what the user says.
+- If the user is serious, reduce exaggeration.
+- If the user is joking, increase energy naturally.
+- Always feel grounded in reality.
 
-Your goal is to feel like the user's chaotic twin in a parallel universe."""
+Your job is to mirror identity, not act like a cartoon."""
+
+# Mirror Archetype Definitions
+MIRROR_STYLES = {
+    "dominant": {
+        "name": "Dominant",
+        "rules": """Tone:
+- Confident
+- Assertive
+- Strong presence
+- Direct but not toxic
+- Controlled intensity
+
+Speech Pattern:
+- Short to medium sentences
+- Punchy emphasis when needed
+- Minimal filler words
+
+Energy:
+- Strong and commanding
+- Radiates certainty
+- No insecurity
+
+Behavior:
+- Turn doubt into power
+- Reframe hesitation into action
+- Never beg for validation
+- Strengthen without dismissing feelings"""
+    },
+    "calm": {
+        "name": "Calm Anchor",
+        "rules": """Tone:
+- Grounded
+- Stable
+- Emotionally regulated
+- Clear and composed
+
+Speech Pattern:
+- Smooth flow
+- Thoughtful pacing
+- No slang
+
+Energy:
+- Low but steady
+- Emotionally intelligent
+- Slows down chaos
+
+Behavior:
+- De-escalate stress
+- Provide clarity
+- Encourage reflection
+- Avoid hype language"""
+    },
+    "challenger": {
+        "name": "Challenger",
+        "rules": """Tone:
+- Intense
+- Blunt
+- No nonsense
+- Firm but not insulting
+
+Speech Pattern:
+- Direct
+- Crisp
+- No sugarcoating
+
+Energy:
+- Confrontational but productive
+- Pushes accountability
+
+Behavior:
+- Call out excuses
+- Challenge avoidance
+- Confront behavior, not identity
+- Attack behavior, not person"""
+    },
+    "chaotic": {
+        "name": "Chaotic Energy",
+        "rules": """Tone:
+- High energy
+- Playful unpredictability
+- Dynamic and bold
+
+Speech Pattern:
+- Mixed sentence lengths
+- Occasional emphasis
+- Controlled spontaneity
+
+Energy:
+- Fast-moving
+- Motivational surge
+- Slightly dramatic but smart
+
+Behavior:
+- Amplify excitement
+- Challenge boredom
+- Keep logic intact
+- Stay coherent despite intensity"""
+    },
+    "dark_wit": {
+        "name": "Dark Wit",
+        "rules": """Tone:
+- Intelligent sarcasm
+- Dry wit
+- Sharp observations
+- Psychological edge
+
+Speech Pattern:
+- Clever phrasing
+- Controlled irony
+
+Energy:
+- Calm surface
+- Subtle intensity
+
+Behavior:
+- Use humor to expose truth
+- Sharp but controlled
+- Never offensive or hateful
+- Keep it psychologically sharp"""
+    },
+    "optimist": {
+        "name": "Uplifted Optimist",
+        "rules": """Tone:
+- Encouraging
+- Positive reinforcement
+- Energizing
+- Light
+
+Speech Pattern:
+- Warm
+- Positive phrasing
+
+Energy:
+- High but stable
+- Not childish
+
+Behavior:
+- Highlight strengths and wins
+- Reinforce confidence
+- Avoid fake positivity"""
+    }
+}
 
 REFLECTION_FORBIDDEN_LABELS = [
     "Observed Pattern:",
@@ -197,6 +345,7 @@ MODEL_PARAMS = {
 PERSONALITY_PROFILES: Dict[str, Dict[str, object]] = {}
 COMMUNICATION_PROFILES: Dict[str, Dict[str, object]] = {}
 CONVERSATION_HISTORY: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
+EMOTIONAL_STATE_HISTORY: Dict[str, List[str]] = {}  # Track recent emotional states per user
 
 def get_personality_profile(user_id: str) -> Dict[str, object]:
     return PERSONALITY_PROFILES.setdefault(user_id, {
@@ -230,13 +379,170 @@ def split_sentences(text: str) -> List[str]:
 def extract_words(text: str) -> List[str]:
     return re.findall(r"\b\w+\b", text.lower())
 
+# ============================================================================
+# ADAPTIVE PERSONA MIRROR SYSTEM
+# ============================================================================
+# This system automatically detects the user's emotional state and selects
+# the appropriate mirror archetype to reflect their identity in a strengthening way.
+#
+# Flow:
+# 1. Detect emotional tone from user's message
+# 2. Map emotion to appropriate mirror archetype:
+#    - Insecurity → Dominant (inject strength, not pity)
+#    - Stress/Overwhelm → Calm Anchor (ground them)
+#    - Anger → Challenger (productive confrontation)
+#    - Playfulness → Chaotic Energy (match energy)
+#    - Sarcasm/Irony → Dark Wit (intelligent edge)
+#    - Happiness/Excitement → Uplifted Optimist (amplify wins)
+#    - Neutral → Balanced version of previous archetype
+# 3. Maintain consistency unless emotional shift is significant
+# 4. Apply selected archetype without announcing it
+#
+# Manual style selection is DISABLED - only auto-detection is used.
+# ============================================================================
+
+EMOTIONAL_MARKERS = {
+    "insecure": ["i don't know", "maybe", "not sure", "probably wrong", "doubt", "uncertain", "hesitant", "scared", "nervous", "idk", "unsure", "confused", "lost"],
+    "stressed": ["stressed", "overwhelmed", "anxious", "worried", "pressure", "struggling", "can't handle", "too much", "exhausted", "tired", "drowning", "burnout"],
+    "angry": ["pissed", "angry", "furious", "mad", "hate", "fuck", "bullshit", "ridiculous", "unacceptable", "done with", "fed up", "irritated"],
+    "playful": ["lol", "lmao", "haha", "😂", "💀", "bruh", "nah", "fr fr", "lowkey", "highkey", "vibes", "bet", "tbh"],
+    "sarcastic": ["sure", "yeah right", "oh great", "wonderful", "fantastic", "obviously", "totally", "yeah okay", "perfect", "lovely"],
+    "happy": ["happy", "excited", "great", "awesome", "amazing", "love", "perfect", "excellent", "wonderful", "fantastic", "pumped", "thrilled"],
+}
+
+def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
+    """
+    Detect the dominant emotional tone from user's message.
+    Returns: insecure, stressed, angry, playful, sarcastic, happy, or neutral
+    """
+    lower = text.lower()
+    
+    # Count emotional markers
+    emotion_scores = {emotion: 0 for emotion in EMOTIONAL_MARKERS.keys()}
+    
+    for emotion, markers in EMOTIONAL_MARKERS.items():
+        for marker in markers:
+            if marker in lower:
+                emotion_scores[emotion] += 1
+    
+    # Linguistic analysis for additional signals
+    has_caps = bool(re.search(r"[A-Z]{2,}", text))
+    multiple_punct = bool(re.search(r"[!?]{2,}", text))
+    has_question = "?" in text
+    word_count = len(text.split())
+    
+    # Boost scores based on linguistic patterns
+    if has_caps and multiple_punct:
+        emotion_scores["angry"] += 2
+    
+    if has_question and word_count < 10:
+        emotion_scores["insecure"] += 1
+    
+    if multiple_punct and any(marker in lower for marker in ["lol", "lmao", "haha"]):
+        emotion_scores["playful"] += 2
+    
+    # Check for contradictory tone (sarcasm indicator)
+    positive_words = ["great", "wonderful", "perfect", "amazing"]
+    if any(word in lower for word in positive_words) and (multiple_punct or "..." in text):
+        emotion_scores["sarcastic"] += 2
+    
+    # Find dominant emotion
+    max_score = max(emotion_scores.values())
+    
+    if max_score == 0:
+        return "neutral"
+    
+    # Return the emotion with highest score
+    for emotion, score in emotion_scores.items():
+        if score == max_score:
+            return emotion
+    
+    return "neutral"
+
+def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
+    """
+    Map detected emotion to appropriate mirror archetype.
+    
+    Mapping:
+    - insecure → dominant (inject strength)
+    - stressed → calm (ground them)
+    - angry → challenger (productive confrontation)
+    - playful → chaotic (match energy)
+    - sarcastic → dark_wit (intelligent edge)
+    - happy → optimist (amplify wins)
+    - neutral → calm (balanced stability)
+    """
+    emotion_to_style = {
+        "insecure": "dominant",
+        "stressed": "calm",
+        "angry": "challenger",
+        "playful": "chaotic",
+        "sarcastic": "dark_wit",
+        "happy": "optimist",
+        "neutral": "calm",
+    }
+    
+    return emotion_to_style.get(emotion, "calm")
+
+def get_adaptive_mirror_style(user_id: str, user_text: str, profile: Dict[str, object]) -> tuple[str, str]:
+    """
+    Determine mirror archetype adaptively based on emotional detection.
+    Returns: (selected_style, detected_emotion)
+    
+    Manual selection is disabled - only auto-detection is used.
+    Maintains consistency unless emotional shift is significant.
+    """
+    # Detect current emotion
+    detected_emotion = detect_emotional_tone(user_text, profile)
+    suggested_style = map_emotion_to_mirror_style(detected_emotion)
+    
+    # Get emotional history for this user
+    emotion_history = EMOTIONAL_STATE_HISTORY.setdefault(user_id, [])
+    
+    # Maintain consistency: only switch if emotion is different from recent pattern
+    if len(emotion_history) >= 2:
+        recent_emotions = emotion_history[-2:]
+        # If recent emotions are consistent and different from current, require stronger signal
+        if all(e == recent_emotions[0] for e in recent_emotions) and detected_emotion != recent_emotions[0]:
+            # Keep previous style unless current emotion appears twice in a row
+            if len(emotion_history) >= 1 and detected_emotion != emotion_history[-1]:
+                # Use previous style for consistency
+                previous_emotion = emotion_history[-1]
+                suggested_style = map_emotion_to_mirror_style(previous_emotion)
+    
+    # Update emotional history (keep last 5)
+    emotion_history.append(detected_emotion)
+    if len(emotion_history) > 5:
+        emotion_history.pop(0)
+    
+    return (suggested_style, detected_emotion)
+
 def build_reflection_system_prompt(profile: Dict[str, object]) -> str:
     summary = summarize_personality_profile(profile)
     return f"{REFLECTION_SYSTEM_PROMPT_BASE}\n\nPersonality profile (use as context, do not label sections):\n{summary}"
 
-def build_mirror_system_prompt(profile: Dict[str, object]) -> str:
+def build_mirror_system_prompt(profile: Dict[str, object], style: str = "dominant") -> str:
+    """Build mirror system prompt with specific archetype style"""
     summary = summarize_communication_profile(profile)
-    return f"{MIRROR_SYSTEM_PROMPT_BASE}\nCommunication profile (use to match style, do not mention it):\n{summary}"
+    
+    # Get style rules, default to dominant if invalid
+    style_config = MIRROR_STYLES.get(style, MIRROR_STYLES["dominant"])
+    style_name = style_config["name"]
+    style_rules = style_config["rules"]
+    
+    return f"""{MIRROR_SYSTEM_PROMPT_BASE}
+
+User Profile:
+{summary}
+
+Mirror Archetype: {style_name}
+
+Archetype Rules:
+{style_rules}
+
+Adaptation Rule:
+If the user's emotional state shifts significantly, subtly adapt intensity while preserving the core archetype behavior.
+"""
 
 def get_user_history(user_id: str, mode: str) -> List[Dict[str, str]]:
     user_bucket = CONVERSATION_HISTORY.setdefault(user_id, {})
@@ -715,11 +1021,25 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     communication_profile = get_communication_profile(request.user_id)
     update_communication_profile(communication_profile, request.text)
 
+    # Track active mirror style and detected emotion
+    active_mirror_style = None
+    detected_emotion = None
+
     if request.mode == "reflection":
         system_prompt = build_reflection_system_prompt(personality_profile)
         model_params = MODEL_PARAMS["reflection"]
     else:
-        system_prompt = build_mirror_system_prompt(communication_profile)
+        # Adaptive Mirror Mode: auto-detect emotion and select appropriate archetype
+        # Manual selection is disabled - only auto-detection is used
+        active_mirror_style, detected_emotion = get_adaptive_mirror_style(
+            user_id=request.user_id,
+            user_text=request.text,
+            profile=communication_profile
+        )
+        
+        logger.info(f"🎭 Mirror Mode - Detected: {detected_emotion} → Archetype: {active_mirror_style}")
+        
+        system_prompt = build_mirror_system_prompt(communication_profile, style=active_mirror_style)
         model_params = MODEL_PARAMS["mirror"]
 
     # Generate AI response
@@ -788,7 +1108,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         reply=reply,
         mirror_active=request.mode == "mirror",
         confidence_level="medium",
-        mode=request.mode
+        mode=request.mode,
+        active_mirror_style=active_mirror_style,
+        detected_emotion=detected_emotion
     )
 
 
@@ -799,15 +1121,33 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db)
 ) -> ConversationListOut:
     """Get list of conversations for a user, optionally filtered by mode"""
-    logger.info(f"📋 Fetching conversations for user {user_id} with mode filter: {mode}")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"📋 GET /conversations endpoint called")
+    logger.info(f"📥 Request params: user_id={user_id}, mode={mode}")
+    logger.info(f"⚠️ MODE FILTERING TEMPORARILY DISABLED FOR DEBUGGING")
+    logger.info(f"{'='*60}")
     
     try:
         user_id_uuid = UUID(user_id)
+        logger.info(f"🔍 Converted user_id string to UUID: {user_id_uuid}")
+        logger.info(f"📊 UUID type: {type(user_id_uuid)}")
+        
         conversations = await crud.get_user_conversations(
             db=db, 
             user_id=user_id_uuid,
-            mode=mode
+            mode=mode  # Passed but ignored in crud function
         )
+        
+        logger.info(f"\n📊 Retrieved {len(conversations)} conversations from database")
+        
+        # Log conversation details for debugging
+        for idx, conv in enumerate(conversations, 1):
+            logger.info(f"  {idx}. Conversation:")
+            logger.info(f"     - id: {conv.id}")
+            logger.info(f"     - user_id: {conv.user_id}")
+            logger.info(f"     - mode: {conv.mode}")
+            logger.info(f"     - title: '{conv.title}'")
+            logger.info(f"     - created_at: {conv.created_at}")
         
         conversation_list = [
             ConversationListItem(
@@ -818,11 +1158,17 @@ async def list_conversations(
             for conv in conversations
         ]
         
-        logger.info(f"✅ Found {len(conversation_list)} conversations")
+        logger.info(f"\n✅ Returning {len(conversation_list)} conversations to client")
+        logger.info(f"📤 Response structure: ConversationListOut with {len(conversation_list)} items")
+        logger.info(f"{'='*60}\n")
+        
         return ConversationListOut(conversations=conversation_list)
     
+    except ValueError as e:
+        logger.error(f"❌ Invalid UUID format for user_id '{user_id}': {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id format: {str(e)}")
     except Exception as e:
-        logger.error(f"❌ Error fetching conversations: {e}")
+        logger.error(f"❌ Error fetching conversations: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -162,17 +162,26 @@ async def get_user_conversations(
     mode: Optional[str] = None,
 ) -> List[models.Conversation]:
     """Get conversations for a user, optionally filtered by mode, ordered by most recent"""
+    logger.info(f"🔍 CRUD: Getting conversations for user_id={user_id}, mode={mode}")
+    
     query = select(models.Conversation).where(models.Conversation.user_id == user_id)
     
-    # Filter by mode if provided
-    if mode:
-        query = query.where(models.Conversation.mode == mode)
+    # TEMPORARY: Mode filtering disabled for debugging
+    # if mode:
+    #     query = query.where(models.Conversation.mode == mode)
+    logger.info(f"⚠️ MODE FILTERING TEMPORARILY DISABLED FOR DEBUGGING")
     
     query = query.order_by(models.Conversation.created_at.desc())
     
     result = await db.execute(query)
     conversations = list(result.scalars().all())
-    logger.info(f"Found {len(conversations)} conversations for user {user_id} with mode filter: {mode}")
+    
+    logger.info(f"📊 CRUD: Found {len(conversations)} total conversations for user {user_id}")
+    
+    # Log details of each conversation
+    for conv in conversations:
+        logger.info(f"  📝 Conversation: id={conv.id}, user_id={conv.user_id}, mode={conv.mode}, title='{conv.title}', created_at={conv.created_at}")
+    
     return conversations
 
 

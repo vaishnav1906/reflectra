@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { LandingPage } from "./pages/LandingPage";
 import { ChatPage } from "./pages/ChatPage";
 import { PersonalityPage } from "./pages/PersonalityPage";
@@ -32,30 +33,32 @@ const App = () => {
   );
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            {/* Landing Page */}
-            <Route path="/" element={<LandingPage />} />
-            
-            {/* Main App Routes - Protected */}
-            <Route path="/app" element={<ProtectedRoute><AppLayout><Navigate to="/app/chat" replace /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/chat" element={<ProtectedRoute><AppLayout><ChatPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/architecture" element={<ProtectedRoute><AppLayout><ArchitecturePage /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/personality" element={<ProtectedRoute><AppLayout><PersonalityPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/memory" element={<ProtectedRoute><AppLayout><MemoryPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/reflections" element={<ProtectedRoute><AppLayout><ReflectionsPage /></AppLayout></ProtectedRoute>} />
-            <Route path="/app/settings" element={<ProtectedRoute><AppLayout><SettingsPage /></AppLayout></ProtectedRoute>} />
-            
-            {/* 404 */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
+            <Routes>
+              {/* Landing Page */}
+              <Route path="/" element={<LandingPage />} />
+              
+              {/* Main App Routes - Protected */}
+              <Route path="/app" element={<ProtectedRoute><AppLayout><Navigate to="/app/chat" replace /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/chat" element={<ProtectedRoute><AppLayout><ChatPage /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/architecture" element={<ProtectedRoute><AppLayout><ArchitecturePage /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/personality" element={<ProtectedRoute><AppLayout><PersonalityPage /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/memory" element={<ProtectedRoute><AppLayout><MemoryPage /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/reflections" element={<ProtectedRoute><AppLayout><ReflectionsPage /></AppLayout></ProtectedRoute>} />
+              <Route path="/app/settings" element={<ProtectedRoute><AppLayout><SettingsPage /></AppLayout></ProtectedRoute>} />
+              
+              {/* 404 */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 };
 

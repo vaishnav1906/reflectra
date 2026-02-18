@@ -30,8 +30,16 @@ export function AppSidebar() {
   const [searchParams] = useSearchParams();
   const [showConversationModal, setShowConversationModal] = useState(false);
 
+  // Get userId dynamically each time - it might change after login
   const userId = localStorage.getItem("user_id") || "";
   const currentMode = searchParams.get("mode") || "reflection";
+
+  // Debug logs
+  console.log("📊 AppSidebar:", {
+    currentMode,
+    pathname: location.pathname,
+    userId: userId ? "set" : "none",
+  });
 
   const handleNavContextMenu = (e: React.MouseEvent, item: typeof navItems[0]) => {
     if (item.hasModal && item.path === "/app/chat") {
@@ -69,10 +77,16 @@ export function AppSidebar() {
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
+          
+          // For chat page, preserve mode in URL
+          const itemPath = item.path === "/app/chat" 
+            ? `${item.path}?mode=${currentMode}`
+            : item.path;
+          
           return (
             <NavLink
               key={item.path}
-              to={item.path}
+              to={itemPath}
               onContextMenu={(e) => handleNavContextMenu(e, item)}
               className={cn(
                 "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
