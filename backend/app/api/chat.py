@@ -402,20 +402,82 @@ def extract_words(text: str) -> List[str]:
 # ============================================================================
 
 EMOTIONAL_MARKERS = {
-    "insecure": ["i don't know", "maybe", "not sure", "probably wrong", "doubt", "uncertain", "hesitant", "scared", "nervous", "idk", "unsure", "confused", "lost"],
-    "stressed": ["stressed", "overwhelmed", "anxious", "worried", "pressure", "struggling", "can't handle", "too much", "exhausted", "tired", "drowning", "burnout"],
-    "angry": ["pissed", "angry", "furious", "mad", "hate", "fuck", "bullshit", "ridiculous", "unacceptable", "done with", "fed up", "irritated"],
-    "playful": ["lol", "lmao", "haha", "😂", "💀", "bruh", "nah", "fr fr", "lowkey", "highkey", "vibes", "bet", "tbh"],
-    "sarcastic": ["sure", "yeah right", "oh great", "wonderful", "fantastic", "obviously", "totally", "yeah okay", "perfect", "lovely"],
-    "happy": ["happy", "excited", "great", "awesome", "amazing", "love", "perfect", "excellent", "wonderful", "fantastic", "pumped", "thrilled"],
+    "insecurity": ["i don't know", "maybe", "not sure", "probably wrong", "doubt", "uncertain", "hesitant", "scared", "nervous", "idk", "unsure", "confused", "lost"],
+    "stress": ["stressed", "overwhelmed", "anxious", "worried", "pressure", "struggling", "can't handle", "too much", "exhausted", "tired", "drowning", "burnout"],
+    "anger": ["pissed", "angry", "furious", "mad", "hate", "fuck", "bullshit", "ridiculous", "unacceptable", "done with", "fed up", "irritated"],
+    "playful": ["lol", "lmao", "haha", "😂", "💀", "bruh", "nah", "lowkey", "highkey", "vibes", "bet", "tbh"],
+    "sarcasm": ["sure", "yeah right", "oh great", "wonderful", "fantastic", "obviously", "totally", "yeah okay", "perfect", "lovely"],
+    "excitement": ["yay", "woohoo", "omg", "yes", "let's go", "pumped", "thrilled", "can't wait", "hyped", "stoked"],
+    "happiness": ["happy", "great", "awesome", "amazing", "love", "excellent", "wonderful"],
 }
+
+# Slang hype words for excitement/playful detection
+SLANG_HYPE_WORDS = ["yo", "bruh", "lmao", "lmaooo", "brooo", "yooo", "yoooo", "fr", "frfr", "fr fr", "omfg"]
 
 def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
     """
-    Detect the dominant emotional tone from user's message.
-    Returns: insecure, stressed, angry, playful, sarcastic, happy, or neutral
+    You are an emotion classifier.
+
+    Analyze the user's message and classify its emotional tone into ONE of the following categories:
+
+    - insecurity
+    - stress
+    - anger
+    - playful
+    - sarcasm
+    - excitement
+    - happiness
+    - neutral
+
+    Rules:
+
+    - Detect intensity markers:
+      * Elongated words (e.g., "Yoooo", "Noooo")
+      * Multiple punctuation (!!!, ???)
+      * Slang energy ("bruh", "yo", "lmaooo")
+      * Caps emphasis
+
+    - Short messages CAN still carry high emotional energy.
+    - If the message shows enthusiasm or hype → classify as excitement.
+    - If playful tone or exaggerated vowel stretching → classify as playful.
+    - If sarcastic phrasing → classify as sarcasm.
+    - Only classify as neutral if truly flat and emotionless.
+
+    Return ONLY the label. No explanation.
     """
     lower = text.lower()
+    original_text = text
+    
+    # === PREPROCESSING: Detect intensity markers ===
+    # Detect elongated characters (3+ repeating letters)
+    has_elongation = bool(re.search(r"([a-z])\1{2,}", lower))
+    
+    # Detect multiple exclamation marks
+    multiple_exclamations = bool(re.search(r"!{2,}", text))
+    
+    # Detect slang hype words
+    has_slang_hype = any(word in lower for word in SLANG_HYPE_WORDS)
+    
+    # Detect caps emphasis
+    has_caps = bool(re.search(r"[A-Z]{2,}", text))
+    
+    # Additional intensity markers
+    multiple_punct = bool(re.search(r"[!?]{2,}", text))
+    has_question = "?" in text
+    word_count = len(text.split())
+    
+    # Log detected markers
+    detected_markers = []
+    if has_elongation:
+        detected_markers.append("elongated_words")
+    if multiple_exclamations:
+        detected_markers.append("multiple_exclamations")
+    if has_slang_hype:
+        detected_markers.append("slang_hype")
+    if has_caps:
+        detected_markers.append("caps_emphasis")
+    
+    logger.info(f"🔍 Emotion detection - Original: '{original_text}' | Markers: {detected_markers}")
     
     # Count emotional markers
     emotion_scores = {emotion: 0 for emotion in EMOTIONAL_MARKERS.keys()}
@@ -425,18 +487,20 @@ def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
             if marker in lower:
                 emotion_scores[emotion] += 1
     
-    # Linguistic analysis for additional signals
-    has_caps = bool(re.search(r"[A-Z]{2,}", text))
-    multiple_punct = bool(re.search(r"[!?]{2,}", text))
-    has_question = "?" in text
-    word_count = len(text.split())
+    # === BOOST LOGIC: Apply intensity marker boosts ===
+    # If elongation OR slang hype OR multiple exclamations detected:
+    # Boost probability toward excitement or playful
+    if has_elongation or has_slang_hype or multiple_exclamations:
+        emotion_scores["excitement"] += 3
+        emotion_scores["playful"] += 2
+        logger.info("⚡ Boosting excitement/playful due to intensity markers")
     
-    # Boost scores based on linguistic patterns
+    # Linguistic analysis for additional signals
     if has_caps and multiple_punct:
-        emotion_scores["angry"] += 2
+        emotion_scores["anger"] += 2
     
     if has_question and word_count < 10:
-        emotion_scores["insecure"] += 1
+        emotion_scores["insecurity"] += 1
     
     if multiple_punct and any(marker in lower for marker in ["lol", "lmao", "haha"]):
         emotion_scores["playful"] += 2
@@ -444,19 +508,22 @@ def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
     # Check for contradictory tone (sarcasm indicator)
     positive_words = ["great", "wonderful", "perfect", "amazing"]
     if any(word in lower for word in positive_words) and (multiple_punct or "..." in text):
-        emotion_scores["sarcastic"] += 2
+        emotion_scores["sarcasm"] += 2
     
     # Find dominant emotion
     max_score = max(emotion_scores.values())
     
     if max_score == 0:
+        logger.info(f"😐 Classified as: neutral (no markers detected)")
         return "neutral"
     
     # Return the emotion with highest score
     for emotion, score in emotion_scores.items():
         if score == max_score:
+            logger.info(f"🎯 Classified as: {emotion} (score: {score})")
             return emotion
     
+    logger.info(f"😐 Classified as: neutral (fallback)")
     return "neutral"
 
 def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
@@ -464,22 +531,24 @@ def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
     Map detected emotion to appropriate mirror archetype.
     
     Mapping:
-    - insecure → dominant (inject strength)
-    - stressed → calm (ground them)
-    - angry → challenger (productive confrontation)
+    - insecurity → dominant (inject strength)
+    - stress → calm (ground them)
+    - anger → challenger (productive confrontation)
     - playful → chaotic (match energy)
-    - sarcastic → dark_wit (intelligent edge)
-    - happy → optimist (amplify wins)
-    - neutral → calm (balanced stability)
+    - sarcasm → dark_wit (intelligent edge)
+    - excitement → chaotic (amplify energy)
+    - happiness → optimist (amplify wins)
+    - neutral → neutral (balanced)
     """
     emotion_to_style = {
-        "insecure": "dominant",
-        "stressed": "calm",
-        "angry": "challenger",
+        "insecurity": "dominant",
+        "stress": "calm",
+        "anger": "challenger",
         "playful": "chaotic",
-        "sarcastic": "dark_wit",
-        "happy": "optimist",
-        "neutral": "calm",
+        "sarcasm": "dark_wit",
+        "excitement": "chaotic",
+        "happiness": "optimist",
+        "neutral": "calm",  # Keep calm for neutral to maintain stability
     }
     
     return emotion_to_style.get(emotion, "calm")

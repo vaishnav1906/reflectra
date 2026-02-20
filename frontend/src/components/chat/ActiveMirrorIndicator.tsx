@@ -25,12 +25,13 @@ const STYLE_CONFIG: Record<MirrorStyle, { name: string; icon: typeof Zap; color:
 };
 
 const EMOTION_DISPLAY: Record<string, string> = {
-  insecure: "Uncertain",
-  stressed: "Stressed",
-  angry: "Frustrated",
+  insecurity: "Uncertain",
+  stress: "Stressed",
+  anger: "Frustrated",
   playful: "Playful",
-  sarcastic: "Sarcastic",
-  happy: "Happy",
+  sarcasm: "Sarcastic",
+  excitement: "Excited",
+  happiness: "Happy",
   neutral: "Neutral",
 };
 
