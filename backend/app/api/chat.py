@@ -4,16 +4,18 @@ import random
 import os
 from typing import Dict, List, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from collections import Counter
 from dotenv import load_dotenv
 from pathlib import Path
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 
 from app.db.database import get_db
 from app.db import crud
+from app.db.models import Message, BehavioralInsight
 from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
 
 # Load environment variables
@@ -1277,4 +1279,76 @@ async def get_conversation_messages(
         raise HTTPException(status_code=400, detail="Invalid UUID format")
     except Exception as e:
         logger.error(f"❌ Error fetching messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SystemStateResponse(BaseModel):
+    last_inference: Optional[str] = None
+    memory_count: int
+    confidence: float
+    learning_active: bool
+    cycle_days: int = 7
+
+
+@router.get("/system-state", response_model=SystemStateResponse)
+async def get_system_state(
+    user_id: str,
+    db: AsyncSession = Depends(get_db)
+) -> SystemStateResponse:
+    """Get system state metrics for a user"""
+    logger.info(f"📊 Fetching system state for user {user_id}")
+    
+    try:
+        user_id_uuid = UUID(user_id)
+        
+        # 1. memory_count: Count total messages from messages table
+        memory_count_result = await db.execute(
+            select(func.count(Message.id)).where(Message.user_id == user_id_uuid)
+        )
+        memory_count = memory_count_result.scalar() or 0
+        
+        # 2. last_inference: Get latest assistant message timestamp
+        last_inference_result = await db.execute(
+            select(func.max(Message.created_at))
+            .where(Message.user_id == user_id_uuid)
+            .where(Message.role == "assistant")
+        )
+        last_inference_datetime = last_inference_result.scalar()
+        last_inference = last_inference_datetime.isoformat() if last_inference_datetime else None
+        
+        # 3. confidence: Average behavioral_insights.confidence for user
+        confidence_result = await db.execute(
+            select(func.avg(BehavioralInsight.confidence))
+            .where(BehavioralInsight.user_id == user_id_uuid)
+            .where(BehavioralInsight.confidence.isnot(None))
+        )
+        avg_confidence = confidence_result.scalar()
+        confidence = float(avg_confidence * 100) if avg_confidence is not None else 0.0
+        
+        # 4. learning_active: True if latest behavioral_insights.created_at is within last 7 days
+        learning_active = False
+        latest_insight_result = await db.execute(
+            select(func.max(BehavioralInsight.created_at))
+            .where(BehavioralInsight.user_id == user_id_uuid)
+        )
+        latest_insight_datetime = latest_insight_result.scalar()
+        if latest_insight_datetime:
+            seven_days_ago = datetime.now() - timedelta(days=7)
+            learning_active = latest_insight_datetime >= seven_days_ago
+        
+        logger.info(f"✅ System state fetched: memory_count={memory_count}, confidence={confidence:.1f}%, learning_active={learning_active}")
+        
+        return SystemStateResponse(
+            last_inference=last_inference,
+            memory_count=memory_count,
+            confidence=confidence,
+            learning_active=learning_active,
+            cycle_days=7
+        )
+    
+    except ValueError as e:
+        logger.error(f"❌ Invalid UUID format for user_id '{user_id}': {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid user_id format: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Error fetching system state: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
