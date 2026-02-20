@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -33,11 +33,33 @@ export function ChatPage() {
   const [activeMirrorStyle, setActiveMirrorStyle] = useState<MirrorStyle>("dominant");
   const [detectedEmotion, setDetectedEmotion] = useState<string | null>(null);
 
+  // Refs for auto-scroll behavior
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+
   // Get userId safely
   const userId = localStorage.getItem("user_id") || "";
 
   // Centralized mode reading from URL
   const mode = (searchParams.get("mode") || "reflection") as InteractionMode;
+
+  // Auto-scroll helper functions
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const isUserNearBottom = () => {
+    // Check if chatContainerRef's parent viewport is near bottom
+    const container = chatContainerRef.current;
+    if (!container) return true;
+
+    // Find the scrollable viewport (parent element of our content div)
+    const viewport = container.parentElement;
+    if (!viewport) return true;
+
+    const { scrollTop, scrollHeight, clientHeight } = viewport;
+    return scrollHeight - scrollTop - clientHeight < 100;
+  };
 
   // Debug logs
   console.log("📊 ChatPage render:", {
@@ -114,6 +136,13 @@ export function ChatPage() {
     };
     checkBackend();
   }, []);
+
+  // Auto-scroll when new messages arrive (only if user is near bottom)
+  useEffect(() => {
+    if (isUserNearBottom()) {
+      scrollToBottom();
+    }
+  }, [messages]);
 
   const loadConversationMessages = async (convId: string) => {
     try {
@@ -348,7 +377,10 @@ export function ChatPage() {
         </header>
 
         <ScrollArea className="flex-1 px-8 py-6">
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div 
+            ref={chatContainerRef}
+            className="max-w-3xl mx-auto space-y-6"
+          >
             {messages.length === 0 && !isTyping && (
               <div className="text-center py-12">
                 <h2 className="text-2xl font-semibold mb-2">
@@ -365,6 +397,7 @@ export function ChatPage() {
               <ChatMessage key={msg.id} {...msg} className={cn()} />
             ))}
             {isTyping && <TypingIndicator />}
+            <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
 
