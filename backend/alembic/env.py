@@ -1,11 +1,16 @@
 import asyncio
 import os
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
+
+# Add parent directory to path so we can import app
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db.database import Base
 from app.db import models  # noqa: F401

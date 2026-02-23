@@ -4,18 +4,16 @@ import random
 import os
 from typing import Dict, List, Optional
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 from collections import Counter
 from dotenv import load_dotenv
 from pathlib import Path
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.db.database import get_db
 from app.db import crud
-from app.db.models import Message, BehavioralInsight
 from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
 
 # Load environment variables
@@ -404,82 +402,20 @@ def extract_words(text: str) -> List[str]:
 # ============================================================================
 
 EMOTIONAL_MARKERS = {
-    "insecurity": ["i don't know", "maybe", "not sure", "probably wrong", "doubt", "uncertain", "hesitant", "scared", "nervous", "idk", "unsure", "confused", "lost"],
-    "stress": ["stressed", "overwhelmed", "anxious", "worried", "pressure", "struggling", "can't handle", "too much", "exhausted", "tired", "drowning", "burnout"],
-    "anger": ["pissed", "angry", "furious", "mad", "hate", "fuck", "bullshit", "ridiculous", "unacceptable", "done with", "fed up", "irritated"],
-    "playful": ["lol", "lmao", "haha", "😂", "💀", "bruh", "nah", "lowkey", "highkey", "vibes", "bet", "tbh"],
-    "sarcasm": ["sure", "yeah right", "oh great", "wonderful", "fantastic", "obviously", "totally", "yeah okay", "perfect", "lovely"],
-    "excitement": ["yay", "woohoo", "omg", "yes", "let's go", "pumped", "thrilled", "can't wait", "hyped", "stoked"],
-    "happiness": ["happy", "great", "awesome", "amazing", "love", "excellent", "wonderful"],
+    "insecure": ["i don't know", "maybe", "not sure", "probably wrong", "doubt", "uncertain", "hesitant", "scared", "nervous", "idk", "unsure", "confused", "lost"],
+    "stressed": ["stressed", "overwhelmed", "anxious", "worried", "pressure", "struggling", "can't handle", "too much", "exhausted", "tired", "drowning", "burnout"],
+    "angry": ["pissed", "angry", "furious", "mad", "hate", "fuck", "bullshit", "ridiculous", "unacceptable", "done with", "fed up", "irritated"],
+    "playful": ["lol", "lmao", "haha", "😂", "💀", "bruh", "nah", "fr fr", "lowkey", "highkey", "vibes", "bet", "tbh"],
+    "sarcastic": ["sure", "yeah right", "oh great", "wonderful", "fantastic", "obviously", "totally", "yeah okay", "perfect", "lovely"],
+    "happy": ["happy", "excited", "great", "awesome", "amazing", "love", "perfect", "excellent", "wonderful", "fantastic", "pumped", "thrilled"],
 }
-
-# Slang hype words for excitement/playful detection
-SLANG_HYPE_WORDS = ["yo", "bruh", "lmao", "lmaooo", "brooo", "yooo", "yoooo", "fr", "frfr", "fr fr", "omfg"]
 
 def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
     """
-    You are an emotion classifier.
-
-    Analyze the user's message and classify its emotional tone into ONE of the following categories:
-
-    - insecurity
-    - stress
-    - anger
-    - playful
-    - sarcasm
-    - excitement
-    - happiness
-    - neutral
-
-    Rules:
-
-    - Detect intensity markers:
-      * Elongated words (e.g., "Yoooo", "Noooo")
-      * Multiple punctuation (!!!, ???)
-      * Slang energy ("bruh", "yo", "lmaooo")
-      * Caps emphasis
-
-    - Short messages CAN still carry high emotional energy.
-    - If the message shows enthusiasm or hype → classify as excitement.
-    - If playful tone or exaggerated vowel stretching → classify as playful.
-    - If sarcastic phrasing → classify as sarcasm.
-    - Only classify as neutral if truly flat and emotionless.
-
-    Return ONLY the label. No explanation.
+    Detect the dominant emotional tone from user's message.
+    Returns: insecure, stressed, angry, playful, sarcastic, happy, or neutral
     """
     lower = text.lower()
-    original_text = text
-    
-    # === PREPROCESSING: Detect intensity markers ===
-    # Detect elongated characters (3+ repeating letters)
-    has_elongation = bool(re.search(r"([a-z])\1{2,}", lower))
-    
-    # Detect multiple exclamation marks
-    multiple_exclamations = bool(re.search(r"!{2,}", text))
-    
-    # Detect slang hype words
-    has_slang_hype = any(word in lower for word in SLANG_HYPE_WORDS)
-    
-    # Detect caps emphasis
-    has_caps = bool(re.search(r"[A-Z]{2,}", text))
-    
-    # Additional intensity markers
-    multiple_punct = bool(re.search(r"[!?]{2,}", text))
-    has_question = "?" in text
-    word_count = len(text.split())
-    
-    # Log detected markers
-    detected_markers = []
-    if has_elongation:
-        detected_markers.append("elongated_words")
-    if multiple_exclamations:
-        detected_markers.append("multiple_exclamations")
-    if has_slang_hype:
-        detected_markers.append("slang_hype")
-    if has_caps:
-        detected_markers.append("caps_emphasis")
-    
-    logger.info(f"🔍 Emotion detection - Original: '{original_text}' | Markers: {detected_markers}")
     
     # Count emotional markers
     emotion_scores = {emotion: 0 for emotion in EMOTIONAL_MARKERS.keys()}
@@ -489,20 +425,18 @@ def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
             if marker in lower:
                 emotion_scores[emotion] += 1
     
-    # === BOOST LOGIC: Apply intensity marker boosts ===
-    # If elongation OR slang hype OR multiple exclamations detected:
-    # Boost probability toward excitement or playful
-    if has_elongation or has_slang_hype or multiple_exclamations:
-        emotion_scores["excitement"] += 3
-        emotion_scores["playful"] += 2
-        logger.info("⚡ Boosting excitement/playful due to intensity markers")
-    
     # Linguistic analysis for additional signals
+    has_caps = bool(re.search(r"[A-Z]{2,}", text))
+    multiple_punct = bool(re.search(r"[!?]{2,}", text))
+    has_question = "?" in text
+    word_count = len(text.split())
+    
+    # Boost scores based on linguistic patterns
     if has_caps and multiple_punct:
-        emotion_scores["anger"] += 2
+        emotion_scores["angry"] += 2
     
     if has_question and word_count < 10:
-        emotion_scores["insecurity"] += 1
+        emotion_scores["insecure"] += 1
     
     if multiple_punct and any(marker in lower for marker in ["lol", "lmao", "haha"]):
         emotion_scores["playful"] += 2
@@ -510,22 +444,19 @@ def detect_emotional_tone(text: str, profile: Dict[str, object]) -> str:
     # Check for contradictory tone (sarcasm indicator)
     positive_words = ["great", "wonderful", "perfect", "amazing"]
     if any(word in lower for word in positive_words) and (multiple_punct or "..." in text):
-        emotion_scores["sarcasm"] += 2
+        emotion_scores["sarcastic"] += 2
     
     # Find dominant emotion
     max_score = max(emotion_scores.values())
     
     if max_score == 0:
-        logger.info(f"😐 Classified as: neutral (no markers detected)")
         return "neutral"
     
     # Return the emotion with highest score
     for emotion, score in emotion_scores.items():
         if score == max_score:
-            logger.info(f"🎯 Classified as: {emotion} (score: {score})")
             return emotion
     
-    logger.info(f"😐 Classified as: neutral (fallback)")
     return "neutral"
 
 def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
@@ -533,24 +464,22 @@ def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
     Map detected emotion to appropriate mirror archetype.
     
     Mapping:
-    - insecurity → dominant (inject strength)
-    - stress → calm (ground them)
-    - anger → challenger (productive confrontation)
+    - insecure → dominant (inject strength)
+    - stressed → calm (ground them)
+    - angry → challenger (productive confrontation)
     - playful → chaotic (match energy)
-    - sarcasm → dark_wit (intelligent edge)
-    - excitement → chaotic (amplify energy)
-    - happiness → optimist (amplify wins)
-    - neutral → neutral (balanced)
+    - sarcastic → dark_wit (intelligent edge)
+    - happy → optimist (amplify wins)
+    - neutral → calm (balanced stability)
     """
     emotion_to_style = {
-        "insecurity": "dominant",
-        "stress": "calm",
-        "anger": "challenger",
+        "insecure": "dominant",
+        "stressed": "calm",
+        "angry": "challenger",
         "playful": "chaotic",
-        "sarcasm": "dark_wit",
-        "excitement": "chaotic",
-        "happiness": "optimist",
-        "neutral": "calm",  # Keep calm for neutral to maintain stability
+        "sarcastic": "dark_wit",
+        "happy": "optimist",
+        "neutral": "calm",
     }
     
     return emotion_to_style.get(emotion, "calm")
@@ -1087,7 +1016,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     history = get_user_history(request.user_id, request.mode)
     history.append({"role": "user", "content": request.text})
 
-    # Update profiles
+    # Update profiles (keep for backward compatibility)
     personality_profile = get_personality_profile(request.user_id)
     communication_profile = get_communication_profile(request.user_id)
     update_communication_profile(communication_profile, request.text)
@@ -1095,44 +1024,84 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     # Track active mirror style and detected emotion
     active_mirror_style = None
     detected_emotion = None
+    reply = None
 
     if request.mode == "reflection":
+        # REFLECTION MODE: Generate response and update persona
         system_prompt = build_reflection_system_prompt(personality_profile)
         model_params = MODEL_PARAMS["reflection"]
+        
+        # Generate AI response
+        reply = await generate_llm_response(system_prompt, model_params, history)
+        if reply and is_echo_reply(reply, request.text):
+            logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
+            reply = None
+        
+        # Fall back to templates if LLM not available
+        if not reply:
+            logger.info("📝 Using template response (LLM not available)")
+            sanitized = re.sub(r"[?]+", "", request.text).strip()
+            template = random.choice(REFLECTION_TEMPLATES)
+            reply = template.format(text=sanitized)
+        
+        reply = validate_reflection_response(reply, personality_profile)
+        update_personality_profile(personality_profile, request.text, reply)
+        
+        # PERSONA SERVICE INTEGRATION: Extract and update traits
+        logger.info(f"🔄 Updating persona from reflection message")
+        try:
+            from app.services.trait_extraction_service import extract_traits
+            from app.services.persona_update_service import update_traits
+            from app.services.snapshot_service import generate_persona_snapshot
+            from app.services.mirror_engine import invalidate_snapshot_cache
+            
+            # Extract traits from user message
+            extracted_traits = await extract_traits(request.text)
+            logger.info(f"🔍 Extracted {len(extracted_traits)} traits")
+            
+            # Update trait metrics in database
+            await update_traits(db, user_id_uuid, extracted_traits)
+            
+            # Generate new snapshot
+            await generate_persona_snapshot(db, user_id_uuid)
+            
+            # Invalidate cache since we have updated snapshot
+            invalidate_snapshot_cache(user_id_uuid)
+            
+            logger.info(f"✅ Persona updated and snapshot regenerated")
+        except Exception as e:
+            logger.error(f"⚠️ Failed to update persona: {e}")
+            # Continue - persona update failure shouldn't break chat
+    
     else:
-        # Adaptive Mirror Mode: auto-detect emotion and select appropriate archetype
-        # Manual selection is disabled - only auto-detection is used
+        # MIRROR MODE: Use mirror_engine service (reads snapshot, doesn't modify)
+        logger.info(f"🪞 Using mirror_engine service")
+        
+        # Detect emotion for UI feedback only
         active_mirror_style, detected_emotion = get_adaptive_mirror_style(
             user_id=request.user_id,
             user_text=request.text,
             profile=communication_profile
         )
+        logger.info(f"🎭 Detected: {detected_emotion} → Archetype: {active_mirror_style}")
         
-        logger.info(f"🎭 Mirror Mode - Detected: {detected_emotion} → Archetype: {active_mirror_style}")
+        try:
+            from app.services.mirror_engine import generate_mirror_response
+            
+            # Mirror engine handles: snapshot retrieval, message style analysis, 
+            # persona-based prompt building (2-layer approach)
+            reply = await generate_mirror_response(db, user_id_uuid, request.text)
+            logger.info(f"✅ Mirror engine response: {reply[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"⚠️ Mirror engine failed: {e}, using template")
+            reply = None
         
-        system_prompt = build_mirror_system_prompt(communication_profile, style=active_mirror_style)
-        model_params = MODEL_PARAMS["mirror"]
-
-    # Generate AI response
-    reply = await generate_llm_response(system_prompt, model_params, history)
-    if reply and is_echo_reply(reply, request.text):
-        logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
-        reply = None
-    
-    # Fall back to templates if LLM not available
-    if not reply:
-        logger.info("📝 Using template response (LLM not available)")
-        if request.mode == "mirror":
+        # Fall back to templates if mirror engine not available
+        if not reply:
+            logger.info("📝 Using template mirror response")
             reply = local_mirror_reply(request.text, communication_profile)
-        else:  # reflection mode
-            sanitized = re.sub(r"[?]+", "", request.text).strip()
-            template = random.choice(REFLECTION_TEMPLATES)
-            reply = template.format(text=sanitized)
         
-    if request.mode == "reflection":
-        reply = validate_reflection_response(reply, personality_profile)
-        update_personality_profile(personality_profile, request.text, reply)
-    else:
         reply = validate_mirror_response(reply, request.text, communication_profile)
 
     history.append({"role": "assistant", "content": reply})
@@ -1279,76 +1248,4 @@ async def get_conversation_messages(
         raise HTTPException(status_code=400, detail="Invalid UUID format")
     except Exception as e:
         logger.error(f"❌ Error fetching messages: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class SystemStateResponse(BaseModel):
-    last_inference: Optional[str] = None
-    memory_count: int
-    confidence: float
-    learning_active: bool
-    cycle_days: int = 7
-
-
-@router.get("/system-state", response_model=SystemStateResponse)
-async def get_system_state(
-    user_id: str,
-    db: AsyncSession = Depends(get_db)
-) -> SystemStateResponse:
-    """Get system state metrics for a user"""
-    logger.info(f"📊 Fetching system state for user {user_id}")
-    
-    try:
-        user_id_uuid = UUID(user_id)
-        
-        # 1. memory_count: Count total messages from messages table
-        memory_count_result = await db.execute(
-            select(func.count(Message.id)).where(Message.user_id == user_id_uuid)
-        )
-        memory_count = memory_count_result.scalar() or 0
-        
-        # 2. last_inference: Get latest assistant message timestamp
-        last_inference_result = await db.execute(
-            select(func.max(Message.created_at))
-            .where(Message.user_id == user_id_uuid)
-            .where(Message.role == "assistant")
-        )
-        last_inference_datetime = last_inference_result.scalar()
-        last_inference = last_inference_datetime.isoformat() if last_inference_datetime else None
-        
-        # 3. confidence: Average behavioral_insights.confidence for user
-        confidence_result = await db.execute(
-            select(func.avg(BehavioralInsight.confidence))
-            .where(BehavioralInsight.user_id == user_id_uuid)
-            .where(BehavioralInsight.confidence.isnot(None))
-        )
-        avg_confidence = confidence_result.scalar()
-        confidence = float(avg_confidence * 100) if avg_confidence is not None else 0.0
-        
-        # 4. learning_active: True if latest behavioral_insights.created_at is within last 7 days
-        learning_active = False
-        latest_insight_result = await db.execute(
-            select(func.max(BehavioralInsight.created_at))
-            .where(BehavioralInsight.user_id == user_id_uuid)
-        )
-        latest_insight_datetime = latest_insight_result.scalar()
-        if latest_insight_datetime:
-            seven_days_ago = datetime.now() - timedelta(days=7)
-            learning_active = latest_insight_datetime >= seven_days_ago
-        
-        logger.info(f"✅ System state fetched: memory_count={memory_count}, confidence={confidence:.1f}%, learning_active={learning_active}")
-        
-        return SystemStateResponse(
-            last_inference=last_inference,
-            memory_count=memory_count,
-            confidence=confidence,
-            learning_active=learning_active,
-            cycle_days=7
-        )
-    
-    except ValueError as e:
-        logger.error(f"❌ Invalid UUID format for user_id '{user_id}': {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid user_id format: {str(e)}")
-    except Exception as e:
-        logger.error(f"❌ Error fetching system state: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

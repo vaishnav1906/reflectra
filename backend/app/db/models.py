@@ -6,6 +6,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -111,3 +112,30 @@ class ReflectionLog(Base):
 
     user = relationship("User", back_populates="reflection_logs")
     conversation = relationship("Conversation", back_populates="reflection_logs")
+
+
+class UserPersonaMetric(Base):
+    __tablename__ = "user_persona_metrics"
+    __table_args__ = (
+        UniqueConstraint("user_id", "trait_name", name="uq_user_trait"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    trait_name = Column(String(128), nullable=False, index=True)
+    score = Column(Float, nullable=False, server_default=text("0.5"))
+    confidence = Column(Float, nullable=False, server_default=text("0.1"))
+    evidence_count = Column(Integer, nullable=False, server_default=text("0"))
+    last_signal = Column(Float)
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PersonaSnapshot(Base):
+    __tablename__ = "persona_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    persona_vector = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    stability_index = Column(Float)
+    summary_text = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
