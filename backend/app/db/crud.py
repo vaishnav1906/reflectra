@@ -23,8 +23,16 @@ async def create_conversation(
         mode=mode,
         metadata_=metadata,
     )
+    logger.info(f"🧾 About to persist conversation: user_id={user_id}, mode={mode}, title={title}")
     db.add(conversation)
-    await db.commit()
+    try:
+        logger.info("💾 Committing conversation insert")
+        await db.commit()
+        logger.info("✅ Conversation commit successful")
+    except Exception:
+        await db.rollback()
+        logger.exception("❌ Conversation commit failed; transaction rolled back")
+        raise
     await db.refresh(conversation)
     return conversation
 
@@ -61,7 +69,14 @@ async def create_message(
         token_count=token_count,
     )
     db.add(message)
-    await db.commit()
+    try:
+        logger.info(f"💾 Committing message insert: role={role}, conversation_id={conversation_id}")
+        await db.commit()
+        logger.info("✅ Message commit successful")
+    except Exception:
+        await db.rollback()
+        logger.exception("❌ Message commit failed; transaction rolled back")
+        raise
     await db.refresh(message)
     logger.info(f"Message created successfully: id={message.id}")
     return message
@@ -166,17 +181,15 @@ async def get_user_conversations(
     
     query = select(models.Conversation).where(models.Conversation.user_id == user_id)
     
-    # TEMPORARY: Mode filtering disabled for debugging
-    # if mode:
-    #     query = query.where(models.Conversation.mode == mode)
-    logger.info(f"⚠️ MODE FILTERING TEMPORARILY DISABLED FOR DEBUGGING")
+    if mode:
+        query = query.where(models.Conversation.mode == mode)
     
     query = query.order_by(models.Conversation.created_at.desc())
     
     result = await db.execute(query)
     conversations = list(result.scalars().all())
     
-    logger.info(f"📊 CRUD: Found {len(conversations)} total conversations for user {user_id}")
+    logger.info(f"📊 CRUD: Found {len(conversations)} conversations for user {user_id} (mode={mode})")
     
     # Log details of each conversation
     for conv in conversations:

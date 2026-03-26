@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 import random
 import os
 from typing import Dict, List, Optional
@@ -28,8 +28,18 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
-    text: str
+    message: Optional[str] = None
+    text: Optional[str] = Field(default=None, description="Deprecated alias for message")
     mode: str  # "reflection" or "mirror"
+
+    @model_validator(mode="after")
+    def validate_message_field(self):
+        # Accept both legacy `text` and canonical `message` payloads.
+        payload = self.message if self.message is not None else self.text
+        if payload is None or not payload.strip():
+            raise ValueError("message is required")
+        self.message = payload.strip()
+        return self
 
 class ChatResponse(BaseModel):
     conversation_id: str
@@ -967,19 +977,30 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     Stores all messages in database.
     Falls back to templates if LLM is not available.
     """
-    logger.info(f"💬 Received message in {request.mode} mode from user {request.user_id}")
+    logger.info(
+        "💬 /chat payload received: user_id=%s conversation_id=%s mode=%s message_len=%s",
+        request.user_id,
+        request.conversation_id,
+        request.mode,
+        len(request.message or ""),
+    )
     
     if request.mode not in {"reflection", "mirror"}:
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'reflection' or 'mirror'.")
 
-    user_id_uuid = UUID(request.user_id)
-    conversation_id_uuid = UUID(request.conversation_id) if request.conversation_id else None
+    try:
+        user_id_uuid = UUID(request.user_id)
+        conversation_id_uuid = UUID(request.conversation_id) if request.conversation_id else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid UUID in request: {str(e)}")
+
+    message_text = request.message or ""
     conversation_title = None
 
     # Handle conversation creation or retrieval
     if conversation_id_uuid is None:
         # Generate title for new conversation
-        conversation_title = await generate_conversation_title(request.text)
+        conversation_title = await generate_conversation_title(message_text)
         logger.info(f"📝 Creating new conversation with title: {conversation_title}")
         
         # Create new conversation
@@ -1014,12 +1035,12 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
 
     # Get conversation history from in-memory storage (for AI context)
     history = get_user_history(request.user_id, request.mode)
-    history.append({"role": "user", "content": request.text})
+    history.append({"role": "user", "content": message_text})
 
     # Update profiles (keep for backward compatibility)
     personality_profile = get_personality_profile(request.user_id)
     communication_profile = get_communication_profile(request.user_id)
-    update_communication_profile(communication_profile, request.text)
+    update_communication_profile(communication_profile, message_text)
 
     # Track active mirror style and detected emotion
     active_mirror_style = None
@@ -1033,19 +1054,19 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         
         # Generate AI response
         reply = await generate_llm_response(system_prompt, model_params, history)
-        if reply and is_echo_reply(reply, request.text):
+        if reply and is_echo_reply(reply, message_text):
             logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
             reply = None
         
         # Fall back to templates if LLM not available
         if not reply:
             logger.info("📝 Using template response (LLM not available)")
-            sanitized = re.sub(r"[?]+", "", request.text).strip()
+            sanitized = re.sub(r"[?]+", "", message_text).strip()
             template = random.choice(REFLECTION_TEMPLATES)
             reply = template.format(text=sanitized)
         
         reply = validate_reflection_response(reply, personality_profile)
-        update_personality_profile(personality_profile, request.text, reply)
+        update_personality_profile(personality_profile, message_text, reply)
         
         # PERSONA SERVICE INTEGRATION: Extract and update traits
         logger.info(f"🔄 Updating persona from reflection message")
@@ -1056,7 +1077,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             from app.services.mirror_engine import invalidate_snapshot_cache
             
             # Extract traits from user message
-            extracted_traits = await extract_traits(request.text)
+            extracted_traits = await extract_traits(message_text)
             logger.info(f"🔍 Extracted {len(extracted_traits)} traits")
             
             # Update trait metrics in database
@@ -1080,7 +1101,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         # Detect emotion for UI feedback only
         active_mirror_style, detected_emotion = get_adaptive_mirror_style(
             user_id=request.user_id,
-            user_text=request.text,
+            user_text=message_text,
             profile=communication_profile
         )
         logger.info(f"🎭 Detected: {detected_emotion} → Archetype: {active_mirror_style}")
@@ -1090,7 +1111,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             
             # Mirror engine handles: snapshot retrieval, message style analysis, 
             # persona-based prompt building (2-layer approach)
-            reply = await generate_mirror_response(db, user_id_uuid, request.text)
+            reply = await generate_mirror_response(db, user_id_uuid, message_text)
             logger.info(f"✅ Mirror engine response: {reply[:50]}...")
             
         except Exception as e:
@@ -1100,9 +1121,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         # Fall back to templates if mirror engine not available
         if not reply:
             logger.info("📝 Using template mirror response")
-            reply = local_mirror_reply(request.text, communication_profile)
+            reply = local_mirror_reply(message_text, communication_profile)
         
-        reply = validate_mirror_response(reply, request.text, communication_profile)
+        reply = validate_mirror_response(reply, message_text, communication_profile)
 
     history.append({"role": "assistant", "content": reply})
 
@@ -1114,7 +1135,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             user_id=user_id_uuid,
             conversation_id=conversation_id_uuid,
             role="user",
-            content=request.text,
+            content=message_text,
             embedding=None,
             token_count=None,
         )
@@ -1164,7 +1185,7 @@ async def list_conversations(
     logger.info(f"\n{'='*60}")
     logger.info(f"📋 GET /conversations endpoint called")
     logger.info(f"📥 Request params: user_id={user_id}, mode={mode}")
-    logger.info(f"⚠️ MODE FILTERING TEMPORARILY DISABLED FOR DEBUGGING")
+    logger.info(f"🔎 Mode filtering active: {bool(mode)}")
     logger.info(f"{'='*60}")
     
     try:

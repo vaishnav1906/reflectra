@@ -97,7 +97,7 @@ export function ChatPage() {
         body: JSON.stringify({
           user_id: userId,
           conversation_id: conversationId,
-          text: content,
+          message: content,
           mode,
         }),
       });
@@ -108,6 +108,9 @@ export function ChatPage() {
       }
 
       const data = await res.json();
+      if (!data || typeof data.reply !== "string") {
+        throw new Error("Invalid chat response payload");
+      }
 
       // Update mirror style if in mirror mode
       if (data.active_mirror_style) setActiveMirrorStyle(data.active_mirror_style);
