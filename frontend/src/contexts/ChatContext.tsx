@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
 export type InteractionMode = "reflection" | "mirror";
@@ -11,6 +11,10 @@ export interface Message {
 }
 
 interface ChatContextType {
+  activeConversationId: string | null;
+  setActiveConversationId: (id: string | null) => void;
+  loadingMessages: boolean;
+  // Backwards-compatible aliases for existing consumers
   conversationId: string | null;
   setConversationId: (id: string | null) => void;
   messages: Message[];
@@ -32,68 +36,109 @@ const API_BASE = "/api";
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
   const [activeMirrorStyle, setActiveMirrorStyle] = useState<string | null>(null);
   const [detectedEmotion, setDetectedEmotion] = useState<string | null>(null);
+  const latestMessageRequestId = useRef(0);
 
   // Get mode from URL, default to reflection
   const mode = (searchParams.get("mode") || "reflection") as InteractionMode;
 
-  // Sync conversation state from URL
+  const urlConversationId = searchParams.get("conversation_id");
+
+  // Sync active conversation from URL
   useEffect(() => {
-    const urlConvId = searchParams.get("conversation_id");
-    
-    if (urlConvId && urlConvId !== conversationId) {
-      // URL has a conversation ID - load it
-      console.log("🔄 ChatContext: Loading conversation from URL:", urlConvId);
-      setConversationId(urlConvId);
-      loadConversation(urlConvId);
-    } else if (!urlConvId && conversationId) {
-      // URL doesn't have conversation ID but we have one - start fresh
-      console.log("🆕 ChatContext: Starting new conversation");
-      setConversationId(null);
+    if (urlConversationId !== activeConversationId) {
+      console.log("🔄 ChatContext: Syncing active conversation from URL:", urlConversationId);
+      setActiveConversationId(urlConversationId);
+    }
+
+    if (!urlConversationId && activeConversationId) {
+      // New chat route should reset visible chat content
       setMessages([]);
       setConversationTitle(null);
+      setActiveMirrorStyle(null);
+      setDetectedEmotion(null);
     }
-  }, [searchParams.get("conversation_id")]);
+  }, [urlConversationId, activeConversationId]);
+
+  // Load messages whenever the active conversation changes.
+  // Uses cancellation to prevent stale responses from overwriting current state.
+  useEffect(() => {
+    if (!activeConversationId) {
+      setLoadingMessages(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const controller = new AbortController();
+    const requestId = ++latestMessageRequestId.current;
+
+    const loadMessages = async () => {
+      setLoadingMessages(true);
+
+      try {
+        const userId = localStorage.getItem("user_id") || "anonymous";
+        const url = `${API_BASE}/conversations/${activeConversationId}/messages?user_id=${userId}`;
+
+        console.log("📥 ChatContext: Fetching messages for conversation:", activeConversationId);
+
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) {
+          throw new Error(`Failed to load conversation: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const loadedMessages: Message[] = (data || []).map((msg: any) => ({
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          timestamp: new Date(msg.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        }));
+
+        if (!isCancelled && requestId === latestMessageRequestId.current) {
+          setMessages(loadedMessages);
+          console.log(`✅ ChatContext: Loaded ${loadedMessages.length} messages`);
+        }
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
+          return;
+        }
+
+        console.error("❌ ChatContext: Error loading conversation:", err);
+        if (!isCancelled && requestId === latestMessageRequestId.current) {
+          setMessages([]);
+        }
+      } finally {
+        if (!isCancelled && requestId === latestMessageRequestId.current) {
+          setLoadingMessages(false);
+        }
+      }
+    };
+
+    loadMessages();
+
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [activeConversationId]);
 
   const loadConversation = async (convId: string) => {
-    try {
-      const userId = localStorage.getItem("user_id") || "anonymous";
-      const url = `${API_BASE}/conversations/${convId}/messages?user_id=${userId}`;
-      
-      console.log("📥 ChatContext: Fetching messages for conversation:", convId);
-      
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`Failed to load conversation: ${res.status}`);
-      }
-
-      const data = await res.json();
-      const loadedMessages: Message[] = (data || []).map((msg: any) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        timestamp: new Date(msg.created_at).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      }));
-
-      setMessages(loadedMessages);
-      console.log(`✅ ChatContext: Loaded ${loadedMessages.length} messages`);
-    } catch (err) {
-      console.error("❌ ChatContext: Error loading conversation:", err);
-      setMessages([]);
-    }
+    setActiveConversationId(convId);
   };
 
   const startNewConversation = () => {
     console.log("🆕 ChatContext: Explicitly starting new conversation");
-    setConversationId(null);
+    setActiveConversationId(null);
     setMessages([]);
+    setLoadingMessages(false);
     setConversationTitle(null);
     setActiveMirrorStyle(null);
     setDetectedEmotion(null);
@@ -104,8 +149,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   };
 
   const value: ChatContextType = {
-    conversationId,
-    setConversationId,
+    activeConversationId,
+    setActiveConversationId,
+    loadingMessages,
+    conversationId: activeConversationId,
+    setConversationId: setActiveConversationId,
     messages,
     setMessages,
     mode,

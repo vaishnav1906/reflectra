@@ -22,8 +22,9 @@ export function ChatPage() {
   
   // Get chat state from context (persists across navigation)
   const {
-    conversationId,
-    setConversationId,
+    activeConversationId,
+    setActiveConversationId,
+    loadingMessages,
     messages,
     setMessages,
     mode,
@@ -96,7 +97,7 @@ export function ChatPage() {
         credentials: "include",
         body: JSON.stringify({
           user_id: userId,
-          conversation_id: conversationId,
+          conversation_id: activeConversationId,
           message: content,
           mode,
         }),
@@ -117,8 +118,8 @@ export function ChatPage() {
       if (data.detected_emotion) setDetectedEmotion(data.detected_emotion);
 
       // Update conversation ID for new conversations
-      if (!conversationId && data.conversation_id) {
-        setConversationId(data.conversation_id);
+      if (!activeConversationId && data.conversation_id) {
+        setActiveConversationId(data.conversation_id);
         setConversationTitle(data.title);
         setSearchParams({ 
           conversation_id: data.conversation_id,
@@ -159,6 +160,7 @@ export function ChatPage() {
   };
 
   const handleSelectConversation = (convId: string) => {
+    setActiveConversationId(convId);
     setSearchParams({ conversation_id: convId, mode });
   };
 
@@ -224,14 +226,31 @@ export function ChatPage() {
 
         <ScrollArea className="flex-1 px-8 py-6">
           <div className="max-w-3xl mx-auto space-y-6">
-            {messages.length === 0 && !isTyping && (
+            {loadingMessages && (
+              <div className="sticky top-0 z-10 flex justify-center py-2">
+                <div className="rounded-full border border-border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
+                  Loading messages...
+                </div>
+              </div>
+            )}
+
+            {messages.length === 0 && !isTyping && !loadingMessages && (
               <div className="text-center py-12">
-                <h2 className="text-2xl font-semibold mb-2">Start a Conversation</h2>
-                <p className="text-muted-foreground">
-                  {mode === "mirror"
-                    ? "Your persona will mirror your communication style"
-                    : "Reflect on your thoughts and feelings"}
-                </p>
+                {activeConversationId ? (
+                  <>
+                    <h2 className="text-2xl font-semibold mb-2">No messages yet</h2>
+                    <p className="text-muted-foreground">This conversation has no messages yet.</p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-2xl font-semibold mb-2">Start a Conversation</h2>
+                    <p className="text-muted-foreground">
+                      {mode === "mirror"
+                        ? "Your persona will mirror your communication style"
+                        : "Reflect on your thoughts and feelings"}
+                    </p>
+                  </>
+                )}
               </div>
             )}
             {messages.map((msg) => (
