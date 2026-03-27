@@ -1,4 +1,6 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,13 +15,13 @@ class ConversationCreate(BaseModel):
 class ConversationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-    id: str
-    user_id: str
+    id: UUID
+    user_id: UUID
     title: Optional[str] = None
     mode: str
     metadata: Dict[str, Any] = Field(alias="metadata_")
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class MessageCreate(BaseModel):
@@ -34,14 +36,14 @@ class MessageCreate(BaseModel):
 class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    conversation_id: str
-    user_id: str
+    id: UUID
+    conversation_id: UUID
+    user_id: UUID
     role: str
     content: str
     embedding: Optional[List[float]] = None
     token_count: Optional[int] = None
-    created_at: str
+    created_at: datetime
 
 
 class ConversationHistoryOut(BaseModel):
@@ -64,8 +66,8 @@ class PersonalityProfileUpdate(BaseModel):
 class PersonalityProfileOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    user_id: str
+    id: UUID
+    user_id: UUID
     openness: Optional[float] = None
     conscientiousness: Optional[float] = None
     extraversion: Optional[float] = None
@@ -75,16 +77,16 @@ class PersonalityProfileOut(BaseModel):
     traits: Dict[str, Any]
     values: Dict[str, Any]
     stressors: Dict[str, Any]
-    updated_at: str
+    updated_at: datetime
 
 
 class ConversationListItem(BaseModel):
     """Lightweight conversation item for list view"""
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: UUID
     title: Optional[str] = None
-    created_at: str
+    created_at: datetime
 
 
 class ConversationListOut(BaseModel):

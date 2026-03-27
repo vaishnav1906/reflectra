@@ -48,6 +48,14 @@ export function AppSidebar() {
     }
   };
 
+  const handleNavClick = (e: React.MouseEvent, item: typeof navItems[0]) => {
+    // On the chat route, clicking Conversation should open history directly.
+    if (item.hasModal && item.path === "/app/chat" && location.pathname === "/app/chat") {
+      e.preventDefault();
+      setShowConversationModal(true);
+    }
+  };
+
   const handleSelectConversation = (conversationId: string) => {
     navigate(`/app/chat?conversation_id=${conversationId}&mode=${currentMode}`);
   };
@@ -87,6 +95,7 @@ export function AppSidebar() {
             <NavLink
               key={item.path}
               to={itemPath}
+              onClick={(e) => handleNavClick(e, item)}
               onContextMenu={(e) => handleNavContextMenu(e, item)}
               className={cn(
                 "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",

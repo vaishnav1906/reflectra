@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatContext, type Message } from "@/contexts/ChatContext";
+import { triggerConversationRefresh } from "@/utils/conversationRefresh";
 
 const API_BASE = "/api";
 
@@ -125,6 +126,10 @@ export function ChatPage() {
           conversation_id: data.conversation_id,
           mode 
         });
+        
+        // Trigger refresh for any subscribers (like the conversation history modal)
+        console.log("✅ New conversation created, triggering refresh");
+        triggerConversationRefresh();
       }
 
       const aiMessage: Message = {

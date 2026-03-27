@@ -1,16 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { X, MessageSquare, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
-
-interface Conversation {
-  id: string;
-  title: string | null;
-  created_at: string;
-}
+import { usePastConversations } from "@/hooks/usePastConversations";
+import { subscribeToConversationRefresh } from "@/utils/conversationRefresh";
 
 interface ConversationHistoryModalProps {
   isOpen: boolean;
@@ -21,8 +17,6 @@ interface ConversationHistoryModalProps {
   mode?: string; // "reflection" or "mirror"
 }
 
-const API_BASE = "/api";
-
 export function ConversationHistoryModal({
   isOpen,
   onClose,
@@ -31,10 +25,19 @@ export function ConversationHistoryModal({
   userId,
   mode,
 }: ConversationHistoryModalProps) {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
+  const { conversations, isLoading, error, fetchConversations, refreshConversations } = usePastConversations();
 
+  // Subscribe to refresh events
+  useEffect(() => {
+    const unsubscribe = subscribeToConversationRefresh(() => {
+      console.log("📢 Conversation refresh triggered, refetching...");
+      refreshConversations(userId, mode);
+    });
+
+    return unsubscribe;
+  }, [userId, mode, refreshConversations]);
+
+  // Fetch conversations when modal opens
   useEffect(() => {
     if (isOpen && userId) {
       console.log("\n=== CONVERSATION HISTORY MODAL OPENED ===");
@@ -42,66 +45,10 @@ export function ConversationHistoryModal({
       console.log("📦 userId type:", typeof userId);
       console.log("🔢 userId length:", userId?.length || 0);
       console.log("🎯 mode:", mode);
-      console.log("📧 email from localStorage:", localStorage.getItem("email"));
       
-      if (!userId || userId === "" || userId === "anonymous") {
-        console.warn("⚠️ Invalid or anonymous userId, skipping fetch");
-        setError("Please log in to view conversation history");
-        return;
-      }
-      
-      fetchConversations();
+      fetchConversations(userId, mode);
     }
-  }, [isOpen, userId, mode]);
-
-  const fetchConversations = async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      // Add mode parameter if provided
-      const modeParam = mode ? `&mode=${mode}` : "";
-      const url = `${API_BASE}/conversations?user_id=${userId}${modeParam}`;
-      
-      console.log("\n=== FETCHING CONVERSATIONS ===");
-      console.log("📡 URL:", url);
-      console.log("👤 User ID:", userId);
-      console.log("🎯 Mode:", mode);
-      
-      const res = await fetch(url);
-      
-      console.log("📨 Response status:", res.status, res.statusText);
-      console.log("📨 Response headers:", Object.fromEntries(res.headers.entries()));
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error("❌ Error response body:", errorText);
-        throw new Error(`Failed to fetch conversations: ${res.status} ${errorText}`);
-      }
-      
-      const data = await res.json();
-      console.log("✅ Raw API response:", JSON.stringify(data, null, 2));
-      console.log("📊 data.conversations:", data.conversations);
-      console.log("📊 Array.isArray(data.conversations):", Array.isArray(data.conversations));
-      console.log("📊 Number of conversations:", data.conversations?.length || 0);
-      
-      // Try both data.conversations and data (in case backend format changes)
-      const conversationsList = data.conversations || data || [];
-      console.log("📋 Final conversations list:", conversationsList);
-      
-      setConversations(conversationsList);
-      console.log("✅ State updated with", conversationsList.length, "conversations\n");
-    } catch (err) {
-      console.error("❌ Fetch conversations error:", err);
-      console.error("❌ Error details:", {
-        message: err instanceof Error ? err.message : 'Unknown error',
-        stack: err instanceof Error ? err.stack : undefined
-      });
-      setError(err instanceof Error ? err.message : "Failed to load conversations");
-      setConversations([]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  }, [isOpen, userId, mode, fetchConversations]);
 
   const handleSelectConversation = (conversationId: string) => {
     onSelectConversation(conversationId);
@@ -197,13 +144,18 @@ export function ConversationHistoryModal({
                         "focus:outline-none focus:ring-2 focus:ring-primary"
                       )}
                     >
-                      <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <h3 className="font-medium truncate text-foreground">
                             {conv.title || "Untitled Conversation"}
                           </h3>
-                          <p className="text-sm text-muted-foreground mt-1">
-                            {format(new Date(conv.created_at), "MMM d, yyyy 'at' h:mm a")}
+                          {conv.messagePreview && (
+                            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                              {conv.messagePreview}
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-2">
+                            {conv.relativeTime || format(new Date(conv.created_at), "MMM d, yyyy 'at' h:mm a")}
                           </p>
                         </div>
                         <MessageSquare className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-1" />

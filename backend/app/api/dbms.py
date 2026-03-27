@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
 
 from app.db import crud
 from app.db.database import get_db
@@ -51,7 +52,17 @@ async def fetch_conversation_history(
     user_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> ConversationHistoryOut:
-    messages = await crud.get_conversation_history(db, user_id=user_id, conversation_id=conversation_id)
+    try:
+        conversation_id_uuid = UUID(conversation_id)
+        user_id_uuid = UUID(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid UUID format") from exc
+
+    messages = await crud.get_conversation_history(
+        db,
+        user_id=user_id_uuid,
+        conversation_id=conversation_id_uuid,
+    )
     if not messages:
         raise HTTPException(status_code=404, detail="No messages found for conversation")
     return ConversationHistoryOut(conversation_id=conversation_id, messages=messages)
