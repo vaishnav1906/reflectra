@@ -18,6 +18,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/persona", tags=["persona"])
 
 
+class ResetPersonaRequest(BaseModel):
+    user_id: str
+
+@router.post("/reset")
+async def reset_persona(
+    request: ResetPersonaRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        user_uuid = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    from app.db.models import PersonaSnapshot, UserPersonaMetric, BehavioralInsight
+    from sqlalchemy import delete
+    
+    # Delete persona data
+    await db.execute(delete(PersonaSnapshot).where(PersonaSnapshot.user_id == user_uuid))
+    await db.execute(delete(UserPersonaMetric).where(UserPersonaMetric.user_id == user_uuid))
+    await db.execute(delete(BehavioralInsight).where(BehavioralInsight.user_id == user_uuid))
+    await db.commit()
+    
+    # Initialize fresh
+    await generate_persona_snapshot(db, user_uuid)
+    invalidate_snapshot_cache(user_uuid)
+    
+    return {"status": "persona_reset_success"}
+
+
 class ReflectionRequest(BaseModel):
     user_id: str
     message: str
