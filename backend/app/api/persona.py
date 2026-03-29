@@ -24,11 +24,8 @@ class ReflectionRequest(BaseModel):
 
 
 class ReflectionResponse(BaseModel):
-    success: bool
-    traits_extracted: int
-    traits_updated: int
-    stability_index: float
-    snapshot_id: str
+    traits: dict
+    stability: float
     summary: str
 
 
@@ -68,13 +65,13 @@ async def process_reflection(
     
     logger.info(f"✅ Reflection processing complete for user {user_id}")
     
+    # Extract traits from the snapshot's persona vector
+    traits = snapshot.persona_vector.get("behavioral_profile", {})
+    
     return ReflectionResponse(
-        success=True,
-        traits_extracted=len(extracted_traits),
-        traits_updated=update_result["traits_updated"],
-        stability_index=round(update_result["stability_index"], 3),
-        snapshot_id=str(snapshot.id),
-        summary=snapshot.summary_text,
+        traits=traits,
+        stability=round(snapshot.stability_index, 2),
+        summary=snapshot.summary_text
     )
 
 
@@ -90,19 +87,45 @@ async def get_user_profile(
         raise HTTPException(status_code=400, detail="Invalid user_id format")
     
     from app.repository.persona_repository import PersonaRepository
+    from app.db.models import ScheduleContext
+    from sqlalchemy import select
     
     snapshot = await PersonaRepository.get_latest_snapshot(db, user_uuid)
     
     if not snapshot:
         raise HTTPException(status_code=404, detail="No personality profile found")
     
+    traits = snapshot.persona_vector.get("behavioral_profile", {})
+    
+    # Apply dynamic context injection based on schedule config
+    sched_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_uuid))
+    context_record = sched_result.scalar_one_or_none()
+    
+    if context_record and traits:
+        stress = context_record.stress_level
+        
+        # Deep copy traits so we don't accidentally mutate dict elements improperly
+        import copy
+        traits = copy.deepcopy(traits)
+        
+        if stress > 0.7:
+            # High stress
+            if "reflection_depth" in traits:
+                traits["reflection_depth"]["score"] = max(0.0, traits["reflection_depth"]["score"] - 0.2)
+            if "emotional_expressiveness" in traits:
+                # Assuming emotional_support maps to expressiveness
+                traits["emotional_expressiveness"]["score"] = min(1.0, traits["emotional_expressiveness"]["score"] + 0.3)
+            if "decision_framing" in traits:
+                traits["decision_framing"]["score"] = max(0.0, traits["decision_framing"]["score"] - 0.15) # hesitant under stress
+        elif stress < 0.2:
+            # Low stress
+            if "reflection_depth" in traits:
+                traits["reflection_depth"]["score"] = min(1.0, traits["reflection_depth"]["score"] + 0.1)
+    
     return {
-        "snapshot_id": str(snapshot.id),
-        "user_id": str(snapshot.user_id),
-        "persona_vector": snapshot.persona_vector,
-        "stability_index": snapshot.stability_index,
-        "summary": snapshot.summary_text,
-        "created_at": snapshot.created_at.isoformat(),
+        "traits": traits,
+        "stability": round(snapshot.stability_index, 2),
+        "summary": snapshot.summary_text
     }
 
 

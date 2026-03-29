@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Clock, BookOpen, AlertCircle, Info } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Clock, BookOpen, AlertCircle, Info, Loader2, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
@@ -9,6 +9,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+const API_BASE = "/api";
 
 interface TimetableData {
   classesPerDay: number;
@@ -22,23 +24,124 @@ interface TimetableSectionProps {
 }
 
 export function TimetableSection({ onUpdate }: TimetableSectionProps) {
+  const [initialData, setInitialData] = useState<TimetableData | null>(null);
   const [data, setData] = useState<TimetableData>({
     classesPerDay: 3,
     avgDuration: 4,
     hasUpcomingDeadlines: false,
     isExamPeriod: false,
   });
+  const [workloadLevel, setWorkloadLevel] = useState("low");
+
+  const [isModified, setIsModified] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
+
+  // Fetch initial state
+  useEffect(() => {
+    const fetchContext = async () => {
+      try {
+        const userId = localStorage.getItem("user_id");
+        if (!userId) return;
+
+        const res = await fetch(`${API_BASE}/schedule-context/${userId}`);
+        if (res.ok) {
+          const json = await res.json();
+          const loadedData = {
+            classesPerDay: json.schedule_context.classes_per_day,
+            avgDuration: json.schedule_context.study_hours,
+            hasUpcomingDeadlines: json.schedule_context.has_deadlines,
+            isExamPeriod: json.schedule_context.is_exam_period,
+          };
+          setData(loadedData);
+          setInitialData(loadedData);
+          setWorkloadLevel(json.derived_context.workload_level);
+        }
+      } catch (err) {
+        console.error("Failed to fetch schedule context", err);
+      } finally {
+        setIsFetching(false);
+      }
+    };
+    fetchContext();
+  }, []);
 
   const updateData = (updates: Partial<TimetableData>) => {
     const newData = { ...data, ...updates };
     setData(newData);
-    onUpdate?.(newData);
+    setIsModified(true);
+    
+    // Optimistic workload calculation
+    const wl = newData.classesPerDay > 4 || newData.isExamPeriod ? "high" : newData.classesPerDay > 2 ? "moderate" : "low";
+    setWorkloadLevel(wl);
   };
 
-  const workloadLevel = data.classesPerDay > 4 || data.isExamPeriod ? "high" : data.classesPerDay > 2 ? "moderate" : "light";
+  const handleSave = async () => {
+    setIsLoading(true);
+    try {
+      const userId = localStorage.getItem("user_id");
+      if (!userId) return;
+
+      const res = await fetch(`${API_BASE}/schedule-context/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          classes_per_day: data.classesPerDay,
+          study_hours: data.avgDuration,
+          has_deadlines: data.hasUpcomingDeadlines,
+          is_exam_period: data.isExamPeriod,
+        }),
+      });
+
+      if (res.ok) {
+        const json = await res.json();
+        setInitialData(data);
+        setIsModified(false);
+        setWorkloadLevel(json.derived_context.workload_level);
+        onUpdate?.(data);
+      }
+      
+      // UX Smoothness minimum delay
+      await new Promise(r => setTimeout(r, 1000));
+      
+    } catch (error) {
+      console.error("Failed to update context", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancel = () => {
+    if (initialData) {
+      setData(initialData);
+      const wl = initialData.classesPerDay > 4 || initialData.isExamPeriod ? "high" : initialData.classesPerDay > 2 ? "moderate" : "low";
+      setWorkloadLevel(wl);
+    }
+    setIsModified(false);
+  };
+
+  if (isFetching) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-6 flex flex-col items-center justify-center space-y-3 min-h-[300px]">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <span className="text-sm text-muted-foreground">Loading context profile...</span>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-card border border-border rounded-xl p-6">
+    <div className={cn(
+      "bg-card border border-border rounded-xl p-6 relative transition-all duration-300",
+      isLoading && "opacity-80 pointer-events-none"
+    )}>
+      {isLoading && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/60 rounded-xl backdrop-blur-[2px]">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
+          <p className="text-sm font-medium text-foreground">Extracting Context Profile...</p>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-primary" />
@@ -52,7 +155,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs bg-card border border-border">
                 <p className="text-xs text-muted-foreground">
-                  Used only to understand workload patterns. No calendar syncing or notifications.
+                  Used by the AI to naturally adapt to your stress levels and workload.
                 </p>
               </TooltipContent>
             </Tooltip>
@@ -60,7 +163,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
         </div>
         
         <span className={cn(
-          "text-xs px-2 py-1 rounded-full",
+          "text-xs px-2 py-1 rounded-full capitalize",
           workloadLevel === "high" ? "bg-accent/10 text-accent" :
           workloadLevel === "moderate" ? "bg-primary/10 text-primary" :
           "bg-muted text-muted-foreground"
@@ -143,13 +246,31 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
         </div>
       </div>
 
+      {/* Action Buttons */}
+      {isModified && (
+        <div className="mt-8 flex items-center justify-end gap-3 pt-4 border-t border-border">
+          <button 
+            onClick={handleCancel}
+            className="text-sm flex items-center gap-1.5 px-3 py-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded-md transition-colors"
+          >
+            <X className="w-4 h-4" /> Cancel
+          </button>
+          <button 
+            onClick={handleSave}
+            className="text-sm flex items-center gap-1.5 px-4 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md transition-colors font-medium shadow-sm"
+          >
+            <Check className="w-4 h-4" /> Save Context
+          </button>
+        </div>
+      )}
+
       {/* Pattern insight */}
-      {(data.hasUpcomingDeadlines || data.isExamPeriod) && (
+      {!isModified && (data.hasUpcomingDeadlines || data.isExamPeriod) && (
         <div className="mt-6 pt-4 border-t border-border">
           <p className="text-xs text-muted-foreground/70 italic">
             {data.isExamPeriod
-              ? "Hesitation patterns tend to increase during exam periods."
-              : "Your reflections may be shorter during high-deadline periods."}
+              ? "AI context adjusted for exam stress level. Focusing on shorter, actionable outputs."
+              : "AI context applied for high-deadline urgency. Priority tracking active."}
           </p>
         </div>
       )}

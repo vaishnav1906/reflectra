@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -28,6 +29,7 @@ class User(Base):
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="user", cascade="all, delete-orphan")
     personality_profile = relationship("PersonalityProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    schedule_context = relationship("ScheduleContext", back_populates="user", uselist=False, cascade="all, delete-orphan")
     behavioral_insights = relationship("BehavioralInsight", back_populates="user", cascade="all, delete-orphan")
     reflection_logs = relationship("ReflectionLog", back_populates="user", cascade="all, delete-orphan")
 
@@ -139,3 +141,19 @@ class PersonaSnapshot(Base):
     stability_index = Column(Float)
     summary_text = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ScheduleContext(Base):
+    __tablename__ = "schedule_context"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    classes_per_day = Column(Integer, nullable=False, server_default=text("0"))
+    study_hours = Column(Integer, nullable=False, server_default=text("0"))
+    has_deadlines = Column(Boolean, nullable=False, server_default=text("false"))
+    is_exam_period = Column(Boolean, nullable=False, server_default=text("false"))
+    workload_level = Column(String(32), nullable=False, server_default=text("'low'"))
+    stress_level = Column(Float, nullable=False, server_default=text("0.0"))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="schedule_context")

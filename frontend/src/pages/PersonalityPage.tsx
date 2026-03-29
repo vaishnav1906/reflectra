@@ -22,10 +22,8 @@ interface PersonaTrait {
 }
 
 interface PersonaProfile {
-  persona_vector: {
-    behavioral_profile?: Record<string, { score: number; confidence: number }>;
-  };
-  stability_index: number;
+  traits?: Record<string, { score: number; confidence: number }>;
+  stability: number;
   summary: string;
 }
 
@@ -68,11 +66,11 @@ function mapTraitsToUI(profile: PersonaProfile | null): PersonaTrait[] {
     },
   ];
 
-  if (!profile || !profile.persona_vector || !profile.persona_vector.behavioral_profile) {
+  if (!profile || !profile.traits) {
     return defaultTraits;
   }
 
-  const { behavioral_profile } = profile.persona_vector;
+  const { traits: behavioral_profile } = profile;
   const traits: PersonaTrait[] = [];
 
   // Communication Style (0 = concise, 1 = verbose)
@@ -237,7 +235,7 @@ export function PersonalityPage() {
                     <h2 className="text-lg font-medium text-foreground">Observable Traits</h2>
                     <span className="text-xs text-muted-foreground">
                       Based on {personaTraits.length} dimensions
-                      {profile && ` • Stability: ${Math.round(profile.stability_index * 100)}%`}
+                      {profile && profile.stability !== undefined && ` • Stability: ${Math.round(profile.stability * 100)}%`}
                     </span>
                   </div>
                   

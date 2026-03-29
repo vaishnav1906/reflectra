@@ -527,9 +527,35 @@ def get_adaptive_mirror_style(user_id: str, user_text: str, profile: Dict[str, o
     
     return (suggested_style, detected_emotion)
 
-def build_reflection_system_prompt(profile: Dict[str, object]) -> str:
+def build_reflection_system_prompt(profile: Dict[str, object], schedule_context=None) -> str:
     summary = summarize_personality_profile(profile)
-    return f"{REFLECTION_SYSTEM_PROMPT_BASE}\n\nPersonality profile (use as context, do not label sections):\n{summary}"
+    base_prompt = f"{REFLECTION_SYSTEM_PROMPT_BASE}\n\nPersonality profile (use as context, do not label sections):\n{summary}"
+
+    if schedule_context:
+        workload = schedule_context.workload_level
+        stress = schedule_context.stress_level
+        exams = schedule_context.is_exam_period
+        deadlines = schedule_context.has_deadlines
+        
+        context_instructions = []
+        if exams:
+            context_instructions.append("- Subtly acknowledge their exam period (e.g. 'How’s your preparation going?', 'Which subject are you focusing on mostly?')")
+        if deadlines:
+            context_instructions.append("- Subtly acknowledge their deadlines (e.g. 'How close is your deadline?', 'What kind of project are you working on?')")
+        
+        if workload == "high":
+            context_instructions.append("- Keep responses slightly shorter and more actionable. Offer practical support rather than deep philosophical depth.")
+        elif workload == "low":
+            context_instructions.append("- Be more open-ended and highly reflective in your exploration.")
+
+        if stress > 0.7:
+            context_instructions.append("- Provide higher emotional support. Reduce deep cognitive load slightly unless they prompt it.")
+
+        if context_instructions:
+            base_prompt += "\n\nUser's Current Life Context (Soft Factors):\n" + "\n".join(context_instructions)
+            base_prompt += "\n\nCRITICAL CONTEXT RULE:\n- DO NOT explicitly say 'based on your settings' or 'because of your exams'.\n- Just blend this context naturally into the conversation."
+
+    return base_prompt
 
 def build_mirror_system_prompt(profile: Dict[str, object], style: str = "dominant") -> str:
     """Build mirror system prompt with specific archetype style"""
@@ -1048,8 +1074,18 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     reply = None
 
     if request.mode == "reflection":
+        # FETCH SCHEDULE CONTEXT
+        try:
+            from sqlalchemy import select
+            from app.db.models import ScheduleContext
+            sched_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id_uuid))
+            schedule_context = sched_result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"⚠️ Failed to fetch schedule context: {e}")
+            schedule_context = None
+
         # REFLECTION MODE: Generate response and update persona
-        system_prompt = build_reflection_system_prompt(personality_profile)
+        system_prompt = build_reflection_system_prompt(personality_profile, schedule_context)
         model_params = MODEL_PARAMS["reflection"]
         
         # Generate AI response

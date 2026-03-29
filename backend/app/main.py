@@ -5,6 +5,7 @@ from app.api.dbms import router as db_router
 from app.api.auth import router as auth_router
 from app.api.persona import router as persona_router
 from app.api.mirror import router as mirror_router
+from app.api.schedule import router as schedule_router
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -34,6 +35,7 @@ app.include_router(db_router)
 app.include_router(auth_router)
 app.include_router(persona_router)
 app.include_router(mirror_router)
+app.include_router(schedule_router)
 
 @app.get("/")
 def health():

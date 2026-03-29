@@ -32,9 +32,13 @@ TRAIT_DESCRIPTIONS = "\n".join([
     for trait in TRAIT_LIST
 ])
 
-NUDGE_EXTRACTION_PROMPT = f"""You are a behavioral trait analyzer for a gradual personality modeling system.
+NUDGE_EXTRACTION_PROMPT = f"""You are a behavioral trait analyzer for a dynamic Persona Profiling Engine.
 
-Analyze the user's message and detect ONLY clearly observable behavioral signals.
+Analyze the user's message and detect observable behavioral signals based on:
+1. Length metrics (tokens, sentences)
+2. Emotion indicators (sentiment, emotional keywords)
+3. Hedging vs certainty (Hesitant words: maybe/I think vs Decisive words: I will/definitely)
+4. Depth indicators (Surface: factual/short vs Deep: introspection/why/I feel/I realized)
 
 **Available Traits:**
 {TRAIT_DESCRIPTIONS}
@@ -42,7 +46,7 @@ Analyze the user's message and detect ONLY clearly observable behavioral signals
 **Your Task:**
 For each trait that is CLEARLY demonstrated in this specific message:
 - Determine the **signal**: the target trait value based on this message (0.0 to 1.0)
-- Determine the **strength**: how confident you are in this observation (0.0 to 0.2 max)
+- Determine the **strength** (confidence in this specific extraction): how confident you are in this observation (0.0 to 0.2 max). Start low and maintain conservatism.
 
 **Critical Rules:**
 1. NEVER set strength > 0.2 (prevents dramatic shifts)
