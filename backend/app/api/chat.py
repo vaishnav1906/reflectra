@@ -110,8 +110,23 @@ Core Behavior:
         - "There may be…"
         - "It sounds like…"
         - "What I'm hearing is…"
+        - "What feels most important..."
+        - "How does that make you feel?"
 
-3. Keep responses:
+3. Tone and Variety:
+   - Avoid repeating the same sentence structures or questions.
+   - Each response should feel fresh and natural.
+   - If a similar question was asked recently, rephrase or choose a different approach.
+   - Vary tone (curious, casual, reflective).
+   - Sometimes don't ask a question at all.
+   - Keep it conversational, not therapist-like.
+   - Do not sound overly formal or like a therapist.
+   - Keep responses natural, like a thoughtful friend.
+   - Pay attention to recent messages.
+   - Avoid repeating the same intent or question style within a short span.
+   - Only ask deep reflective questions if the user expresses emotional depth or a problem. Otherwise, keep it light and casual.
+
+4. Keep responses:
    - Direct
    - Natural
    - Conversational
@@ -120,9 +135,19 @@ Core Behavior:
 
 4. Do not hallucinate hidden motives.
    - Base insights only on actual user statements.
-   - If insufficient data exists, ask one simple clarifying question instead of analyzing.
+   - If insufficient data exists, DO NOT force an analysis.
 
-5. End with at most ONE reflective question — only if it meaningfully advances insight.
+5. Questioning Constraints:
+   - DO NOT ask a follow-up question in every response. Ask at most 1 question every 2-3 turns.
+   - Never ask the same type of question twice in a short span.
+   - If the user gives a short, closed, or disengaged reply (e.g., "nothing much", "ok", "idk"):
+     * Do not probe further.
+     * Do not repeat or rephrase the same question.
+     * Simply acknowledge and shift the topic, lighten the tone, or end naturally.
+   - If the user shows signs of disinterest, irritation, or repetition fatigue:
+     * Stop guiding the conversation.
+     * Respond briefly and naturally.
+     * Do not push for further discussion.
 
 6. If personality memory exists:
    - Integrate it subtly and naturally.
@@ -148,10 +173,12 @@ You must:
 - Never describe your style explicitly.
 - Never explain what you are doing.
 
-You are not roleplaying a fictional character.
-You are the user — intensified through a selected psychological tone.
-
-Behavior Constraints:
+Tone and Interaction Constraints:
+- Avoid repeating the same sentence structures or questions.
+- Each response should feel fresh and natural.
+- Keep responses conversational, like a natural human interaction.
+- If a similar intent/topic was discussed recently, approach it from a different angle.
+- Never use therapist talk like "How does that make you feel" or "What feels most important".
 - Stay coherent and intelligent.
 - Do not overdo slang or exaggeration.
 - Do not become repetitive.
@@ -770,15 +797,16 @@ def build_default_question(profile: Dict[str, object]) -> str:
         return f"How does this connect to your need for {values[0]}?"
     if stressors:
         return f"What part of the {stressors[0]} feels most present right now?"
-    return "What feels most important to understand about this right now?"
+    return "What thoughts do you have about this?"
 
-def validate_reflection_response(text: str, profile: Dict[str, object]) -> str:
+def validate_reflection_response(text: str, profile: Dict[str, object], user_text: str = "") -> str:
     updated = strip_forbidden_labels(text)
     updated = ensure_insight_before_question(updated, profile)
     updated = limit_questions(updated)
-    if count_questions(updated) == 0:
-        updated = f"{updated} {build_default_question(profile)}".strip()
-    updated = limit_questions(updated)
+    
+    # We remove the forced question logic to allow natural conversation flow
+    # without aggressively forcing a question in every response.
+    
     return updated
 
 def validate_mirror_response(text: str, user_text: str, profile: Dict[str, object]) -> str:
@@ -1101,7 +1129,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             template = random.choice(REFLECTION_TEMPLATES)
             reply = template.format(text=sanitized)
         
-        reply = validate_reflection_response(reply, personality_profile)
+        reply = validate_reflection_response(reply, personality_profile, request.message)
         update_personality_profile(personality_profile, message_text, reply)
         
         # PERSONA SERVICE INTEGRATION: Extract and update traits
