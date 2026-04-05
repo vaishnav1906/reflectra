@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { 
-  Activity, 
   Database, 
   RefreshCw, 
   Gauge, 
@@ -40,31 +39,48 @@ export function ModelStatePanel() {
   const [loading, setLoading] = useState(true);
   
   useEffect(() => {
+    let isMounted = true;
+
     const fetchSystemState = async () => {
       const userId = localStorage.getItem("user_id");
       if (!userId) {
-        console.error("❌ No user_id found in localStorage");
-        setLoading(false);
+        if (isMounted) {
+          setSystemState(null);
+          setLoading(false);
+        }
         return;
       }
       
       try {
-        const response = await fetch(`${API_BASE}/system-state?user_id=${userId}`);
+        const response = await fetch(`${API_BASE}/user/system-state?user_id=${userId}`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         
         const data: SystemState = await response.json();
-        setSystemState(data);
-        console.log("✅ System state loaded:", data);
+        if (isMounted) {
+          setSystemState(data);
+        }
       } catch (error) {
         console.error("❌ Failed to fetch system state:", error);
+        if (isMounted) {
+          setSystemState(null);
+        }
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
-    
+
     fetchSystemState();
+
+    const intervalId = window.setInterval(fetchSystemState, 30_000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
   
   const lastInferenceDisplay = loading ? "..." : formatTimeAgo(systemState?.last_inference || null);
