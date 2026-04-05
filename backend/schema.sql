@@ -85,6 +85,20 @@ create table if not exists reflection_logs (
 create index if not exists idx_reflection_logs_user_created on reflection_logs(user_id, created_at desc);
 create index if not exists idx_reflection_logs_conversation_id on reflection_logs(conversation_id);
 
+create table if not exists mirror_logs (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references users(id) on delete cascade,
+    conversation_id uuid references conversations(id) on delete set null,
+    message_id uuid references messages(id) on delete set null,
+    inference_duration_ms integer not null,
+    realism_score numeric(4,3) not null,
+    retries_used integer not null default 0,
+    fallback_triggered boolean not null default false,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_mirror_logs_user_created on mirror_logs(user_id, created_at desc);
+
 -- Supabase RLS policies (optional). Enable if using auth.uid().
 -- alter table users enable row level security;
 -- alter table conversations enable row level security;

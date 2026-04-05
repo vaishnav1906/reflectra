@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    Numeric,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -140,6 +141,13 @@ class PersonaSnapshot(Base):
     persona_vector = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     stability_index = Column(Float)
     summary_text = Column(Text)
+    
+    # Probabilistic behavioral traits (e.g., verbosity: {short: 0.7, medium: 0.3})
+    behavioral_traits = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    
+    # Anchor point for baseline historical comparison
+    is_historical_anchor = Column(Boolean, nullable=False, server_default=text("false"))
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -157,3 +165,17 @@ class ScheduleContext(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="schedule_context")
+
+
+class MirrorLog(Base):
+    __tablename__ = "mirror_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
+    inference_duration_ms = Column(Integer, nullable=False)
+    realism_score = Column(Numeric(4, 3), nullable=False)
+    retries_used = Column(Integer, nullable=False, server_default=text("0"))
+    fallback_triggered = Column(Boolean, nullable=False, server_default=text("false"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

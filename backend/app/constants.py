@@ -1,5 +1,8 @@
 """Constants for personality modeling."""
 
+# Feature Flags
+ENABLE_MIRROR_MODE = True
+
 # Trait taxonomy for gradual behavioral trait shifting
 # These 4 core traits map to observable behavioral patterns
 TRAIT_LIST = [

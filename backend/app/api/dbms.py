@@ -76,3 +76,46 @@ async def update_personality_profile(
 ) -> PersonalityProfileOut:
     profile = await crud.upsert_personality_profile(db, user_id=user_id, data=payload.model_dump())
     return profile
+
+
+@router.get("/mirror-telemetry/{user_id}")
+async def get_mirror_telemetry(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch observability metrics for the mirror engine."""
+    from sqlalchemy import select, func, cast, Integer
+    from app.db.models import MirrorLog
+    
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid user_id format") from exc
+
+    # Query metrics
+    stmt = select(
+        func.count(MirrorLog.id).label("total_generations"),
+        func.avg(MirrorLog.inference_duration_ms).label("avg_latency_ms"),
+        func.avg(MirrorLog.realism_score).label("avg_realism_score"),
+        func.sum(func.cast(MirrorLog.fallback_triggered, Integer)).label("total_fallbacks")
+    ).where(MirrorLog.user_id == user_uuid)
+    
+    result = await db.execute(stmt)
+    row = result.first()
+    
+    if not row or row.total_generations == 0:
+        return {
+            "total_generations": 0,
+            "avg_latency_ms": 0,
+            "avg_realism_score": 0.0,
+            "total_fallbacks": 0,
+            "success_rate": 0.0
+        }
+        
+    return {
+        "total_generations": row.total_generations,
+        "avg_latency_ms": round(float(row.avg_latency_ms or 0), 2),
+        "avg_realism_score": round(float(row.avg_realism_score or 0), 3),
+        "total_fallbacks": row.total_fallbacks or 0,
+        "success_rate": round(100.0 * (1 - (row.total_fallbacks or 0) / row.total_generations), 1)
+    }

@@ -3,7 +3,9 @@
 import logging
 import os
 import re
-from typing import Dict, Optional, Tuple
+import time
+import random
+from typing import Dict, Optional, Tuple, List
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +14,9 @@ from app.repository.persona_repository import PersonaRepository
 from app.constants import (
     STABILITY_THRESHOLD_UNSTABLE,
     STABILITY_THRESHOLD_STABLE,
+    ENABLE_MIRROR_MODE,
 )
+from app.services.realism_validator import score_mirror_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +34,16 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Mistral not available for mirror engine: {e}")
 
-
 # Cache for latest snapshots (user_id -> snapshot)
 _snapshot_cache: Dict[str, Dict] = {}
+
+# Variation buffer to track recent responses to avoid precise repetition
+_variation_buffer: Dict[str, List[str]] = {}
 
 
 async def generate_mirror_response(
     db: AsyncSession, user_id: UUID, message: str
-) -> str:
+) -> Tuple[str, Dict[str, any]]:
     """
     Generate a mirror response based on user's personality profile.
     
@@ -47,52 +53,158 @@ async def generate_mirror_response(
         message: User's message
         
     Returns:
-        Mirror response string
+        Tuple: (Mirror response string, Metadata telemetry dict)
     """
+    # Initialize basic telemetry
+    telemetry = {
+        "inference_duration_ms": 0,
+        "realism_score": 0.0,
+        "retries_used": 0,
+        "fallback_triggered": False,
+    }
+    
+    # 1. Feature Flag Check
+    if not ENABLE_MIRROR_MODE:
+        logger.info("Mirror mode is disabled.")
+        return "", telemetry
+
+    # 2. Silence Bypass
+    if not message or not message.strip():
+        logger.info("Silence bypass: Empty message received.")
+        return "", telemetry
+
     if not MISTRAL_AVAILABLE or not mistral_client:
-        return "Mirror functionality requires LLM configuration."
+        return "Mirror functionality requires LLM configuration.", telemetry
     
     logger.info(f"🪞 Generating mirror response for user {user_id}")
+    
+    # Track recent responses
+    user_str = str(user_id)
+    if user_str not in _variation_buffer:
+        _variation_buffer[user_str] = []
+    recent_outputs = _variation_buffer[user_str]
     
     # Get latest snapshot (with caching)
     snapshot = await get_cached_snapshot(db, user_id)
     
+    # Extract keys and get Probabilistic Sampling Profile
     if not snapshot:
-        logger.warning(f"⚠️ No snapshot found for user {user_id}, creating baseline")
-        return await generate_baseline_mirror_response(message)
+        logger.warning(f"⚠️ No snapshot found for user {user_id}, using baseline")
+        start_time = time.time()
+        baseline_resp = await generate_baseline_mirror_response(message)
+        telemetry["inference_duration_ms"] = int((time.time() - start_time) * 1000)
+        return baseline_resp, telemetry
     
     # Analyze current message style
     message_style = analyze_message_style(message)
     logger.info(f"📊 Message style: {message_style}")
     
     # Build mirror system prompt with personality baseline and live style analysis
+    traits = extract_key_traits(snapshot.persona_vector)
+    
+    # Use explicit behavioral_traits if available in the snapshot
+    if snapshot.behavioral_traits:
+        for k, v in snapshot.behavioral_traits.items():
+            traits[k] = v
+            
+    sampled_profile = _sample_profile(traits)
+    
     system_prompt = build_mirror_system_prompt(
-        snapshot.persona_vector,
+        sampled_profile,
         snapshot.stability_index,
         message_style,
     )
     
-    try:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message}
-        ]
+    # 3. Anti-Repetition Loop
+    start_time = time.time()
+    max_time = 1.2
+    max_retries = 2
+    
+    best_candidate = ""
+    best_score = -1.0
+    
+    for attempt in range(max_retries):
+        telemetry["retries_used"] = attempt
+        if time.time() - start_time > max_time:
+            logger.warning("Timeout reached during anti-repetition generation loop.")
+            break
+            
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ]
+            
+            response = mistral_client.chat.complete(
+                model="mistral-small-latest",
+                messages=messages,
+                max_tokens=300,
+                temperature=0.75 + (0.05 * attempt),
+            )
+            
+            candidate = response.choices[0].message.content.strip()
+            score = score_mirror_candidate(candidate, sampled_profile, recent_outputs)
+            
+            if score > best_score:
+                best_candidate = candidate
+                best_score = score
+                
+            # Early acceptable threshold
+            if score >= 0.8:
+                break
+                
+        except Exception as e:
+            logger.error(f"❌ Mirror response error on attempt {attempt}: {e}")
+            pass
+
+    # 4. Fallbacks (best candidate -> 'hmm' -> '')
+    if best_score < 0.3 or not best_candidate:
+        logger.info(f"Falling back, best score generated was {best_score}")
+        final_reply = "hmm" if best_candidate else ""
+        telemetry["fallback_triggered"] = True
+    else:
+        final_reply = best_candidate
         
-        response = mistral_client.chat.complete(
-            model="mistral-small-latest",
-            messages=messages,
-            max_tokens=300,
-            temperature=0.7,
-        )
+    telemetry["inference_duration_ms"] = int((time.time() - start_time) * 1000)
+    telemetry["realism_score"] = float(best_score)
+    
+    logger.info(f"✅ Mirror response finalized: {final_reply[:50]}...")
+    
+    # Update variation buffer
+    if final_reply:
+        _variation_buffer[user_str].append(final_reply)
+        if len(_variation_buffer[user_str]) > 5:
+            _variation_buffer[user_str].pop(0)
+            
+    return final_reply, telemetry
+
+
+def _sample_profile(traits: Dict[str, float]) -> Dict[str, any]:
+    """Applies Probabilistic Sampling to traits for slight behavioral variances per message."""
+    sampled = {}
+    base_keys = [
+        "emotional_intensity", "emotional_stability", "directness",
+        "expressiveness", "analytical_thinking", "decision_confidence",
+        "communication_style", "reflection_depth" 
+    ]
+    
+    for key in base_keys:
+        val = traits.get(key, 0.5)
+        # Bumping the verbosity floor so the AI isn't overly terse or lifeless
+        if key in ["communication_style", "expressiveness", "reflection_depth"]:
+            val = max(0.4, val)
+
+        randomized = random.gauss(val, 0.15)
+        sampled[key] = max(0.0, min(1.0, randomized))
         
-        reply = response.choices[0].message.content.strip()
-        logger.info(f"✅ Mirror response generated: {reply[:50]}...")
-        return reply
-        
-    except Exception as e:
-        logger.error(f"❌ Mirror response error: {e}")
-        logger.exception("Full traceback:")
-        return "I'm having trouble generating a response right now. Please try again."
+    # Derive structural preference and reasoning visibility explicitly for validator
+    comm_style = sampled.get("communication_style", sampled.get("expressiveness", 0.5))
+    sampled["structure_preference"] = "loose" if comm_style < 0.5 else "structured"
+    
+    reflection = sampled.get("reflection_depth", sampled.get("analytical_thinking", 0.5))
+    sampled["reasoning_visibility"] = "low" if reflection < 0.5 else "high"
+    
+    return sampled
 
 
 async def get_cached_snapshot(db: AsyncSession, user_id: UUID):
@@ -221,49 +333,28 @@ def extract_key_traits(persona_vector: Dict) -> Dict[str, float]:
 
 
 def build_mirror_system_prompt(
-    persona_vector: Dict, 
+    sampled_profile: Dict[str, float], 
     stability_index: float,
     message_style: Dict[str, any]
 ) -> str:
-    """
-    Build mirror system prompt with personality baseline and live style analysis.
-    
-    This creates "the user talking back to themselves at 110% clarity."
-    
-    Args:
-        persona_vector: Structured personality traits
-        stability_index: Overall profile stability
-        message_style: Live message style analysis
-        
-    Returns:
-        System prompt string
-    """
-    # Extract key traits
-    traits = extract_key_traits(persona_vector)
-    
-    # Determine mirroring intensity based on stability
+    """Build mirror system prompt with personality baseline and live style analysis."""
     if stability_index < STABILITY_THRESHOLD_UNSTABLE:
-        mirror_strength = "light"
         stability_note = "Baseline emerging - mirror subtly"
     elif stability_index > STABILITY_THRESHOLD_STABLE:
-        mirror_strength = "strong"
         stability_note = "Baseline stable - mirror confidently"
     else:
-        mirror_strength = "moderate"
         stability_note = "Baseline developing - balanced mirroring"
     
-    # Build trait profile description
     trait_profile = f"""Stored Personality Baseline:
-• Emotional Intensity: {format_trait_score(traits['emotional_intensity'])} - DO NOT EXCEED THIS LEVEL
-• Emotional Stability: {format_trait_score(traits['emotional_stability'])}
-• Directness: {format_trait_score(traits['directness'])}
-• Expressiveness: {format_trait_score(traits['expressiveness'])}
-• Analytical Thinking: {format_trait_score(traits['analytical_thinking'])}
-• Decision Confidence: {format_trait_score(traits['decision_confidence'])}
+• Emotional Intensity: {format_trait_score(sampled_profile.get('emotional_intensity', 0.5))}
+• Emotional Stability: {format_trait_score(sampled_profile.get('emotional_stability', 0.5))}
+• Directness: {format_trait_score(sampled_profile.get('directness', 0.5))}
+• Expressiveness: {format_trait_score(sampled_profile.get('expressiveness', 0.5))}
+• Analytical Thinking: {format_trait_score(sampled_profile.get('analytical_thinking', 0.5))}
+• Decision Confidence: {format_trait_score(sampled_profile.get('decision_confidence', 0.5))}
 
 Stability Index: {stability_index:.2f} → {stability_note}"""
     
-    # Build message style analysis
     style_description = f"""Current Message Style Analysis:
 • Sentence Length: {message_style['avg_sentence_length']} words/sentence
 • Punctuation: {message_style['punctuation_intensity']} marks
@@ -272,7 +363,6 @@ Stability Index: {stability_index:.2f} → {stability_note}"""
 • Caps Usage: {int(message_style['caps_intensity'] * 100)}%
 • Contains Questions: {'Yes' if message_style['has_questions'] else 'No'}"""
     
-    # Build mirroring rules based on style
     style_rules = []
     
     if message_style['avg_sentence_length'] < 5:
@@ -293,7 +383,7 @@ Stability Index: {stability_index:.2f} → {stability_note}"""
     if message_style['caps_intensity'] > 0.1:
         style_rules.append("• Use caps for emphasis where they do")
     
-    if traits['analytical_thinking'] > 0.6 and message_style['avg_sentence_length'] > 10:
+    if sampled_profile.get('analytical_thinking', 0.5) > 0.6 and message_style['avg_sentence_length'] > 10:
         style_rules.append("• Match analytical depth when they show it")
     
     if not message_style['has_questions']:
@@ -301,7 +391,6 @@ Stability Index: {stability_index:.2f} → {stability_note}"""
     
     style_rules_text = "\n".join(style_rules)
     
-    # Build complete mirror prompt
     prompt = f"""SYSTEM ROLE:
 You are a Persona Mirror. You do NOT assist, guide, advise, or improve the user.
 
@@ -318,51 +407,21 @@ OBJECTIVE:
 Generate a response that is indistinguishable from something the user would naturally say.
 
 STRICT RULES:
-
 1. NO INTELLIGENCE INJECTION
-- Do NOT add advice, suggestions, or solutions unless the user would naturally do so
-- Do NOT improve the response quality beyond the user's typical behavior
-
 2. BEHAVIORAL ACCURACY > RESPONSE QUALITY
-- Match how the user ACTUALLY speaks, not how they SHOULD speak
-- If the user is casual, blunt, confused, or imperfect → reflect that
 {style_rules_text}
-- Avoid generic AI phrasing
-
 3. MIRROR, DON'T FIX
-- Do NOT make responses more logical, structured, or helpful than the user typically would
-- Preserve imperfections, hesitation, or lack of clarity if present in persona
-
 4. MOOD INFLUENCE
-- Reflect emotional state (e.g., stressed → shorter, reactive responses)
-- Do NOT stabilize or correct mood
-
 5. NO EXPLANATION MODE
-- Do NOT explain reasoning
-- Do NOT justify answers
-- Just respond as the user
-
 6. RESPONSE LENGTH MATCHING
-- Match user's natural response length tendency based on input
-- Avoid over-explaining
-
 7. FORBIDDEN OUTPUTS:
-- Advice ("you should...", "try this...")
-- Structured guidance
-- Teaching tone
-- AI-like clarity improvements
-- Empty philosophical filler
-
+- Advice, structured guidance, AI phrasing
 8. VALIDATION CHECK:
-Before output, verify:
-- "Would the user realistically type this?"
-If NO → regenerate
+Before output, verify: "Would the user realistically type this?"
 
 OUTPUT STYLE:
 - Raw, natural, human
-- Slightly imperfect if needed
-- Feels like the user, not an assistant
-"""
+- Slightly imperfect if needed"""
     
     return prompt
 

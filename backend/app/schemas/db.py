@@ -92,3 +92,26 @@ class ConversationListItem(BaseModel):
 class ConversationListOut(BaseModel):
     """List of conversations"""
     conversations: List[ConversationListItem]
+
+
+class PersonaSnapshotCreate(BaseModel):
+    user_id: str
+    persona_vector: Dict[str, Any] = Field(default_factory=dict)
+    stability_index: Optional[float] = None
+    summary_text: Optional[str] = None
+    behavioral_traits: Dict[str, Any] = Field(default_factory=dict)
+    is_historical_anchor: bool = False
+
+
+class PersonaSnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    user_id: UUID
+    persona_vector: Dict[str, Any]
+    stability_index: Optional[float] = None
+    summary_text: Optional[str] = None
+    behavioral_traits: Dict[str, Any]
+    is_historical_anchor: bool
+    created_at: datetime
+

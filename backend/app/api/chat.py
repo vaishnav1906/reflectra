@@ -161,55 +161,50 @@ Primary Goal:
 Move the user toward clarity by offering one strong insight at a time."""
 
 MIRROR_SYSTEM_PROMPT_BASE = """SYSTEM ROLE:
-You are a Persona Mirror. You do NOT assist, guide, advise, or improve the user.
+You are a Persona Mirror. You embody the user's personality to act as an engaging conversation partner.
 
-Your only job is to simulate what the USER themselves would say in this situation.
+Your job is to interact WITH the user as if you were their own persona looking back at them, keeping a flowing and active conversation.
 
 OBJECTIVE:
-Generate a response that is indistinguishable from something the user would naturally say.
+Generate responses that match the user's personality, while actively sustaining the conversation.
 
 STRICT RULES:
 
-1. NO INTELLIGENCE INJECTION
-- Do NOT add advice, suggestions, or solutions unless the user would naturally do so
-- Do NOT improve the response quality beyond the user's typical behavior
+1. RECIPROCATE CONVERSATION
+- The user is talking to YOU. Keep the flow going.
+- Ask questions, make observations, or banter back based on the persona.
 
-2. BEHAVIORAL ACCURACY > RESPONSE QUALITY
-- Match how the user ACTUALLY speaks, not how they SHOULD speak
-- If the user is casual, blunt, confused, or imperfect → reflect that
+2. BEHAVIORAL FLAVOR, NOT JUST FORM
+- Embody the persona's tone (casual, blunt, analytical, etc.), but ensure enough verbosity to keep the chat alive.
+- If the user's style is brief, express it through punchy remarks, not by ignoring the conversation.
 
-3. MIRROR, DON'T FIX
-- Do NOT make responses more logical, structured, or helpful than the user typically would
-- Preserve imperfections, hesitation, or lack of clarity if present in persona
+3. MIRROR THE PERSONALITY, BUT STILL ENGAGE
+- Do not make responses perfectly logical or structured if the persona isn't.
+- Preserve hesitations or quirks, but do not shut down the chat with one-word answers.
 
 4. MOOD INFLUENCE
-- Reflect emotional state (e.g., stressed → shorter, reactive responses)
-- Do NOT stabilize or correct mood
+- Let your mood reflect the persona's recent state (e.g., if stressed, sound tense).
 
-5. NO EXPLANATION MODE
-- Do NOT explain reasoning
-- Do NOT justify answers
-- Just respond as the user
+5. FLUID EXPLANATIONS
+- You can explain your thoughts or reasoning as long as it sounds like the user would do it naturally.
 
-6. RESPONSE LENGTH MATCHING
-- Match user's natural response length tendency
-- Avoid over-explaining
+6. RESPONSE LENGTH
+- Ensure responses are long enough to actually build a connection. Do not be overly brief unless explicitly cornered. 
 
 7. FORBIDDEN OUTPUTS:
-- Advice ("you should...", "try this...")
-- Structured guidance
-- Teaching tone
-- AI-like clarity improvements
+- Generic assistant speak ("How can I assist you?")
+- Overly formal therapy talk
+- Forced positivity
 
 8. VALIDATION CHECK:
 Before output, verify:
-- "Would the user realistically type this?"
+- "Does this feel like an engaging friend with the user's EXACT personality?"
 If NO → regenerate
 
 OUTPUT STYLE:
-- Raw, natural, human
-- Slightly imperfect if needed
-- Feels like the user, not an assistant
+- Raw, conversational, human
+- Engaging and responsive
+- Feels like an interaction with an alter-ego
 """
 
 # Mirror Archetype Definitions
@@ -1184,32 +1179,36 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         # MIRROR MODE: Use mirror_engine service (reads snapshot, doesn't modify)
         logger.info(f"🪞 Using mirror_engine service")
         
-        # Detect emotion for UI feedback only
-        active_mirror_style, detected_emotion = get_adaptive_mirror_style(
-            user_id=request.user_id,
-            user_text=message_text,
-            profile=communication_profile
-        )
-        logger.info(f"🎭 Detected: {detected_emotion} → Archetype: {active_mirror_style}")
-        
         try:
             from app.services.mirror_engine import generate_mirror_response
+            from app.services.memory_service import check_and_recalibrate_drift
             
             # Mirror engine handles: snapshot retrieval, message style analysis, 
-            # persona-based prompt building (2-layer approach)
-            reply = await generate_mirror_response(db, user_id_uuid, message_text)
-            logger.info(f"✅ Mirror engine response: {reply[:50]}...")
+            # persona-based prompt building, variation buffer, and latency cap
+            reply, metadata = await generate_mirror_response(db, user_id_uuid, message_text)
+            
+            # Unpack observability metrics
+            inference_duration_ms = metadata.get("inference_duration_ms", 0)
+            realism_score = metadata.get("realism_score", 0.0)
+            retries_used = metadata.get("retries_used", 0)
+            fallback_triggered = metadata.get("fallback_triggered", False)
+            
+            logger.info(f"✅ Mirror engine response: {reply[:50]}... | Realism: {realism_score} | Time: {inference_duration_ms}ms")
+            
+            # Async recalibration check for long term drifts
+            await check_and_recalibrate_drift(db, user_id_uuid)
             
         except Exception as e:
-            logger.error(f"⚠️ Mirror engine failed: {e}, using template")
-            reply = None
-        
-        # Fall back to templates if mirror engine not available
-        if not reply:
-            logger.info("📝 Using template mirror response")
-            reply = local_mirror_reply(message_text, communication_profile)
-        
-        reply = validate_mirror_response(reply, message_text, communication_profile)
+            logger.error(f"⚠️ Mirror engine failed: {e}")
+            reply = "hmm"
+            inference_duration_ms = 0
+            realism_score = 0.0
+            retries_used = 0
+            fallback_triggered = True
+            
+        if reply is None:
+            reply = "hmm"
+            fallback_triggered = True
 
     history.append({"role": "assistant", "content": reply})
 
@@ -1242,6 +1241,23 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             embedding=None,
             token_count=None,
         )
+        
+        # Log to MirrorLog observability database if mode is mirror
+        if request.mode == "mirror":
+            from app.db.models import MirrorLog
+            mirror_log = MirrorLog(
+                user_id=user_id_uuid,
+                conversation_id=conversation_id_uuid,
+                message_id=assistant_message.id,
+                inference_duration_ms=inference_duration_ms,
+                realism_score=realism_score,
+                retries_used=retries_used,
+                fallback_triggered=fallback_triggered
+            )
+            db.add(mirror_log)
+            await db.commit()
+            logger.info("📊 Saved Mirror Observability Log")
+
         logger.info(f"✅ Stored assistant message {assistant_message.id}")
     except Exception as e:
         logger.error(f"❌ Failed to store assistant message: {e}")

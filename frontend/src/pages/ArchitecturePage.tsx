@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
+import { MirrorTelemetryDashboard } from "@/components/insights/MirrorTelemetryDashboard";
 import { useState } from "react";
 
 interface PipelineBlock {
@@ -148,6 +149,8 @@ export function ArchitecturePage() {
                 </div>
               </div>
             </div>
+            
+            <MirrorTelemetryDashboard />
 
             {/* Pipeline Visualization */}
             <div className="relative">

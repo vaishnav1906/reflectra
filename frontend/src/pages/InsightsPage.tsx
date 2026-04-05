@@ -1,6 +1,7 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { TrendingUp, TrendingDown, Minus, Calendar, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MirrorTelemetryDashboard } from "@/components/insights/MirrorTelemetryDashboard";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { ExplainabilityDialog } from "@/components/ui/ExplainabilityDialog";
 import { PipelineIndicator } from "@/components/insights/PipelineIndicator";
@@ -91,6 +92,8 @@ export function InsightsPage() {
                 </div>
               </div>
             </div>
+            
+            <MirrorTelemetryDashboard />
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {weeklyStats.map((stat) => (

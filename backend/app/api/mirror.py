@@ -47,7 +47,8 @@ async def mirror_chat(
     logger.info(f"🪞 Mirror chat request for user {user_id}")
     
     # Generate mirror response
-    response_text = await generate_mirror_response(db, user_id, request.message)
+    response_tuple = await generate_mirror_response(db, user_id, request.message)
+    response_text = response_tuple[0]
     
     # Check if we have a snapshot to determine if mirroring is active
     from app.repository.persona_repository import PersonaRepository
