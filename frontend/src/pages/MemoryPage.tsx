@@ -1,6 +1,8 @@
+import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { PatternHighlight } from "@/components/timeline/PatternHighlight";
 import { Search, Calendar, Info } from "lucide-react";
+import { useTimelineEvents, type TimelineEvent, type TimelineRange } from "@/hooks/useAnalytics";
 import {
   Tooltip,
   TooltipContent,
@@ -8,49 +10,47 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const patternHighlights = [
-  {
-    period: "This week",
-    observation: "More hesitation than usual in decision-related topics",
-    trend: "up" as const,
-    context: "Coincides with upcoming project deadline",
-  },
-  {
-    period: "This week",
-    observation: "Shorter reflection entries on high-class days",
-    trend: "down" as const,
-    context: "4+ classes correlated with briefer responses",
-  },
-  {
-    period: "Last week",
-    observation: "Higher emotional expressiveness during evening sessions",
-    trend: "up" as const,
-  },
-  {
-    period: "Last week",
-    observation: "Deeper reflection depth when discussing career topics",
-    trend: "up" as const,
-    context: "Topic persisted across 3 sessions",
-  },
-  {
-    period: "2 weeks ago",
-    observation: "Communication style shifted toward more concise expressions",
-    trend: "stable" as const,
-  },
-  {
-    period: "2 weeks ago",
-    observation: "Lower engagement during exam preparation period",
-    trend: "down" as const,
-    context: "Returned to baseline after exams ended",
-  },
-  {
-    period: "3 weeks ago",
-    observation: "Increased introspection following weekend break",
-    trend: "up" as const,
-  },
-];
+function includesSearch(event: TimelineEvent, query: string) {
+  if (!query.trim()) {
+    return true;
+  }
+
+  const normalized = query.trim().toLowerCase();
+  const haystack = [
+    event.observation,
+    event.context || "",
+    event.source,
+    ...event.tags,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(normalized);
+}
 
 export function MemoryPage() {
+  const [userId, setUserId] = useState<string>("anonymous");
+  const [timeRange, setTimeRange] = useState<TimelineRange>("7d");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+
+  useEffect(() => {
+    const id = localStorage.getItem("user_id");
+    if (id) {
+      setUserId(id);
+    }
+  }, []);
+
+  const { data, isLoading, isError } = useTimelineEvents(userId, timeRange);
+
+  const filteredEvents = useMemo(() => {
+    const events = data?.events || [];
+    return events.filter((event) => includesSearch(event, searchQuery));
+  }, [data?.events, searchQuery]);
+
+  const overviewText =
+    data?.overview ||
+    "Patterns are generated from conversation context and persona traits as activity accumulates.";
+
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
@@ -68,7 +68,7 @@ export function MemoryPage() {
                   </TooltipTrigger>
                   <TooltipContent side="right" className="max-w-xs bg-card border border-border">
                     <p className="text-xs text-muted-foreground">
-                      Pattern highlights from your recent interactions. Not analytics—just observations.
+                      Pattern highlights generated from conversations, persona traits, and context signals.
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -84,12 +84,24 @@ export function MemoryPage() {
               <input
                 type="text"
                 placeholder="Search patterns..."
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
                 className="bg-card border border-border rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:border-primary/50 w-56"
               />
             </div>
-            <button className="p-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors">
+            <div className="relative p-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors">
               <Calendar className="w-4 h-4 text-muted-foreground" />
-            </button>
+              <select
+                aria-label="Timeline range"
+                value={timeRange}
+                onChange={(event) => setTimeRange(event.target.value as TimelineRange)}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+              >
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+              </select>
+            </div>
           </div>
         </div>
       </header>
@@ -101,17 +113,42 @@ export function MemoryPage() {
             <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-xl p-5 mb-8">
               <h2 className="font-medium text-foreground mb-2">Recent Overview</h2>
               <p className="text-sm text-muted-foreground">
-                Over the past few weeks, your communication has shown some variation tied to workload. 
-                Hesitation increases near deadlines, while reflection depth tends to be higher during calmer periods.
+                {overviewText}
               </p>
             </div>
 
             {/* Pattern Highlights */}
-            <div className="space-y-4">
-              {patternHighlights.map((highlight, index) => (
-                <PatternHighlight key={index} {...highlight} />
-              ))}
-            </div>
+            {userId === "anonymous" ? (
+              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
+                Please log in to generate your timeline automatically.
+              </div>
+            ) : isLoading ? (
+              <div className="space-y-4">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <div key={index} className="h-24 rounded-xl border border-border bg-card animate-pulse" />
+                ))}
+              </div>
+            ) : isError ? (
+              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
+                Unable to load timeline right now. Try refreshing in a moment.
+              </div>
+            ) : filteredEvents.length > 0 ? (
+              <div className="space-y-4">
+                {filteredEvents.map((event) => (
+                  <PatternHighlight
+                    key={event.id}
+                    period={event.period}
+                    observation={event.observation}
+                    trend={event.trend}
+                    context={event.context}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
+                No timeline entries match your current filter.
+              </div>
+            )}
 
             {/* Footer note */}
             <div className="mt-8 text-center">
