@@ -756,6 +756,159 @@ def update_communication_profile(profile: Dict[str, object], user_text: str) -> 
     profile["sample_count"] = sample_count + 1
     profile["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
+
+def derive_fallback_traits(user_text: str) -> List[Dict[str, float]]:
+    """
+    Deterministic fallback trait extraction used when LLM extraction is unavailable
+    or returns no nudges. Keeps signal strengths conservative.
+    """
+    words = extract_words(user_text)
+    lower_text = user_text.lower()
+    word_count = len(words)
+
+    fallback_traits: List[Dict[str, float]] = []
+
+    # communication_style: short vs elaborated message length
+    comm_signal = max(0.0, min(1.0, (word_count - 4) / 24.0))
+    comm_strength = min(0.16, 0.07 + (min(word_count, 40) / 500.0))
+    fallback_traits.append(
+        {
+            "name": "communication_style",
+            "signal": comm_signal,
+            "strength": comm_strength,
+        }
+    )
+
+    # emotional_expressiveness: feeling words + punctuation emphasis
+    emotional_keywords = {
+        "feel",
+        "felt",
+        "sad",
+        "happy",
+        "anxious",
+        "worried",
+        "stressed",
+        "overwhelmed",
+        "excited",
+        "frustrated",
+        "angry",
+    }
+    emotion_hits = sum(1 for word in words if word in emotional_keywords)
+    exclamations = user_text.count("!")
+    express_signal = max(0.0, min(1.0, 0.25 + (emotion_hits * 0.15) + (exclamations * 0.08)))
+    if emotion_hits > 0 or exclamations > 0:
+        fallback_traits.append(
+            {
+                "name": "emotional_expressiveness",
+                "signal": express_signal,
+                "strength": min(0.18, 0.08 + (emotion_hits * 0.02) + (exclamations * 0.01)),
+            }
+        )
+
+    # decision_framing: hedging lowers score, decisive phrasing raises score
+    hedge_phrases = ["maybe", "perhaps", "i think", "kind of", "sort of", "not sure"]
+    decisive_words = {"definitely", "certain", "will", "must", "clear", "decided"}
+    hedge_hits = sum(1 for phrase in hedge_phrases if phrase in lower_text)
+    decisive_hits = sum(1 for word in words if word in decisive_words)
+    decision_signal = max(0.0, min(1.0, 0.5 + (decisive_hits * 0.12) - (hedge_hits * 0.14)))
+    if hedge_hits > 0 or decisive_hits > 0:
+        fallback_traits.append(
+            {
+                "name": "decision_framing",
+                "signal": decision_signal,
+                "strength": min(0.17, 0.08 + ((hedge_hits + decisive_hits) * 0.02)),
+            }
+        )
+
+    # reflection_depth: introspective and causal language indicates deeper reflection
+    depth_markers = {
+        "why",
+        "because",
+        "realize",
+        "pattern",
+        "meaning",
+        "reflect",
+        "thinking",
+        "understand",
+    }
+    depth_hits = sum(1 for word in words if word in depth_markers)
+    depth_signal = max(0.0, min(1.0, 0.2 + (depth_hits * 0.14)))
+    if depth_hits > 0:
+        fallback_traits.append(
+            {
+                "name": "reflection_depth",
+                "signal": depth_signal,
+                "strength": min(0.18, 0.08 + (depth_hits * 0.02)),
+            }
+        )
+
+    # Return only meaningful signals to avoid noisy updates.
+    meaningful_traits = [
+        trait
+        for trait in fallback_traits
+        if abs(trait["signal"] - 0.5) >= 0.08 or trait["name"] == "communication_style"
+    ]
+
+    return meaningful_traits
+
+
+def build_behavioral_insight_payload(user_text: str, traits: List[Dict[str, float]]) -> Dict[str, object]:
+    """Build a deterministic BehavioralInsight payload from extracted traits."""
+    if not traits:
+        return {
+            "text": "Communication pattern observed in recent reflection message.",
+            "tags": ["behavioral-pattern"],
+            "confidence": 0.55,
+        }
+
+    def trait_priority(trait: Dict[str, float]) -> float:
+        return abs(float(trait["signal"]) - 0.5) * float(trait["strength"])
+
+    top_traits = sorted(traits, key=trait_priority, reverse=True)[:2]
+
+    phrase_map = {
+        "communication_style": ("more concise wording", "more elaborated wording"),
+        "emotional_expressiveness": ("a more emotionally reserved tone", "higher emotional expressiveness"),
+        "decision_framing": ("more hesitant framing", "more decisive framing"),
+        "reflection_depth": ("surface-level framing", "deeper reflective framing"),
+    }
+
+    observations: List[str] = []
+    tags = ["behavioral-pattern"]
+    strengths: List[float] = []
+    text_lower = user_text.lower()
+
+    for trait in top_traits:
+        trait_name = str(trait["name"])
+        signal = float(trait["signal"])
+        strength = float(trait["strength"])
+        low_phrase, high_phrase = phrase_map.get(
+            trait_name,
+            (f"lower {trait_name.replace('_', ' ')}", f"higher {trait_name.replace('_', ' ')}"),
+        )
+        observations.append(high_phrase if signal >= 0.5 else low_phrase)
+        tags.append(trait_name)
+        strengths.append(strength)
+
+    if any(token in text_lower for token in ["exam", "deadline", "project"]):
+        tags.append("workload-context")
+    if any(token in text_lower for token in ["stress", "overwhelmed", "anxious", "worried"]):
+        tags.append("stress-signal")
+
+    if len(observations) == 1:
+        insight_text = f"Recent reflection shows {observations[0]}."
+    else:
+        insight_text = f"Recent reflection shows {observations[0]} with {observations[1]}."
+
+    avg_strength = (sum(strengths) / len(strengths)) if strengths else 0.08
+    confidence = max(0.55, min(0.9, 0.5 + (avg_strength * 1.8)))
+
+    return {
+        "text": insight_text,
+        "tags": sorted(set(tags)),
+        "confidence": round(confidence, 3),
+    }
+
 def count_questions(text: str) -> int:
     return text.count("?")
 
@@ -1156,10 +1309,29 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             from app.services.persona_update_service import update_traits
             from app.services.snapshot_service import generate_persona_snapshot
             from app.services.mirror_engine import invalidate_snapshot_cache
+            from app.db.models import BehavioralInsight
             
             # Extract traits from user message
             extracted_traits = await extract_traits(message_text)
-            logger.info(f"🔍 Extracted {len(extracted_traits)} traits")
+            if not extracted_traits:
+                extracted_traits = derive_fallback_traits(message_text)
+                logger.info(f"🔁 Using fallback trait extraction: {len(extracted_traits)} traits")
+            else:
+                logger.info(f"🔍 Extracted {len(extracted_traits)} traits")
+
+            # Persist one deterministic behavioral insight for Reflections tab.
+            if extracted_traits:
+                insight_payload = build_behavioral_insight_payload(message_text, extracted_traits)
+                db.add(
+                    BehavioralInsight(
+                        user_id=user_id_uuid,
+                        conversation_id=conversation_id_uuid,
+                        insight_text=insight_payload["text"],
+                        tags=insight_payload["tags"],
+                        confidence=insight_payload["confidence"],
+                    )
+                )
+                await db.flush()
             
             # Update trait metrics in database
             await update_traits(db, user_id_uuid, extracted_traits)
