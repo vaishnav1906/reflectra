@@ -2,13 +2,16 @@ import React from "react";
 import { cn } from "@/lib/utils";
 
 interface TimeRangeToggleProps {
-  value: '7d' | '30d' | '90d';
-  onChange: (value: '7d' | '30d' | '90d') => void;
+  value: '1d' | '2d' | '3d' | '7d' | '30d' | '90d';
+  onChange: (value: '1d' | '2d' | '3d' | '7d' | '30d' | '90d') => void;
   className?: string;
 }
 
 export function TimeRangeToggle({ value, onChange, className }: TimeRangeToggleProps) {
   const options = [
+    { label: "1D", value: "1d" },
+    { label: "2D", value: "2d" },
+    { label: "3D", value: "3d" },
     { label: "7D", value: "7d" },
     { label: "30D", value: "30d" },
     { label: "90D", value: "90d" },

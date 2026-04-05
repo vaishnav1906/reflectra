@@ -14,7 +14,7 @@ import { formatDistanceToNow } from "date-fns";
 
 export function ReflectionsPage() {
   const [userId, setUserId] = useState<string>("anonymous");
-  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d');
+  const [timeRange, setTimeRange] = useState<'1d' | '2d' | '3d' | '7d' | '30d' | '90d'>('30d');
 
   useEffect(() => {
     const id = localStorage.getItem("user_id");
@@ -25,6 +25,9 @@ export function ReflectionsPage() {
 
   const getRangeLabel = (range: string) => {
     switch (range) {
+      case '1d': return "Past 24 hours";
+      case '2d': return "Past 48 hours";
+      case '3d': return "Past 3 days";
       case '7d': return "This week";
       case '30d': return "This month";
       case '90d': return "Past 3 months";
@@ -71,7 +74,7 @@ export function ReflectionsPage() {
                 <div className="flex-1">
                   <h2 className="font-medium text-foreground mb-2">About {getRangeLabel(timeRange)} Reflections</h2>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    These observations are based on patterns in your conversations over {timeRange === '7d' ? 'the past 7 days' : timeRange === '30d' ? 'the past 30 days' : 'the past 90 days'}. They describe how you've been 
+                    These observations are based on patterns in your conversations over {timeRange === '1d' ? 'the past 24 hours' : timeRange === '2d' ? 'the past 48 hours' : timeRange === '3d' ? 'the past 3 days' : timeRange === '7d' ? 'the past 7 days' : timeRange === '30d' ? 'the past 30 days' : 'the past 90 days'}. They describe how you've been 
                     communicating, not who you are. Patterns may shift over time as your context changes.
                   </p>
                 </div>

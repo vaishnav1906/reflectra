@@ -81,7 +81,7 @@ async def get_behavioral_metrics(
 @router.get("/reflections/{user_id}")
 async def get_user_reflections(
     user_id: UUID,
-    range: str = Query("30d", description="Timeframe range: 7d, 30d, 90d"),
+    range: str = Query("30d", description="Timeframe range: 1d, 2d, 3d, 7d, 30d, 90d"),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -89,7 +89,13 @@ async def get_user_reflections(
     """
     now = datetime.utcnow()
     
-    if range == "7d":
+    if range == "1d":
+        start_date = now - timedelta(days=1)
+    elif range == "2d":
+        start_date = now - timedelta(days=2)
+    elif range == "3d":
+        start_date = now - timedelta(days=3)
+    elif range == "7d":
         start_date = now - timedelta(days=7)
     elif range == "90d":
         start_date = now - timedelta(days=90)

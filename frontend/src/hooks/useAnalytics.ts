@@ -59,7 +59,7 @@ export function useActivityHeatmap(userId: string, days: number = 30) {
   });
 }
 
-export function useReflections(userId: string, range: '7d' | '30d' | '90d' = '30d') {
+export function useReflections(userId: string, range: '1d' | '2d' | '3d' | '7d' | '30d' | '90d' = '30d') {
   return useQuery({
     queryKey: ['analytics', 'reflections', userId, range],
     queryFn: async (): Promise<BehavioralInsight[]> => {

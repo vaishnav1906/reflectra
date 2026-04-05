@@ -12,6 +12,7 @@ import {
 import { FitnessRing } from "@/components/ui/FitnessRing";
 import { CapsuleBarChart } from "@/components/ui/CapsuleBarChart";
 import { useBehavioralMetrics } from "@/hooks/useAnalytics";
+import { TimetableSection } from "@/components/timetable/TimetableSection";
 
 const API_BASE = "/api";
 
@@ -318,6 +319,10 @@ export function PersonalityPage() {
               </TabsContent>
 
             </Tabs>
+
+            <div className="mt-8 mb-16">
+              <TimetableSection />
+            </div>
           </div>
         </div>
       </ScrollArea>
