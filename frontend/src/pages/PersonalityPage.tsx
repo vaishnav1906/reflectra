@@ -1,15 +1,17 @@
 import { useState, useEffect } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { PersonaTraitCard } from "@/components/persona/PersonaTraitCard";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PersonaMirrorInfo } from "@/components/persona/PersonaMirrorInfo";
-import { TimetableSection } from "@/components/timetable/TimetableSection";
-import { User, Info, Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { FitnessRing } from "@/components/ui/FitnessRing";
+import { CapsuleBarChart } from "@/components/ui/CapsuleBarChart";
+import { useBehavioralMetrics } from "@/hooks/useAnalytics";
 
 const API_BASE = "/api";
 
@@ -19,6 +21,7 @@ interface PersonaTrait {
   rightLabel: string;
   value: number;
   confidence: "high" | "medium" | "low";
+  color: string;
 }
 
 interface PersonaProfile {
@@ -34,100 +37,38 @@ function getConfidenceLevel(confidence: number): "high" | "medium" | "low" {
 }
 
 function mapTraitsToUI(profile: PersonaProfile | null): PersonaTrait[] {
-  // Default traits if no profile exists
   const defaultTraits: PersonaTrait[] = [
-    {
-      name: "Communication Style",
-      leftLabel: "Concise",
-      rightLabel: "Verbose",
-      value: 50,
-      confidence: "low",
-    },
-    {
-      name: "Emotional Expressiveness",
-      leftLabel: "Reserved",
-      rightLabel: "Expressive",
-      value: 50,
-      confidence: "low",
-    },
-    {
-      name: "Decision Framing",
-      leftLabel: "Hesitant",
-      rightLabel: "Decisive",
-      value: 50,
-      confidence: "low",
-    },
-    {
-      name: "Reflection Depth",
-      leftLabel: "Surface",
-      rightLabel: "Deep",
-      value: 50,
-      confidence: "low",
-    },
+    { name: "Communication Style", leftLabel: "Concise", rightLabel: "Verbose", value: 50, confidence: "low", color: "#FA114F" },
+    { name: "Emotional Expressiveness", leftLabel: "Reserved", rightLabel: "Expressive", value: 50, confidence: "low", color: "#00F0FF" },
+    { name: "Decision Framing", leftLabel: "Hesitant", rightLabel: "Decisive", value: 50, confidence: "low", color: "#A4FF00" },
+    { name: "Reflection Depth", leftLabel: "Surface", rightLabel: "Deep", value: 50, confidence: "low", color: "#FF00D6" },
   ];
 
-  if (!profile || !profile.traits) {
-    return defaultTraits;
-  }
+  if (!profile || !profile.traits) return defaultTraits;
 
   const { traits: behavioral_profile } = profile;
   const traits: PersonaTrait[] = [];
 
-  // Communication Style (0 = concise, 1 = verbose)
-  const communicationStyle = behavioral_profile.communication_style;
-  if (communicationStyle) {
-    traits.push({
-      name: "Communication Style",
-      leftLabel: "Concise",
-      rightLabel: "Verbose",
-      value: Math.round(communicationStyle.score * 100),
-      confidence: getConfidenceLevel(communicationStyle.confidence),
-    });
-  } else {
-    traits.push(defaultTraits[0]);
-  }
+  const addTrait = (key: string, name: string, leftLabel: string, rightLabel: string, color: string) => {
+    const data = behavioral_profile[key];
+    if (data) {
+      traits.push({
+        name,
+        leftLabel,
+        rightLabel,
+        value: Math.round(data.score * 100),
+        confidence: getConfidenceLevel(data.confidence),
+        color
+      });
+    } else {
+      traits.push(defaultTraits.find(t => t.name === name)!);
+    }
+  };
 
-  // Emotional Expressiveness (0 = reserved, 1 = expressive)
-  const emotionalExpressiveness = behavioral_profile.emotional_expressiveness;
-  if (emotionalExpressiveness) {
-    traits.push({
-      name: "Emotional Expressiveness",
-      leftLabel: "Reserved",
-      rightLabel: "Expressive",
-      value: Math.round(emotionalExpressiveness.score * 100),
-      confidence: getConfidenceLevel(emotionalExpressiveness.confidence),
-    });
-  } else {
-    traits.push(defaultTraits[1]);
-  }
-
-  // Decision Framing (0 = hesitant, 1 = decisive)
-  const decisionFraming = behavioral_profile.decision_framing;
-  if (decisionFraming) {
-    traits.push({
-      name: "Decision Framing",
-      leftLabel: "Hesitant",
-      rightLabel: "Decisive",
-      value: Math.round(decisionFraming.score * 100),
-      confidence: getConfidenceLevel(decisionFraming.confidence),
-    });
-  } else {
-    traits.push(defaultTraits[2]);
-  }
-
-  // Reflection Depth (0 = surface, 1 = deep)
-  const reflectionDepth = behavioral_profile.reflection_depth;
-  if (reflectionDepth) {
-    traits.push({
-      name: "Reflection Depth",
-      leftLabel: "Surface",
-      rightLabel: "Deep",
-      value: Math.round(reflectionDepth.score * 100),
-      confidence: getConfidenceLevel(reflectionDepth.confidence),
-    });
-  } else {
-    traits.push(defaultTraits[3]);
-  }
+  addTrait('communication_style', "Communication Style", "Concise", "Verbose", "#FA114F");
+  addTrait('emotional_expressiveness', "Emotional Expressiveness", "Reserved", "Expressive", "#00F0FF");
+  addTrait('decision_framing', "Decision Framing", "Hesitant", "Decisive", "#A4FF00");
+  addTrait('reflection_depth', "Reflection Depth", "Surface", "Deep", "#FF00D6");
 
   return traits;
 }
@@ -136,19 +77,28 @@ export function PersonalityPage() {
   const [profile, setProfile] = useState<PersonaProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [ringValues, setRingValues] = useState<Record<string, number>>({});
+  
+  const userId = localStorage.getItem("user_id") || "anonymous";
+  const { data: metricsData, isLoading: isLoadingMetrics } = useBehavioralMetrics(userId, "week");
 
   useEffect(() => {
     const fetchProfile = async () => {
       try {
         setLoading(true);
         setError(null);
-
-        const userId = localStorage.getItem("user_id");
-        if (!userId) {
+        
+        let targetId = userId;
+        // Try fallback if user_id is not set. 
+        if (targetId === "anonymous") {
+           targetId = localStorage.getItem("user_id") || "anonymous";
+        }
+        
+        if (targetId === "anonymous") {
           throw new Error("No user ID found. Please log in.");
         }
 
-        const response = await fetch(`${API_BASE}/persona/profile/${userId}`);
+        const response = await fetch(`${API_BASE}/persona/profile/${targetId}`);
         if (!response.ok) {
           if (response.status === 404) {
             throw new Error("Building personality model... Start reflecting to build your profile!");
@@ -167,12 +117,46 @@ export function PersonalityPage() {
     };
 
     fetchProfile();
-  }, []);
+  }, [userId]);
 
   const personaTraits = mapTraitsToUI(profile);
 
+  // Add a slight delay for the ring animation on mount
+  useEffect(() => {
+    if (!loading) {
+      const timer = setTimeout(() => {
+        const nextValues: Record<string, number> = {};
+        personaTraits.forEach(t => {
+          nextValues[t.name] = t.value <= 50 ? 100 - t.value : t.value;
+        });
+        setRingValues(nextValues);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, profile]);
+
+  // Timeline variables
+  const timelineData = metricsData?.timeline || [];
+  
+  // To handle timezone safely mapping days
+  const charData = timelineData.map(d => {
+    const date = new Date(d.timestamp);
+    const dayInitial = date.toLocaleDateString('en-US', { weekday: 'short' }).charAt(0);
+    return { name: dayInitial, count: d.message_count };
+  });
+  
+  // Pad out to 7 days if lacking data
+  const paddedCharData = [...charData];
+  while (paddedCharData.length < 7) {
+     paddedCharData.unshift({ name: "-", count: 0 });
+  }
+
+  const recent7 = paddedCharData.slice(-7);
+  const totalMessages = timelineData.reduce((sum, d) => sum + d.message_count, 0);
+  const weeklyAvg = totalMessages > 0 ? (totalMessages / timelineData.length).toFixed(1) : "0.0";
+
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-screen flex flex-col bg-background text-foreground">
       <header className="px-8 py-6 border-b border-border">
         <div className="flex items-center justify-between">
           <div>
@@ -181,21 +165,16 @@ export function PersonalityPage() {
               <TooltipProvider delayDuration={200}>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button className="p-1 rounded hover:bg-muted/50 transition-colors">
-                      <Info className="w-4 h-4 text-muted-foreground" />
+                    <button className="p-1 flex items-center justify-center rounded-full hover:bg-accent hover:text-accent-foreground transition-colors">
+                      <Info className="w-5 h-5 text-muted-foreground" />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="right" className="max-w-xs bg-card border border-border">
-                    <p className="text-xs text-muted-foreground">
-                      Observable communication patterns based on your interactions over time.
-                    </p>
+                  <TooltipContent side="right" className="max-w-xs bg-popover border border-border text-popover-foreground text-xs">
+                    <p>Observable communication patterns based on interactions over time.</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
             </div>
-            <p className="text-sm text-muted-foreground">
-              How you've been expressing yourself recently
-            </p>
           </div>
           <PersonaMirrorInfo />
         </div>
@@ -203,63 +182,142 @@ export function PersonalityPage() {
 
       <ScrollArea className="flex-1">
         <div className="p-8">
-          <div className="max-w-4xl mx-auto space-y-8">
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                <span className="ml-3 text-muted-foreground">Loading profile...</span>
-              </div>
-            ) : error ? (
-              <div className="bg-primary/5 border border-primary/20 rounded-xl p-6 text-center">
-                <p className="text-sm text-muted-foreground">{error}</p>
-              </div>
-            ) : (
-              <>
-                <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-2xl p-6">
-                  <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                      <User className="w-6 h-6 text-primary" />
+          <div className="max-w-4xl mx-auto">
+            
+            <Tabs defaultValue="traits" className="w-full">
+              <TabsList className="bg-muted/50 border border-border p-1 mb-10 inline-flex w-full md:w-auto h-auto rounded-full mt-2">
+                <TabsTrigger 
+                  value="traits" 
+                  className="px-8 py-3 rounded-full text-sm font-black uppercase tracking-widest text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm transition-all"
+                >
+                  Traits
+                </TabsTrigger>
+                <TabsTrigger 
+                  value="timeline" 
+                  className="px-8 py-3 rounded-full text-sm font-black uppercase tracking-widest text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm transition-all"
+                >
+                  Timeline
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="traits" className="space-y-8 outline-none animate-in fade-in slide-in-from-bottom-4 duration-700">
+                {loading ? (
+                  <div className="flex justify-center items-center h-64">
+                    <Loader2 className="w-12 h-12 text-primary animate-spin" />
+                  </div>
+                ) : error ? (
+                   <div className="text-center p-12 border border-border rounded-3xl bg-card">
+                    <p className="text-muted-foreground font-medium">{error}</p>
+                   </div>
+                ) : (
+                  <>
+                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {personaTraits.map((trait) => (
+                        <div key={trait.name} className="relative bg-card border border-border rounded-[2rem] p-10 flex flex-col items-center text-center group transition-colors overflow-hidden">
+                          
+                          {/* Faint background beam */}
+                          <div 
+                            className="absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity duration-700 pointer-events-none"
+                            style={{ backgroundImage: `radial-gradient(circle at center, ${trait.color} 0%, transparent 60%)` }}
+                          />
+
+                          <FitnessRing 
+                            value={ringValues[trait.name] || 0} 
+                            color={trait.color} 
+                            size={180} 
+                            strokeWidth={18} 
+                            className="mb-8" 
+                          >
+                             <div className="flex flex-col items-center">
+                                <span className="text-3xl font-black tabular-nums tracking-tighter" style={{ color: trait.color, filter: `drop-shadow(0 0 8px ${trait.color}66)` }}>
+                                  {ringValues[trait.name] || 0}%
+                                </span>
+                                <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">MATCH</span>
+                             </div>
+                          </FitnessRing>
+                          
+                          <h3 className="font-bold text-xl mb-1 text-foreground tracking-tight">{trait.name}</h3>
+                          <div className="flex items-center justify-between w-full mt-4 text-xs font-black uppercase tracking-widest">
+                             <span className={`transition-colors ${trait.value <= 50 ? 'text-foreground drop-shadow-md' : 'text-muted-foreground'}`} style={trait.value <= 50 ? { color: trait.color } : {}}>
+                                {trait.leftLabel}
+                             </span>
+                             <span className={`transition-colors ${trait.value > 50 ? 'text-foreground drop-shadow-md' : 'text-muted-foreground'}`} style={trait.value > 50 ? { color: trait.color } : {}}>
+                                {trait.rightLabel}
+                             </span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="flex-1">
-                      <h2 className="font-medium text-foreground mb-2">Your Communication Patterns</h2>
-                      <p className="text-sm text-muted-foreground leading-relaxed">
-                        {profile?.summary || 
-                          "Based on recent interactions, you tend toward thoughtful, moderately detailed responses."}
-                      </p>
+                    
+                    <div className="bg-card border border-border rounded-[2rem] p-8 flex items-center justify-between">
+                      <div className="max-w-2xl">
+                        <p className="text-xs uppercase font-black tracking-widest text-muted-foreground mb-3">Diagnostic Summary</p>
+                        <h2 className="text-xl font-medium leading-relaxed text-foreground">
+                          {profile?.summary || "Based on your recent interactions, you show balanced communication patterns."}
+                        </h2>
+                      </div>
+                      {profile && profile.stability !== undefined && (
+                        <div className="text-right pl-6 border-l border-border">
+                          <p className="text-5xl font-black tabular-nums tracking-tighter text-foreground">
+                            {Math.round(profile.stability * 100)}<span className="text-2xl text-muted-foreground">%</span>
+                          </p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mt-2">Stability</p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </TabsContent>
+
+              <TabsContent value="timeline" className="space-y-8 outline-none animate-in fade-in slide-in-from-bottom-4 duration-700">
+                 {isLoadingMetrics ? (
+                   <div className="flex justify-center items-center h-64">
+                    <Loader2 className="w-12 h-12 text-primary animate-spin" />
+                   </div>
+                ) : (
+                  <div className="bg-card border border-border rounded-[2.5rem] p-10 relative overflow-hidden">
+                    {/* Ring Tracker */}
+                    <div className="flex gap-4 mb-10 w-full justify-between sm:justify-start">
+                      {recent7.map((d, i) => (
+                        <div key={i} className="flex flex-col items-center gap-3">
+                           <FitnessRing
+                             value={Math.min(((d.count || 0.1) / Math.max(parseFloat(weeklyAvg), 1)) * 50, 100)} 
+                             size={36}
+                             strokeWidth={6}
+                             color="#A4FF00"
+                             backgroundColor="#18181b"
+                           />
+                           <span className="text-[10px] font-black text-muted-foreground uppercase">{d.name}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mb-16">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-4">Daily Average</h3>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-[5rem] font-black tracking-tighter leading-none text-[#A4FF00] drop-shadow-[0_0_12px_rgba(164,255,0,0.3)]">
+                          {weeklyAvg}
+                        </span>
+                        <span className="text-2xl font-black tracking-widest text-[#A4FF00]/60">
+                          MSG
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Chart Container */}
+                    <div className="w-full relative z-10" style={{ marginLeft: '-15px' }}>
+                      <CapsuleBarChart 
+                        data={recent7}
+                        dataKey="count"
+                        color="#A4FF00"
+                        height={400}
+                      />
                     </div>
                   </div>
-                </div>
+                )}
+              </TabsContent>
 
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-medium text-foreground">Observable Traits</h2>
-                    <span className="text-xs text-muted-foreground">
-                      Based on {personaTraits.length} dimensions
-                      {profile && profile.stability !== undefined && ` • Stability: ${Math.round(profile.stability * 100)}%`}
-                    </span>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {personaTraits.map((trait) => (
-                      <PersonaTraitCard key={trait.name} {...trait} />
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <h2 className="text-lg font-medium text-foreground mb-4">Schedule Context</h2>
-                  <TimetableSection />
-                </div>
-
-                <div className="bg-muted/20 border border-border rounded-xl p-5">
-                  <p className="text-xs text-muted-foreground/70 leading-relaxed">
-                    These observations reflect how you've been communicating, not who you are. 
-                    Patterns are based on multiple interactions and may evolve over time. 
-                    You can provide feedback on any trait or reset your profile in Settings.
-                  </p>
-                </div>
-              </>
-            )}
+            </Tabs>
           </div>
         </div>
       </ScrollArea>

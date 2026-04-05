@@ -31,6 +31,9 @@ create table if not exists messages (
     content text not null,
     embedding vector(1536),
     token_count integer,
+    emotional_intensity double precision,
+    reflection_depth double precision,
+    response_delay_ms integer,
     created_at timestamptz not null default now()
 );
 

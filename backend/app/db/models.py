@@ -62,6 +62,9 @@ class Message(Base):
     content = Column(Text, nullable=False)
     embedding = Column(Vector(1536))
     token_count = Column(Integer)
+    emotional_intensity = Column(Float)
+    reflection_depth = Column(Float)
+    response_delay_ms = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="messages")

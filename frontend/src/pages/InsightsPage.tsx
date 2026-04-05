@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { TrendingUp, TrendingDown, Minus, Calendar, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -6,16 +7,10 @@ import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { ExplainabilityDialog } from "@/components/ui/ExplainabilityDialog";
 import { PipelineIndicator } from "@/components/insights/PipelineIndicator";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
-
-const moodData = [
-  { day: "Mon", positive: 72, neutral: 20, challenging: 8 },
-  { day: "Tue", positive: 65, neutral: 25, challenging: 10 },
-  { day: "Wed", positive: 80, neutral: 15, challenging: 5 },
-  { day: "Thu", positive: 55, neutral: 30, challenging: 15 },
-  { day: "Fri", positive: 78, neutral: 18, challenging: 4 },
-  { day: "Sat", positive: 85, neutral: 12, challenging: 3 },
-  { day: "Sun", positive: 90, neutral: 8, challenging: 2 },
-];
+import { useBehavioralMetrics, useActivityHeatmap } from "@/hooks/useAnalytics";
+import { ActivityRings } from "@/components/insights/ActivityRings";
+import { BehavioralLineChart } from "@/components/insights/BehavioralLineChart";
+import { ActivityHeatmap } from "@/components/insights/ActivityHeatmap";
 
 const topicData = [
   { topic: "Vocational", sessions: 18 },
@@ -56,6 +51,17 @@ const observations = [
 ];
 
 export function InsightsPage() {
+  const [userId, setUserId] = useState<string>("anonymous");
+  const [timeframe, setTimeframe] = useState<'day' | 'week' | 'month'>('week');
+
+  useEffect(() => {
+    const id = localStorage.getItem("user_id");
+    if (id) setUserId(id);
+  }, []);
+
+  const { data: metricsData, isLoading: isLoadingMetrics } = useBehavioralMetrics(userId, timeframe);
+  const { data: heatmapData, isLoading: isLoadingHeatmap } = useActivityHeatmap(userId, 30);
+
   return (
     <div className="h-screen flex flex-col">
       <header className="px-8 py-6 border-b border-border">
@@ -67,16 +73,56 @@ export function InsightsPage() {
             </div>
             <p className="text-sm text-muted-foreground">Temporal patterns, topic distributions, and behavioral observations</p>
           </div>
-          <button className="flex items-center gap-2 px-4 py-2 bg-card border border-border rounded-lg text-sm hover:bg-muted transition-colors">
-            <Calendar className="w-4 h-4" />
-            Current Cycle
-          </button>
+          <div className="flex bg-muted rounded-lg p-1 border border-border">
+            {(['day', 'week', 'month'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTimeframe(t)}
+                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                  timeframe === t 
+                    ? "bg-background text-foreground shadow-sm" 
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
       <ScrollArea className="flex-1">
         <div className="p-8">
           <div className="max-w-6xl mx-auto space-y-8">
+            {/* Visual Analytics */}
+            {userId !== "anonymous" ? (
+              <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+                {isLoadingMetrics ? (
+                  <div className="col-span-full xl:col-span-3 h-[250px] animate-pulse bg-card rounded-xl border border-border" />
+                ) : metricsData ? (
+                  <ActivityRings metrics={metricsData.timeline} view={timeframe} />
+                ) : null}
+                
+                <div className="col-span-full h-[400px]">
+                   {!isLoadingMetrics && metricsData ? (
+                     <BehavioralLineChart data={metricsData.timeline} view={timeframe} />
+                   ) : (
+                     <div className="h-full animate-pulse bg-card rounded-xl border border-border w-full" />
+                   )}
+                </div>
+
+                {!isLoadingHeatmap && heatmapData ? (
+                  <ActivityHeatmap heatmapData={heatmapData.heatmap} />
+                ) : (
+                  <div className="col-span-full h-[250px] animate-pulse bg-card border border-border rounded-xl w-full" />
+                )}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-xl">
+                Please log in to view personalized analytics.
+              </div>
+            )}
+
             {/* Analytics Engine Info */}
             <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-2xl p-6">
               <div className="flex items-start gap-4">
@@ -112,47 +158,7 @@ export function InsightsPage() {
               ))}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-card border border-border rounded-xl p-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <h3 className="font-semibold text-foreground">Affective State Distribution</h3>
-                  <InfoTooltip content="Sentiment classification across daily interaction windows" />
-                </div>
-                <p className="text-sm text-muted-foreground mb-6">Weekly affect patterns</p>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={moodData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      <Area type="monotone" dataKey="positive" stackId="1" stroke="hsl(var(--trait-consistent))" fill="hsl(var(--trait-consistent) / 0.3)" />
-                      <Area type="monotone" dataKey="neutral" stackId="1" stroke="hsl(var(--muted-foreground))" fill="hsl(var(--muted) / 0.5)" />
-                      <Area type="monotone" dataKey="challenging" stackId="1" stroke="hsl(var(--trait-empathetic))" fill="hsl(var(--trait-empathetic) / 0.3)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="bg-card border border-border rounded-xl p-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <h3 className="font-semibold text-foreground">Topic Domain Distribution</h3>
-                  <InfoTooltip content="Semantic categorization of discussion themes" />
-                </div>
-                <p className="text-sm text-muted-foreground mb-6">Current analysis period</p>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={topicData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                      <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                      <YAxis dataKey="topic" type="category" stroke="hsl(var(--muted-foreground))" fontSize={12} width={80} />
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      <Bar dataKey="sessions" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
+            
 
             <div className="bg-card border border-border rounded-xl p-6">
               <div className="flex items-center gap-2 mb-4">

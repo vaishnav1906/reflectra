@@ -7,6 +7,7 @@ from app.api.persona import router as persona_router
 from app.api.mirror import router as mirror_router
 from app.api.schedule import router as schedule_router
 from app.api.user import router as user_router
+from app.api.analytics import router as analytics_router
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -38,6 +39,7 @@ app.include_router(persona_router)
 app.include_router(mirror_router)
 app.include_router(schedule_router)
 app.include_router(user_router)
+app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
 
 @app.get("/")
 def health():

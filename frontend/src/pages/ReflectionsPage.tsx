@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Lightbulb, TrendingUp, Heart, Target, Calendar, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -7,38 +8,30 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-
-const reflections = [
-  {
-    id: 1,
-    title: "Emotional Expression Patterns",
-    summary: "You tend to articulate emotions more openly during evening sessions. When facing uncertainty, you often explore multiple perspectives before settling on an interpretation.",
-    date: "This week",
-    category: "emotional",
-    icon: Heart,
-    color: "text-trait-empathetic",
-  },
-  {
-    id: 2,
-    title: "Decision-Making Approach",
-    summary: "There's a noticeable balance between high expectations and self-compassion in how you discuss goals. You seem to prioritize meaningful outcomes over quick resolutions.",
-    date: "This week",
-    category: "behavioral",
-    icon: Target,
-    color: "text-trait-consistent",
-  },
-  {
-    id: 3,
-    title: "Reflection Depth Over Time",
-    summary: "Your reflections have become more detailed over the past month. Earlier conversations tended to focus on events, while recent ones explore underlying beliefs and values more often.",
-    date: "Last week",
-    category: "growth",
-    icon: TrendingUp,
-    color: "text-primary",
-  },
-];
+import { TimeRangeToggle } from "@/components/ui/TimeRangeToggle";
+import { useReflections } from "@/hooks/useAnalytics";
+import { formatDistanceToNow } from "date-fns";
 
 export function ReflectionsPage() {
+  const [userId, setUserId] = useState<string>("anonymous");
+  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '90d'>('30d');
+
+  useEffect(() => {
+    const id = localStorage.getItem("user_id");
+    if (id) setUserId(id);
+  }, []);
+
+  const { data: insightsData, isLoading } = useReflections(userId, timeRange);
+
+  const getRangeLabel = (range: string) => {
+    switch (range) {
+      case '7d': return "This week";
+      case '30d': return "This month";
+      case '90d': return "Past 3 months";
+      default: return "Selected period";
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col">
       <header className="px-8 py-6 border-b border-border">
@@ -63,10 +56,7 @@ export function ReflectionsPage() {
             </div>
             <p className="text-sm text-muted-foreground">Observed patterns from recent conversations</p>
           </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted border border-border">
-            <Calendar className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Past 30 days</span>
-          </div>
+          <TimeRangeToggle value={timeRange} onChange={setTimeRange} />
         </div>
       </header>
 
@@ -79,38 +69,61 @@ export function ReflectionsPage() {
                   <Lightbulb className="w-6 h-6 text-primary" />
                 </div>
                 <div className="flex-1">
-                  <h2 className="font-medium text-foreground mb-2">About Reflections</h2>
+                  <h2 className="font-medium text-foreground mb-2">About {getRangeLabel(timeRange)} Reflections</h2>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    These observations are based on patterns in your conversations. They describe how you've been 
+                    These observations are based on patterns in your conversations over {timeRange === '7d' ? 'the past 7 days' : timeRange === '30d' ? 'the past 30 days' : 'the past 90 days'}. They describe how you've been 
                     communicating, not who you are. Patterns may shift over time as your context changes.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="space-y-6">
-              {reflections.map((reflection, index) => {
-                const Icon = reflection.icon;
-                return (
-                  <div key={reflection.id} className="bg-card border border-border rounded-xl p-6 fade-in" style={{ animationDelay: `${index * 100}ms` }}>
-                    <div className="flex items-start gap-4">
-                      <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0", 
-                        reflection.color === "text-trait-empathetic" ? "bg-trait-empathetic/10" :
-                        reflection.color === "text-trait-consistent" ? "bg-trait-consistent/10" : "bg-primary/10"
-                      )}>
-                        <Icon className={cn("w-5 h-5", reflection.color)} />
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="font-medium text-foreground">{reflection.title}</h3>
-                          <span className="text-xs text-muted-foreground">{reflection.date}</span>
+            <div className="space-y-6 min-h-[300px]">
+              {userId === "anonymous" ? (
+                <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-xl">
+                  Please log in to view your personalized reflections.
+                </div>
+              ) : isLoading ? (
+                <div className="space-y-4">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-32 animate-pulse bg-card border border-border rounded-xl w-full" />
+                  ))}
+                </div>
+              ) : !insightsData || insightsData.length === 0 ? (
+                 <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-xl">
+                  No reflections found for {getRangeLabel(timeRange).toLowerCase()}. Keep chatting to generate insights!
+                 </div>
+              ) : (
+                <div className="transition-opacity duration-300 space-y-4">
+                  {insightsData.map((insight, index) => (
+                    <div key={insight.id} className="bg-card border border-border rounded-xl p-6 transition-all hover:bg-muted/30 fade-in" style={{ animationDelay: `${index * 50}ms` }}>
+                      <div className="flex items-start gap-4">
+                        <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0", "bg-primary/10")}>
+                          <Target className={cn("w-5 h-5", "text-primary")} />
                         </div>
-                        <p className="text-sm text-muted-foreground leading-relaxed">{reflection.summary}</p>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="font-medium text-foreground">Behavioral Insight</h3>
+                            <span className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(insight.created_at), { addSuffix: true })}</span>
+                          </div>
+                          
+                          {insight.tags && insight.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mb-3">
+                               {insight.tags.map((tag) => (
+                                 <span key={tag} className={cn("px-2.5 py-1 rounded-full text-xs font-medium text-muted-foreground bg-muted/50 border border-border/50")}>
+                                   {tag}
+                                 </span>
+                               ))}
+                            </div>
+                          )}
+
+                          <p className="text-sm text-foreground leading-relaxed">{insight.text}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="mt-8 text-center">
