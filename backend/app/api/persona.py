@@ -8,10 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
-from app.services.trait_extraction_service import extract_traits
+from app.services.trait_extraction_service import extract_traits, extract_bootstrap_traits
 from app.services.persona_update_service import update_traits
 from app.services.snapshot_service import generate_persona_snapshot
 from app.services.mirror_engine import invalidate_snapshot_cache
+from app.repository.persona_repository import PersonaRepository
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,63 @@ class ReflectionResponse(BaseModel):
     traits: dict
     stability: float
     summary: str
+
+
+class BootstrapRequest(BaseModel):
+    user_id: str
+    summary_text: str
+
+
+@router.post("/bootstrap", response_model=ReflectionResponse)
+async def bootstrap_persona(
+    request: BootstrapRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bootstrap a persona from an external AI behavioral summary, jumping starting 
+    the confidences to a moderate "assist" level.
+    """
+    try:
+        user_id = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    logger.info(f"🚀 Bootstrapping persona for user {user_id}")
+
+    # Extract target scores
+    extracted_scores = await extract_bootstrap_traits(request.summary_text)
+    logger.info(f"📊 Bootstrapped scores: {extracted_scores}")
+
+    # For each core trait, we force the score and set a moderate confidence
+    # (e.g., 0.45) so it stands as an "assist" requiring actual app usage to validate.
+    assist_confidence = 0.45
+
+    await PersonaRepository.initialize_missing_traits(db, user_id)
+    
+    from app.constants import TRAIT_LIST
+    for trait_name in TRAIT_LIST:
+        target_score = extracted_scores.get(trait_name, 0.5)
+        
+        metric = await PersonaRepository.get_metric(db, user_id, trait_name)
+        if metric:
+            await PersonaRepository.update_metric(
+                db, metric, target_score, assist_confidence, target_score
+            )
+    
+    await db.commit()
+
+    # Generate snapshot
+    snapshot = await generate_persona_snapshot(db, user_id)
+    invalidate_snapshot_cache(user_id)
+
+    # Return response in same format as reflection for ease
+    traits = snapshot.persona_vector.get("behavioral_profile", {})
+    
+    return ReflectionResponse(
+        traits=traits,
+        stability=round(snapshot.stability_index, 2),
+        summary=snapshot.summary_text
+    )
 
 
 @router.post("/reflection", response_model=ReflectionResponse)

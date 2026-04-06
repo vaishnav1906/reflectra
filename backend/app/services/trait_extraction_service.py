@@ -204,3 +204,90 @@ async def extract_traits(message: str) -> List[Dict]:
         logger.error(f"❌ Trait extraction error: {e}")
         logger.exception("Full traceback:")
         return []
+
+
+BOOTSTRAP_PROMPT = f"""You are a sophisticated behavioral trait analyzer.
+Your task is to analyze a behavioral summary provided by an external AI (like ChatGPT or Claude) 
+and map it accurately to our four core persona traits.
+
+**Available Traits & Scoring Criteria:**
+{TRAIT_DESCRIPTIONS}
+
+**Your Task:**
+For EACH trait, provide a direct absolute score (0.0 to 1.0) representing the trait level based on the summary.
+- 0.0-0.3: Strong low indicator
+- 0.3-0.7: Neutral, mixed, or not mentioned (default to 0.5)
+- 0.7-1.0: Strong high indicator
+
+Output MUST be strictly JSON format with the following structure:
+{{
+  "traits": {{
+    "communication_style": {{"score": 0.5}},
+    "emotional_expressiveness": {{"score": 0.5}},
+    "decision_framing": {{"score": 0.5}},
+    "reflection_depth": {{"score": 0.5}}
+  }}
+}}
+"""
+
+async def extract_bootstrap_traits(summary_text: str) -> Dict[str, float]:
+    """
+    Extract baseline trait scores from an external behavioral summary.
+    
+    Args:
+        summary_text: The behavioral summary text to analyze.
+        
+    Returns:
+        Dict mapping trait names to their absolute scores (0.0-1.0).
+    """
+    if not MISTRAL_AVAILABLE or not mistral_client:
+        logger.warning("⚠️ Mistral not available for bootstrap extraction, using defaults")
+        return {trait: 0.5 for trait in TRAIT_LIST}
+    
+    try:
+        logger.info(f"🔍 Extracting bootstrap traits from external summary...")
+        
+        messages = [
+            {"role": "system", "content": BOOTSTRAP_PROMPT},
+            {"role": "user", "content": summary_text}
+        ]
+        
+        # Use mistral-medium/large or mistral-small for reasoning
+        response = mistral_client.chat.complete(
+            model="mistral-small-latest",
+            messages=messages,
+            max_tokens=400,
+            temperature=0.3,
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            content = content[json_start:json_end].strip()
+        elif "```" in content:
+            json_start = content.find("```") + 3
+            json_end = content.find("```", json_start)
+            content = content[json_start:json_end].strip()
+        
+        data = json.loads(content)
+        traits_block = data.get("traits", {})
+        
+        result_scores = {}
+        for trait in TRAIT_LIST:
+            score = traits_block.get(trait, {}).get("score", 0.5)
+            try:
+                score = float(score)
+                score = max(0.0, min(1.0, score))
+            except (ValueError, TypeError):
+                score = 0.5
+            result_scores[trait] = score
+            
+        logger.info(f"✅ Bootstrapped traits: {result_scores}")
+        return result_scores
+        
+    except Exception as e:
+        logger.error(f"❌ Bootstrap extraction error: {e}")
+        logger.exception("Full traceback:")
+        return {trait: 0.5 for trait in TRAIT_LIST}
