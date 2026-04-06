@@ -1357,7 +1357,12 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             
             # Mirror engine handles: snapshot retrieval, message style analysis, 
             # persona-based prompt building, variation buffer, and latency cap
-            reply, metadata = await generate_mirror_response(db, user_id_uuid, message_text)
+            reply, metadata = await generate_mirror_response(
+                db,
+                user_id_uuid,
+                message_text,
+                recent_history=history,
+            )
             
             # Unpack observability metrics
             inference_duration_ms = metadata.get("inference_duration_ms", 0)

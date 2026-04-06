@@ -5,7 +5,7 @@ import os
 import re
 import time
 import random
-from typing import Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,8 +42,11 @@ _variation_buffer: Dict[str, List[str]] = {}
 
 
 async def generate_mirror_response(
-    db: AsyncSession, user_id: UUID, message: str
-) -> Tuple[str, Dict[str, any]]:
+    db: AsyncSession,
+    user_id: UUID,
+    message: str,
+    recent_history: Optional[List[Dict[str, str]]] = None,
+) -> Tuple[str, Dict[str, Any]]:
     """
     Generate a mirror response based on user's personality profile.
     
@@ -117,8 +120,8 @@ async def generate_mirror_response(
     
     # 3. Anti-Repetition Loop
     start_time = time.time()
-    max_time = 1.2
-    max_retries = 2
+    max_time = 1.8
+    max_retries = 3
     
     best_candidate = ""
     best_score = -1.0
@@ -130,19 +133,31 @@ async def generate_mirror_response(
             break
             
         try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
-            ]
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Inject short recent context to improve continuity and reduce random replies.
+            if recent_history:
+                trimmed = recent_history[-8:]
+                for turn in trimmed:
+                    role = turn.get("role")
+                    content = (turn.get("content") or "").strip()
+                    if role in {"user", "assistant"} and content:
+                        messages.append({"role": role, "content": content})
+
+            # Ensure latest user message is the final turn.
+            messages.append({"role": "user", "content": message})
             
             response = mistral_client.chat.complete(
                 model="mistral-small-latest",
                 messages=messages,
-                max_tokens=300,
-                temperature=0.75 + (0.05 * attempt),
+                max_tokens=220,
+                temperature=0.65 + (0.05 * attempt),
             )
             
             candidate = response.choices[0].message.content.strip()
+            if _is_low_quality_candidate(candidate, message, recent_outputs):
+                continue
+
             score = score_mirror_candidate(candidate, sampled_profile, recent_outputs)
             
             if score > best_score:
@@ -157,10 +172,12 @@ async def generate_mirror_response(
             logger.error(f"❌ Mirror response error on attempt {attempt}: {e}")
             pass
 
-    # 4. Fallbacks (best candidate -> 'hmm' -> '')
-    if best_score < 0.3 or not best_candidate:
+    # 4. Fallbacks (best candidate -> baseline mirror)
+    if best_score < 0.45 or not best_candidate:
         logger.info(f"Falling back, best score generated was {best_score}")
-        final_reply = "hmm" if best_candidate else ""
+        final_reply = await generate_baseline_mirror_response(message)
+        if _is_low_quality_candidate(final_reply, message, recent_outputs):
+            final_reply = "say more"
         telemetry["fallback_triggered"] = True
     else:
         final_reply = best_candidate
@@ -179,7 +196,7 @@ async def generate_mirror_response(
     return final_reply, telemetry
 
 
-def _sample_profile(traits: Dict[str, float]) -> Dict[str, any]:
+def _sample_profile(traits: Dict[str, float]) -> Dict[str, Any]:
     """Applies Probabilistic Sampling to traits for slight behavioral variances per message."""
     sampled = {}
     base_keys = [
@@ -242,7 +259,7 @@ def invalidate_snapshot_cache(user_id: UUID) -> None:
         logger.debug(f"🗑️ Invalidated snapshot cache for user {user_id}")
 
 
-def analyze_message_style(message: str) -> Dict[str, any]:
+def analyze_message_style(message: str) -> Dict[str, Any]:
     """
     Analyze the current message style for live mirroring.
     
@@ -335,7 +352,7 @@ def extract_key_traits(persona_vector: Dict) -> Dict[str, float]:
 def build_mirror_system_prompt(
     sampled_profile: Dict[str, float], 
     stability_index: float,
-    message_style: Dict[str, any]
+    message_style: Dict[str, Any]
 ) -> str:
     """Build mirror system prompt with personality baseline and live style analysis."""
     if stability_index < STABILITY_THRESHOLD_UNSTABLE:
@@ -414,10 +431,17 @@ STRICT RULES:
 4. MOOD INFLUENCE
 5. NO EXPLANATION MODE
 6. RESPONSE LENGTH MATCHING
+     - If the user sends 2+ sentences, respond with at least one complete sentence.
+     - Avoid one-word outputs unless the user message itself is one word.
 7. FORBIDDEN OUTPUTS:
 - Advice, structured guidance, AI phrasing
+ - Generic fillers: "hmm", "ok", "idk", "same" as standalone replies
 8. VALIDATION CHECK:
 Before output, verify: "Would the user realistically type this?"
+
+9. TOPICAL CONTINUITY:
+- Reference at least one concrete element from the user's latest message.
+- Do not switch topics unless the user switches topics.
 
 OUTPUT STYLE:
 - Raw, natural, human
@@ -499,8 +523,54 @@ Keep it natural and concise."""
             temperature=0.7,
         )
         
-        return response.choices[0].message.content.strip()
+        candidate = response.choices[0].message.content.strip()
+        if _is_low_quality_candidate(candidate, message, []):
+            return "say more"
+        return candidate
         
     except Exception as e:
         logger.error(f"❌ Baseline mirror error: {e}")
         return "Got it. What else?"
+
+
+def _is_low_quality_candidate(candidate: str, message: str, recent_outputs: List[str]) -> bool:
+    """Fast heuristic filter to block weak, repetitive mirror outputs."""
+    text = (candidate or "").strip()
+    if not text:
+        return True
+
+    lower = text.lower()
+    user_words = re.findall(r"[a-zA-Z']+", message.lower())
+    cand_words = re.findall(r"[a-zA-Z']+", lower)
+
+    # Prevent dead-end one-liners unless user message is also minimal.
+    if len(cand_words) <= 1 and len(user_words) > 1:
+        return True
+
+    banned_short = {
+        "hmm",
+        "ok",
+        "okay",
+        "k",
+        "idk",
+        "sure",
+        "same",
+        "nah",
+        "yeah",
+        "sup",
+    }
+    if lower in banned_short:
+        return True
+
+    # Repetition guard against the recent buffer.
+    recent_lower = {item.strip().lower() for item in recent_outputs[-3:] if item.strip()}
+    if lower in recent_lower:
+        return True
+
+    # Require minimal topical overlap for non-trivial inputs.
+    if len(user_words) >= 3:
+        overlap = set(user_words) & set(cand_words)
+        if not overlap:
+            return True
+
+    return False
