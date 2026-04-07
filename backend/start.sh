@@ -1,6 +1,8 @@
 #!/bin/bash
 # Debug script to test backend startup
 
+set -e
+
 cd "$(dirname "$0")"
 
 echo "🔍 Checking backend setup..."
@@ -30,9 +32,17 @@ fi
 source venv/bin/activate
 echo "✅ Virtual environment activated"
 
+# Check ffmpeg binary (required by Whisper/ffmpeg-python)
+if ! command -v ffmpeg &> /dev/null; then
+    echo "❌ ffmpeg binary not found on system PATH"
+    echo "   Install it first: sudo apt-get update && sudo apt-get install -y ffmpeg"
+    exit 1
+fi
+echo "✅ ffmpeg: $(ffmpeg -version | head -n 1)"
+
 # Install dependencies
 echo "📦 Installing dependencies..."
-pip install --quiet fastapi uvicorn pydantic
+python3 -m pip install --quiet -r requirements.txt
 
 echo ""
 echo "🚀 Starting backend..."

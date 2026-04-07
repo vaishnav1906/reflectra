@@ -54,9 +54,20 @@ echo ""
 echo "4️⃣ Checking Python packages..."
 pip list | grep -E "(fastapi|uvicorn|sqlalchemy|mistralai)" || echo "⚠️  Some packages may be missing"
 
+# Check ffmpeg binary
+echo ""
+echo "5️⃣ Checking ffmpeg binary..."
+if command -v ffmpeg >/dev/null 2>&1; then
+    echo "✅ ffmpeg: $(ffmpeg -version | head -n 1)"
+else
+    echo "❌ ffmpeg binary not found"
+    echo "   Install it first: sudo apt-get update && sudo apt-get install -y ffmpeg"
+    exit 1
+fi
+
 # Run validation script
 echo ""
-echo "5️⃣ Running comprehensive validation..."
+echo "6️⃣ Running comprehensive validation..."
 echo "======================================================================"
 python validate_startup.py
 validation_result=$?
