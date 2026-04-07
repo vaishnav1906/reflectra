@@ -16,7 +16,8 @@ from app.db.models import (
     ReflectionLog,
     UserPersonaMetric,
     PersonaSnapshot,
-    ScheduleContext
+    ScheduleContext,
+    UserSettings,
 )
 
 router = APIRouter(prefix="/user", tags=["User"])
@@ -31,6 +32,99 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 
 class UserRequest(BaseModel):
     user_id: str
+
+
+class UserSettingsUpdateRequest(BaseModel):
+    user_id: str
+    persona_mirroring: bool
+    pattern_tracking: bool
+    daily_reflections: bool
+
+
+async def _assert_user_exists(db: AsyncSession, user_uuid: UUID) -> None:
+    result = await db.execute(select(User.id).where(User.id == user_uuid))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+@router.get("/settings")
+async def get_user_settings(
+    user_id: str = Query(..., description="User UUID"),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    await _assert_user_exists(db, user_uuid)
+
+    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_uuid))
+    settings_record = result.scalar_one_or_none()
+
+    if settings_record is None:
+        settings_record = UserSettings(
+            user_id=user_uuid,
+            persona_mirroring=True,
+            pattern_tracking=True,
+            daily_reflections=True,
+        )
+        db.add(settings_record)
+        await db.commit()
+        await db.refresh(settings_record)
+
+    return {
+        "user_id": str(settings_record.user_id),
+        "settings": {
+            "persona_mirroring": bool(settings_record.persona_mirroring),
+            "pattern_tracking": bool(settings_record.pattern_tracking),
+            "daily_reflections": bool(settings_record.daily_reflections),
+        },
+        "updated_at": settings_record.updated_at.isoformat() if settings_record.updated_at else None,
+    }
+
+
+@router.post("/settings/update")
+async def update_user_settings(
+    request: UserSettingsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        user_uuid = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    await _assert_user_exists(db, user_uuid)
+
+    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_uuid))
+    settings_record = result.scalar_one_or_none()
+
+    if settings_record is None:
+        settings_record = UserSettings(
+            user_id=user_uuid,
+            persona_mirroring=request.persona_mirroring,
+            pattern_tracking=request.pattern_tracking,
+            daily_reflections=request.daily_reflections,
+        )
+        db.add(settings_record)
+    else:
+        settings_record.persona_mirroring = request.persona_mirroring
+        settings_record.pattern_tracking = request.pattern_tracking
+        settings_record.daily_reflections = request.daily_reflections
+
+    await db.commit()
+    await db.refresh(settings_record)
+
+    return {
+        "status": "success",
+        "user_id": str(settings_record.user_id),
+        "settings": {
+            "persona_mirroring": bool(settings_record.persona_mirroring),
+            "pattern_tracking": bool(settings_record.pattern_tracking),
+            "daily_reflections": bool(settings_record.daily_reflections),
+        },
+        "updated_at": settings_record.updated_at.isoformat() if settings_record.updated_at else None,
+    }
 
 
 @router.get("/system-state")
@@ -127,6 +221,9 @@ async def clear_user_data(request: UserRequest, db: AsyncSession = Depends(get_d
         
         # delete schedule context
         await db.execute(delete(ScheduleContext).where(ScheduleContext.user_id == user_uuid))
+
+        # delete user settings
+        await db.execute(delete(UserSettings).where(UserSettings.user_id == user_uuid))
         
         await db.commit()
         return {"status": "success", "message": "All user data cleared."}

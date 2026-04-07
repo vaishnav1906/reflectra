@@ -31,6 +31,7 @@ class User(Base):
     messages = relationship("Message", back_populates="user", cascade="all, delete-orphan")
     personality_profile = relationship("PersonalityProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     schedule_context = relationship("ScheduleContext", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    user_settings = relationship("UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
     behavioral_insights = relationship("BehavioralInsight", back_populates="user", cascade="all, delete-orphan")
     reflection_logs = relationship("ReflectionLog", back_populates="user", cascade="all, delete-orphan")
 
@@ -168,6 +169,19 @@ class ScheduleContext(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="schedule_context")
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    persona_mirroring = Column(Boolean, nullable=False, server_default=text("true"))
+    pattern_tracking = Column(Boolean, nullable=False, server_default=text("true"))
+    daily_reflections = Column(Boolean, nullable=False, server_default=text("true"))
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="user_settings")
 
 
 class MirrorLog(Base):

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
@@ -40,14 +40,28 @@ import { cn } from "@/lib/utils";
 
 const API_BASE = "/api";
 
+type SettingsState = {
+  personaMirroring: boolean;
+  patternTracking: boolean;
+  dailyReflections: boolean;
+  shareAnonymousData: boolean;
+};
+
+type PersonaSettingKey = "personaMirroring" | "patternTracking" | "dailyReflections";
+
+const DEFAULT_SETTINGS: SettingsState = {
+  personaMirroring: true,
+  patternTracking: true,
+  dailyReflections: true,
+  shareAnonymousData: false,
+};
+
 export function SettingsPage() {
   const navigate = useNavigate();
-  const [settings, setSettings] = useState({
-    personaMirroring: true,
-    patternTracking: true,
-    dailyReflections: true,
-    shareAnonymousData: false,
-  });
+  const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
+  const [isLoadingPersonaSettings, setIsLoadingPersonaSettings] = useState(true);
+  const [isSavingPersonaSetting, setIsSavingPersonaSetting] = useState<PersonaSettingKey | null>(null);
+  const [personaSettingsError, setPersonaSettingsError] = useState<string | null>(null);
 
   const [isClearDataModalOpen, setIsClearDataModalOpen] = useState(false);
   const [isClearingData, setIsClearingData] = useState(false);
@@ -60,6 +74,100 @@ export function SettingsPage() {
   const [isBootstrapModalOpen, setIsBootstrapModalOpen] = useState(false);
   const [bootstrapSummary, setBootstrapSummary] = useState("");
   const [isBootstrapping, setIsBootstrapping] = useState(false);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadPersonaSettings = async () => {
+      const userId = localStorage.getItem("user_id");
+      if (!userId) {
+        if (!isCancelled) {
+          setIsLoadingPersonaSettings(false);
+        }
+        return;
+      }
+
+      setIsLoadingPersonaSettings(true);
+      setPersonaSettingsError(null);
+
+      try {
+        const res = await fetch(`${API_BASE}/user/settings?user_id=${encodeURIComponent(userId)}`);
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const incoming = data?.settings ?? {};
+
+        if (!isCancelled) {
+          setSettings((prev) => ({
+            ...prev,
+            personaMirroring: incoming.persona_mirroring ?? prev.personaMirroring,
+            patternTracking: incoming.pattern_tracking ?? prev.patternTracking,
+            dailyReflections: incoming.daily_reflections ?? prev.dailyReflections,
+          }));
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          const msg = err instanceof Error ? err.message : "Failed to load settings";
+          setPersonaSettingsError(msg);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingPersonaSettings(false);
+        }
+      }
+    };
+
+    void loadPersonaSettings();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const handlePersonaToggle = async (key: PersonaSettingKey, checked: boolean) => {
+    if (isLoadingPersonaSettings || isSavingPersonaSetting) {
+      return;
+    }
+
+    const previous = settings;
+    const next = { ...settings, [key]: checked };
+
+    setSettings(next);
+    setPersonaSettingsError(null);
+    setIsSavingPersonaSetting(key);
+
+    try {
+      const userId = localStorage.getItem("user_id");
+      if (!userId) {
+        throw new Error("Missing user session");
+      }
+
+      const res = await fetch(`${API_BASE}/user/settings/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          persona_mirroring: next.personaMirroring,
+          pattern_tracking: next.patternTracking,
+          daily_reflections: next.dailyReflections,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      setSettings(previous);
+      setPersonaSettingsError(err instanceof Error ? err.message : "Unable to save settings");
+    } finally {
+      setIsSavingPersonaSetting(null);
+    }
+  };
 
   const handleBootstrap = async () => {
     if (!bootstrapSummary.trim()) return;
@@ -170,10 +278,9 @@ export function SettingsPage() {
                       </p>
                     </div>
                     <Switch
+                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
                       checked={settings.personaMirroring}
-                      onCheckedChange={(checked) => 
-                        setSettings({ ...settings, personaMirroring: checked })
-                      }
+                      onCheckedChange={(checked) => void handlePersonaToggle("personaMirroring", checked)}
                     />
                   </div>
                 </div>
@@ -187,10 +294,9 @@ export function SettingsPage() {
                       </p>
                     </div>
                     <Switch
+                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
                       checked={settings.patternTracking}
-                      onCheckedChange={(checked) => 
-                        setSettings({ ...settings, patternTracking: checked })
-                      }
+                      onCheckedChange={(checked) => void handlePersonaToggle("patternTracking", checked)}
                     />
                   </div>
                 </div>
@@ -204,10 +310,9 @@ export function SettingsPage() {
                       </p>
                     </div>
                     <Switch
+                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
                       checked={settings.dailyReflections}
-                      onCheckedChange={(checked) => 
-                        setSettings({ ...settings, dailyReflections: checked })
-                      }
+                      onCheckedChange={(checked) => void handlePersonaToggle("dailyReflections", checked)}
                     />
                   </div>
                 </div>
