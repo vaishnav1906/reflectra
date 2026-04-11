@@ -3,6 +3,10 @@ import { useSearchParams } from "react-router-dom";
 
 export type InteractionMode = "reflection" | "mirror";
 
+export function isInteractionMode(mode: string | null): mode is InteractionMode {
+  return mode === "reflection" || mode === "mirror";
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant";
@@ -45,7 +49,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const latestMessageRequestId = useRef(0);
 
   // Get mode from URL, default to reflection
-  const mode = (searchParams.get("mode") || "reflection") as InteractionMode;
+  const modeParam = searchParams.get("mode");
+  const mode: InteractionMode = isInteractionMode(modeParam) ? modeParam : "reflection";
 
   const urlConversationId = searchParams.get("conversation_id");
 

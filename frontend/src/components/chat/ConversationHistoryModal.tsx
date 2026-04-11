@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 import { usePastConversations } from "@/hooks/usePastConversations";
 import { subscribeToConversationRefresh } from "@/utils/conversationRefresh";
+import type { InteractionMode } from "@/contexts/ChatContext";
 
 interface ConversationHistoryModalProps {
   isOpen: boolean;
@@ -14,7 +15,7 @@ interface ConversationHistoryModalProps {
   onSelectConversation: (conversationId: string) => void;
   onNewChat: () => void;
   userId: string;
-  mode?: string; // "reflection" or "mirror"
+  mode?: InteractionMode;
 }
 
 export function ConversationHistoryModal({

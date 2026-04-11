@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,12 @@ from app.db.models import (
     PersonaSnapshot,
     ScheduleContext,
     UserSettings,
+)
+from app.services.persona_report_service import build_persona_report_pdf
+from app.services.twin_policy import (
+    DEFAULT_TWIN_SETTINGS,
+    resolve_twin_settings,
+    validate_twin_autonomy_mode,
 )
 
 router = APIRouter(prefix="/user", tags=["User"])
@@ -39,6 +46,16 @@ class UserSettingsUpdateRequest(BaseModel):
     persona_mirroring: bool
     pattern_tracking: bool
     daily_reflections: bool
+    digital_twin_enabled: Optional[bool] = None
+    twin_autonomy_mode: Optional[str] = None
+    twin_mirror_intensity: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    twin_require_approval: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_mode(self):
+        if self.twin_autonomy_mode is not None:
+            self.twin_autonomy_mode = validate_twin_autonomy_mode(self.twin_autonomy_mode)
+        return self
 
 
 async def _assert_user_exists(db: AsyncSession, user_uuid: UUID) -> None:
@@ -65,21 +82,23 @@ async def get_user_settings(
     if settings_record is None:
         settings_record = UserSettings(
             user_id=user_uuid,
-            persona_mirroring=True,
-            pattern_tracking=True,
-            daily_reflections=True,
+            persona_mirroring=DEFAULT_TWIN_SETTINGS["persona_mirroring"],
+            pattern_tracking=DEFAULT_TWIN_SETTINGS["pattern_tracking"],
+            daily_reflections=DEFAULT_TWIN_SETTINGS["daily_reflections"],
+            digital_twin_enabled=DEFAULT_TWIN_SETTINGS["digital_twin_enabled"],
+            twin_autonomy_mode=DEFAULT_TWIN_SETTINGS["twin_autonomy_mode"],
+            twin_mirror_intensity=DEFAULT_TWIN_SETTINGS["twin_mirror_intensity"],
+            twin_require_approval=DEFAULT_TWIN_SETTINGS["twin_require_approval"],
         )
         db.add(settings_record)
         await db.commit()
         await db.refresh(settings_record)
 
+    effective_settings = resolve_twin_settings(settings_record)
+
     return {
         "user_id": str(settings_record.user_id),
-        "settings": {
-            "persona_mirroring": bool(settings_record.persona_mirroring),
-            "pattern_tracking": bool(settings_record.pattern_tracking),
-            "daily_reflections": bool(settings_record.daily_reflections),
-        },
+        "settings": effective_settings,
         "updated_at": settings_record.updated_at.isoformat() if settings_record.updated_at else None,
     }
 
@@ -105,26 +124,78 @@ async def update_user_settings(
             persona_mirroring=request.persona_mirroring,
             pattern_tracking=request.pattern_tracking,
             daily_reflections=request.daily_reflections,
+            digital_twin_enabled=(
+                request.digital_twin_enabled
+                if request.digital_twin_enabled is not None
+                else DEFAULT_TWIN_SETTINGS["digital_twin_enabled"]
+            ),
+            twin_autonomy_mode=(
+                request.twin_autonomy_mode
+                if request.twin_autonomy_mode is not None
+                else DEFAULT_TWIN_SETTINGS["twin_autonomy_mode"]
+            ),
+            twin_mirror_intensity=(
+                request.twin_mirror_intensity
+                if request.twin_mirror_intensity is not None
+                else DEFAULT_TWIN_SETTINGS["twin_mirror_intensity"]
+            ),
+            twin_require_approval=(
+                request.twin_require_approval
+                if request.twin_require_approval is not None
+                else DEFAULT_TWIN_SETTINGS["twin_require_approval"]
+            ),
         )
         db.add(settings_record)
     else:
         settings_record.persona_mirroring = request.persona_mirroring
         settings_record.pattern_tracking = request.pattern_tracking
         settings_record.daily_reflections = request.daily_reflections
+        if request.digital_twin_enabled is not None:
+            settings_record.digital_twin_enabled = request.digital_twin_enabled
+        if request.twin_autonomy_mode is not None:
+            settings_record.twin_autonomy_mode = request.twin_autonomy_mode
+        if request.twin_mirror_intensity is not None:
+            settings_record.twin_mirror_intensity = request.twin_mirror_intensity
+        if request.twin_require_approval is not None:
+            settings_record.twin_require_approval = request.twin_require_approval
 
     await db.commit()
     await db.refresh(settings_record)
 
+    effective_settings = resolve_twin_settings(settings_record)
+
     return {
         "status": "success",
         "user_id": str(settings_record.user_id),
-        "settings": {
-            "persona_mirroring": bool(settings_record.persona_mirroring),
-            "pattern_tracking": bool(settings_record.pattern_tracking),
-            "daily_reflections": bool(settings_record.daily_reflections),
-        },
+        "settings": effective_settings,
         "updated_at": settings_record.updated_at.isoformat() if settings_record.updated_at else None,
     }
+
+
+@router.get("/export-persona-report")
+async def export_persona_report(
+    user_id: str = Query(..., description="User UUID"),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    await _assert_user_exists(db, user_uuid)
+
+    try:
+        pdf_bytes = await build_persona_report_pdf(db, user_uuid)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate persona report: {str(exc)}")
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="persona-summary-report.pdf"'
+        },
+    )
 
 
 @router.get("/system-state")

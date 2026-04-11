@@ -17,6 +17,8 @@ from app.constants import (
     ENABLE_MIRROR_MODE,
 )
 from app.services.realism_validator import score_mirror_candidate
+from app.services.twin_assistant_service import TASK_PROMPT_NOTES, build_assistant_fallback_reply
+from app.services.twin_policy import resolve_twin_settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,8 @@ async def generate_mirror_response(
     user_id: UUID,
     message: str,
     recent_history: Optional[List[Dict[str, str]]] = None,
+    twin_policy: Optional[Dict[str, Any]] = None,
+    task_type: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Generate a mirror response based on user's personality profile.
@@ -64,12 +68,34 @@ async def generate_mirror_response(
         "realism_score": 0.0,
         "retries_used": 0,
         "fallback_triggered": False,
+        "policy_mode": "mirror",
+        "mirror_intensity": 0.8,
+        "approval_required": True,
+        "task_type": task_type,
     }
+
+    effective_policy = resolve_twin_settings(twin_policy)
+    telemetry["policy_mode"] = effective_policy.get("twin_autonomy_mode", "draft_only")
+    telemetry["mirror_intensity"] = float(effective_policy.get("twin_mirror_intensity", 0.8))
+    telemetry["approval_required"] = bool(effective_policy.get("twin_require_approval", True))
     
     # 1. Feature Flag Check
     if not ENABLE_MIRROR_MODE:
         logger.info("Mirror mode is disabled.")
         return "", telemetry
+
+    # User-level policy check.
+    if not effective_policy.get("digital_twin_enabled", True):
+        logger.info("🛑 Digital twin disabled in user settings")
+        telemetry["fallback_triggered"] = True
+        telemetry["policy_mode"] = "disabled"
+        return "Digital twin is disabled in your settings.", telemetry
+
+    if not effective_policy.get("persona_mirroring", True):
+        logger.info("🛑 Persona mirroring disabled in user settings")
+        telemetry["fallback_triggered"] = True
+        telemetry["policy_mode"] = "persona_mirroring_disabled"
+        return "Persona mirroring is turned off in your settings.", telemetry
 
     # 2. Silence Bypass
     if not message or not message.strip():
@@ -116,6 +142,8 @@ async def generate_mirror_response(
         sampled_profile,
         snapshot.stability_index,
         message_style,
+        effective_policy,
+        task_type=task_type,
     )
     
     # 3. Anti-Repetition Loop
@@ -150,12 +178,14 @@ async def generate_mirror_response(
             response = mistral_client.chat.complete(
                 model="mistral-small-latest",
                 messages=messages,
-                max_tokens=220,
-                temperature=0.65 + (0.05 * attempt),
+                max_tokens=320 if task_type else 220,
+                temperature=(0.5 if task_type else 0.55)
+                + (0.25 * telemetry["mirror_intensity"])
+                + (0.05 * attempt),
             )
             
             candidate = response.choices[0].message.content.strip()
-            if _is_low_quality_candidate(candidate, message, recent_outputs):
+            if _is_low_quality_candidate(candidate, message, recent_outputs, task_type=task_type):
                 continue
 
             score = score_mirror_candidate(candidate, sampled_profile, recent_outputs)
@@ -172,18 +202,21 @@ async def generate_mirror_response(
             logger.error(f"❌ Mirror response error on attempt {attempt}: {e}")
             pass
 
-    # 4. Fallbacks (best candidate -> baseline mirror)
+    # 4. Fallbacks
     if best_score < 0.45 or not best_candidate:
         logger.info(f"Falling back, best score generated was {best_score}")
-        final_reply = await generate_baseline_mirror_response(message)
-        if _is_low_quality_candidate(final_reply, message, recent_outputs):
-            final_reply = "say more"
+        if task_type:
+            final_reply = build_assistant_fallback_reply(message, task_type)
+        else:
+            final_reply = await generate_baseline_mirror_response(message)
+            if _is_low_quality_candidate(final_reply, message, recent_outputs, task_type=task_type):
+                final_reply = "say more"
         telemetry["fallback_triggered"] = True
     else:
         final_reply = best_candidate
         
     telemetry["inference_duration_ms"] = int((time.time() - start_time) * 1000)
-    telemetry["realism_score"] = float(best_score)
+    telemetry["realism_score"] = float(max(best_score, 0.0))
     
     logger.info(f"✅ Mirror response finalized: {final_reply[:50]}...")
     
@@ -352,9 +385,35 @@ def extract_key_traits(persona_vector: Dict) -> Dict[str, float]:
 def build_mirror_system_prompt(
     sampled_profile: Dict[str, float], 
     stability_index: float,
-    message_style: Dict[str, Any]
+    message_style: Dict[str, Any],
+    twin_policy: Optional[Dict[str, Any]] = None,
+    task_type: Optional[str] = None,
 ) -> str:
     """Build mirror system prompt with personality baseline and live style analysis."""
+    twin_policy = resolve_twin_settings(twin_policy)
+
+    intensity = float(twin_policy.get("twin_mirror_intensity", 0.8))
+    if intensity < 0.35:
+        intensity_note = "Mirror lightly: preserve intent first and apply subtle style matching."
+    elif intensity < 0.7:
+        intensity_note = "Mirror in balanced mode: match tone and rhythm without overfitting quirks."
+    else:
+        intensity_note = "Mirror strongly: prioritize the user's authentic wording patterns and cadence."
+
+    autonomy_mode = twin_policy.get("twin_autonomy_mode", "draft_only")
+    if autonomy_mode == "auto_execute":
+        autonomy_note = "If asked for an action, propose the concrete output confidently but never claim external execution."
+    elif autonomy_mode == "suggest":
+        autonomy_note = "Prefer recommendation language and provide one direct suggested next message."
+    else:
+        autonomy_note = "Draft-only mode: never claim an action was sent/executed; only provide draft text the user can send."
+
+    approval_note = (
+        "Approval required: avoid statements that imply irreversible actions are complete."
+        if twin_policy.get("twin_require_approval", True)
+        else "Approval relaxed: still avoid fabricating external state changes."
+    )
+
     if stability_index < STABILITY_THRESHOLD_UNSTABLE:
         stability_note = "Baseline emerging - mirror subtly"
     elif stability_index > STABILITY_THRESHOLD_STABLE:
@@ -407,9 +466,39 @@ Stability Index: {stability_index:.2f} → {stability_note}"""
         style_rules.append("• Do NOT ask reflection-style questions unless they do")
     
     style_rules_text = "\n".join(style_rules)
+
+    task_note = TASK_PROMPT_NOTES.get(task_type or "", "")
+    if task_type:
+        email_format_note = ""
+        if task_type == "email_draft":
+            email_format_note = (
+                "- Email draft must include: Subject line, greeting, complete body, and sign-off.\n"
+                "- Output only the email draft text (no commentary or analysis).\n"
+            )
+        task_block = f"""\
+EXPLICIT TASK MODE (requested by user):
+- Task type: {task_type}
+- Task instruction: {task_note}
+- STRICT PRIORITY ORDER:
+    1) Complete the user's explicit task exactly as requested.
+    2) Keep requested topic, purpose, and output format unchanged.
+    3) Apply style/persona adaptation only after task correctness.
+- If the user asks for a draft (email/message/post), output that exact draft directly.
+- If the request is ambiguous, ask one concise clarification question.
+- Do not claim any real-world execution happened.
+{email_format_note}"""
+        intelligence_rule = "TASK EXECUTION IN USER VOICE"
+        role_guardrail = "You execute explicit task commands in the user's voice and personality style."
+    else:
+        task_block = """\
+CONVERSATION MODE:
+- Stay in pure mirror behavior and prioritize natural conversational continuity.
+"""
+        intelligence_rule = "NO INTELLIGENCE INJECTION"
+        role_guardrail = "You do NOT assist, guide, advise, or improve the user."
     
     prompt = f"""SYSTEM ROLE:
-You are a Persona Mirror. You do NOT assist, guide, advise, or improve the user.
+    You are a Persona Mirror. {role_guardrail}
 
 Your only job is to simulate what the USER themselves would say in this situation.
 
@@ -420,11 +509,20 @@ INPUT SOURCES:
 2. Current Message & Mood Style
 {style_description}
 
+3. Digital Twin Runtime Policy
+• Mirror Intensity: {intensity:.2f}
+• Autonomy Mode: {autonomy_mode}
+• {approval_note}
+• {intensity_note}
+• {autonomy_note}
+
 OBJECTIVE:
 Generate a response that is indistinguishable from something the user would naturally say.
 
+{task_block}
+
 STRICT RULES:
-1. NO INTELLIGENCE INJECTION
+1. {intelligence_rule}
 2. BEHAVIORAL ACCURACY > RESPONSE QUALITY
 {style_rules_text}
 3. MIRROR, DON'T FIX
@@ -533,8 +631,13 @@ Keep it natural and concise."""
         return "Got it. What else?"
 
 
-def _is_low_quality_candidate(candidate: str, message: str, recent_outputs: List[str]) -> bool:
-    """Fast heuristic filter to block weak, repetitive mirror outputs."""
+def _is_low_quality_candidate(
+    candidate: str,
+    message: str,
+    recent_outputs: List[str],
+    task_type: Optional[str] = None,
+) -> bool:
+    """Fast heuristic filter to block weak/repetitive outputs, with task-aware overlap logic."""
     text = (candidate or "").strip()
     if not text:
         return True
@@ -562,13 +665,33 @@ def _is_low_quality_candidate(candidate: str, message: str, recent_outputs: List
     if lower in banned_short:
         return True
 
+    if task_type == "email_draft":
+        has_subject = "subject:" in lower
+        has_greeting = bool(re.search(r"\b(hi|hello|dear)\b", lower))
+        has_signoff = bool(re.search(r"\b(best regards|regards|sincerely|thanks|thank you)\b", lower))
+        if not (has_subject and has_greeting and has_signoff):
+            return True
+        if len(cand_words) < 24:
+            return True
+
+    if task_type and any(
+        phrase in lower
+        for phrase in [
+            "share any constraints",
+            "paste the exact text",
+            "i can help with that",
+            "tell me what you want to accomplish",
+        ]
+    ):
+        return True
+
     # Repetition guard against the recent buffer.
     recent_lower = {item.strip().lower() for item in recent_outputs[-3:] if item.strip()}
     if lower in recent_lower:
         return True
 
-    # Require minimal topical overlap for non-trivial inputs.
-    if len(user_words) >= 3:
+    # Require topical overlap only for conversational mode; task drafts can be structurally different.
+    if len(user_words) >= 3 and not task_type:
         overlap = set(user_words) & set(cand_words)
         if not overlap:
             return True

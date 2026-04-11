@@ -26,7 +26,6 @@ import {
 import { 
   Shield, 
   Database, 
-  Download, 
   Trash2, 
   Users,
   RefreshCw,
@@ -36,7 +35,6 @@ import {
   Loader2,
   Upload
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 const API_BASE = "/api";
 
@@ -74,6 +72,8 @@ export function SettingsPage() {
   const [isBootstrapModalOpen, setIsBootstrapModalOpen] = useState(false);
   const [bootstrapSummary, setBootstrapSummary] = useState("");
   const [isBootstrapping, setIsBootstrapping] = useState(false);
+  const [isExportingReport, setIsExportingReport] = useState(false);
+  const [exportReportError, setExportReportError] = useState<string | null>(null);
 
   useEffect(() => {
     let isCancelled = false;
@@ -246,6 +246,40 @@ export function SettingsPage() {
     }
   };
 
+  const handleExportReport = async () => {
+    const userId = localStorage.getItem("user_id");
+    if (!userId || isExportingReport) {
+      return;
+    }
+
+    setExportReportError(null);
+    setIsExportingReport(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/user/export-persona-report?user_id=${encodeURIComponent(userId)}`);
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText || `HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "persona-summary-report.pdf";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to export report";
+      setExportReportError(message);
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col">
       {/* Header */}
@@ -389,14 +423,26 @@ export function SettingsPage() {
                     <div>
                       <p className="font-medium text-foreground">Export Persona Summary</p>
                       <p className="text-sm text-muted-foreground">
-                        Download a text summary of your persona profile
+                        Download your premium Persona Summary Report as PDF
                       </p>
                     </div>
-                    <Button variant="outline" className="gap-2">
-                      <FileText className="w-4 h-4" />
-                      Export
+                    <Button
+                      variant="outline"
+                      className="gap-2"
+                      onClick={() => void handleExportReport()}
+                      disabled={isExportingReport}
+                    >
+                      {isExportingReport ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FileText className="w-4 h-4" />
+                      )}
+                      {isExportingReport ? "Generating..." : "Export"}
                     </Button>
                   </div>
+                  {exportReportError && (
+                    <p className="mt-3 text-xs text-destructive">{exportReportError}</p>
+                  )}
                 </div>
 
                 <div className="bg-card border border-border rounded-xl p-5">

@@ -1,6 +1,6 @@
-import { useState } from "react";
 import { Eye, Users, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { InteractionMode } from "@/contexts/ChatContext";
 import {
   Tooltip,
   TooltipContent,
@@ -8,14 +8,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export type InteractionMode = "reflection" | "mirror";
-
 interface ModeToggleProps {
   mode: InteractionMode;
   onModeChange: (mode: InteractionMode) => void;
 }
 
 export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
+  const modeDescriptions: Record<InteractionMode, string> = {
+    reflection: "Reflection mode helps you unpack thoughts, feelings, and patterns.",
+    mirror: "Persona Mirror mode reflects how you usually communicate and handles explicit tasks in your style.",
+  };
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-2">
@@ -54,8 +57,10 @@ export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-xs bg-card border border-border">
             <p className="text-xs text-muted-foreground leading-relaxed">
-              <span className="font-medium text-foreground">Persona Mirror Mode</span> reflects how you usually communicate. 
-              It does not represent who you are, only how you've been expressing yourself recently.
+              <span className="font-medium text-foreground">
+                {mode === "reflection" ? "Reflection Mode" : "Persona Mirror Mode"}
+              </span>{" "}
+              {modeDescriptions[mode]}
             </p>
           </TooltipContent>
         </Tooltip>

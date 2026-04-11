@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useChatContext, type Message } from "@/contexts/ChatContext";
+import { useChatContext, isInteractionMode, type InteractionMode, type Message } from "@/contexts/ChatContext";
 import { triggerConversationRefresh } from "@/utils/conversationRefresh";
 
 const API_BASE = "/api";
@@ -18,6 +18,7 @@ const API_BASE = "/api";
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [isTyping, setIsTyping] = useState(false);
+  const [assistantTaskType, setAssistantTaskType] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   
@@ -41,13 +42,31 @@ export function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const userId = localStorage.getItem("user_id") || "";
 
+  const modeDescriptions: Record<InteractionMode, string> = {
+    reflection: "Reflection mode",
+    mirror: "Persona mirror active (explicit task commands enabled)",
+  };
+
+  const emptyStateDescriptions: Record<InteractionMode, string> = {
+    reflection: "Reflect on your thoughts and feelings",
+    mirror: "Your persona will mirror your communication style and handle explicit task requests",
+  };
+
+  const formatTaskType = (taskType: string) =>
+    taskType
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
   // Ensure mode is in URL
   useEffect(() => {
     const urlMode = searchParams.get("mode");
-    if (!urlMode) {
-      setSearchParams({ mode: "reflection" }, { replace: true });
+    if (!isInteractionMode(urlMode)) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set("mode", "reflection");
+      setSearchParams(nextParams, { replace: true });
     }
-  }, []);
+  }, [searchParams, setSearchParams]);
 
   // Check backend connection
   useEffect(() => {
@@ -67,13 +86,14 @@ export function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleModeChange = (newMode: "reflection" | "mirror") => {
+  const handleModeChange = (newMode: InteractionMode) => {
     if (newMode === mode) return;
     
     console.log(`🔄 Mode change: ${mode} → ${newMode}`);
     
     // Start new conversation when switching modes
     startNewConversation();
+    setAssistantTaskType(null);
     setSearchParams({ mode: newMode });
   };
 
@@ -117,6 +137,11 @@ export function ChatPage() {
       // Update mirror style if in mirror mode
       if (data.active_mirror_style) setActiveMirrorStyle(data.active_mirror_style);
       if (data.detected_emotion) setDetectedEmotion(data.detected_emotion);
+      if (mode === "mirror") {
+        setAssistantTaskType(
+          typeof data.assistant_task_type === "string" ? data.assistant_task_type : null
+        );
+      }
 
       // Update conversation ID for new conversations
       if (!activeConversationId && data.conversation_id) {
@@ -166,11 +191,13 @@ export function ChatPage() {
 
   const handleSelectConversation = (convId: string) => {
     setActiveConversationId(convId);
+    setAssistantTaskType(null);
     setSearchParams({ conversation_id: convId, mode });
   };
 
   const handleNewChat = () => {
     startNewConversation();
+    setAssistantTaskType(null);
   };
 
   if (!userId || userId === "anonymous") {
@@ -196,7 +223,7 @@ export function ChatPage() {
                 {conversationTitle || "New Conversation"}
               </h1>
               <p className="text-sm text-muted-foreground">
-                {mode === "mirror" ? "Persona mirroring active" : "Reflection mode"}
+                {modeDescriptions[mode]}
               </p>
             </div>
             <div className="flex items-center gap-4">
@@ -207,6 +234,14 @@ export function ChatPage() {
                   activeStyle={activeMirrorStyle as MirrorStyle}
                   detectedEmotion={detectedEmotion || undefined}
                 />
+              )}
+
+              {mode === "mirror" && assistantTaskType && (
+                <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
+                  <span className="text-xs text-amber-700 font-medium">
+                    Task: {formatTaskType(assistantTaskType)}
+                  </span>
+                </div>
               )}
               
               <Button
@@ -250,9 +285,7 @@ export function ChatPage() {
                   <>
                     <h2 className="text-2xl font-semibold mb-2">Start a Conversation</h2>
                     <p className="text-muted-foreground">
-                      {mode === "mirror"
-                        ? "Your persona will mirror your communication style"
-                        : "Reflect on your thoughts and feelings"}
+                      {emptyStateDescriptions[mode]}
                     </p>
                   </>
                 )}

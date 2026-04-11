@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field, model_validator
 import random
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 from datetime import datetime
 import re
@@ -10,11 +10,18 @@ from collections import Counter
 from dotenv import load_dotenv
 from pathlib import Path
 from uuid import UUID
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db import crud
+from app.db.models import UserSettings
 from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
+from app.services.twin_assistant_service import (
+    build_assistant_fallback_reply,
+    classify_assistant_task,
+)
+from app.services.twin_policy import resolve_twin_settings
 
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
@@ -30,7 +37,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     message: Optional[str] = None
     text: Optional[str] = Field(default=None, description="Deprecated alias for message")
-    mode: str  # "reflection" or "mirror"
+    mode: str  # "reflection" or "mirror" ("assistant" accepted as deprecated alias)
 
     @model_validator(mode="after")
     def validate_message_field(self):
@@ -48,8 +55,10 @@ class ChatResponse(BaseModel):
     mirror_active: bool
     confidence_level: str
     mode: str
+    assistant_task_type: Optional[str] = None
     active_mirror_style: Optional[str] = None  # Currently active mirror style
     detected_emotion: Optional[str] = None  # Detected emotional tone
+    twin_policy: Optional[Dict[str, Any]] = None
 
 def init_mistral_client() -> None:
     global MISTRAL_AVAILABLE, mistral_client
@@ -395,6 +404,39 @@ MODEL_PARAMS = {
     "mirror": {"temperature": 0.85, "max_tokens": 150},  # Higher temp for unhinged chaos
 }
 
+EXPLICIT_TASK_COMMAND_PATTERNS = [
+    r"^(can you|could you|please|help me|i need you to|i want you to)\b",
+    r"^(draft|write|compose|rewrite|rephrase|edit|summarize|summarise|brainstorm|plan|outline|create|generate)\b",
+    r"\b(draft|rewrite|rephrase|summarize|summarise|brainstorm|plan|outline|compose)\b.*\b(this|that|for me|for us)\b",
+]
+
+MIRROR_FALLBACK_REPLY = "Got it. Give me a little more context and I will respond in your tone."
+TASK_FOLLOWUP_MARKERS = [
+    "help me write",
+    "write in my tone",
+    "in my tone",
+    "make it sound",
+    "make this better",
+    "polish this",
+    "tighten this",
+    "continue this",
+    "finish this",
+    "make it shorter",
+    "make it longer",
+    "version 2",
+    "another option",
+    "try again",
+    "redo this",
+]
+CONTEXTUAL_TASK_TYPES = {
+    "email_draft",
+    "message_draft",
+    "rewrite",
+    "summarize",
+    "brainstorm",
+    "planning",
+}
+
 # In-memory storage (swap with database for persistence).
 PERSONALITY_PROFILES: Dict[str, Dict[str, object]] = {}
 COMMUNICATION_PROFILES: Dict[str, Dict[str, object]] = {}
@@ -432,6 +474,83 @@ def split_sentences(text: str) -> List[str]:
 
 def extract_words(text: str) -> List[str]:
     return re.findall(r"\b\w+\b", text.lower())
+
+
+def normalize_interaction_mode(mode: Optional[str]) -> Optional[str]:
+    """Normalize deprecated aliases so runtime only uses reflection/mirror modes."""
+    if mode is None:
+        return None
+
+    cleaned = mode.strip().lower()
+    if cleaned == "assistant":
+        return "mirror"
+    return cleaned
+
+
+def detect_explicit_task_command(message: str) -> Optional[str]:
+    """Return task type only when user gives an explicit task command."""
+    text = (message or "").strip().lower()
+    if not text:
+        return None
+
+    if not any(re.search(pattern, text) for pattern in EXPLICIT_TASK_COMMAND_PATTERNS):
+        return None
+
+    task_type = classify_assistant_task(text)
+    # Keep mirror conversational by default; do not route generic/QA into task mode.
+    if task_type in {"qa", "generic"}:
+        return None
+
+    return task_type
+
+
+def resolve_mirror_task_type(message: str, history: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
+    """Resolve mirror task type using explicit commands first, then contextual follow-up cues."""
+    text = (message or "").strip()
+    if not text:
+        return None
+
+    text_lower = text.lower()
+    explicit_task = detect_explicit_task_command(text_lower)
+    followup_hint = any(marker in text_lower for marker in TASK_FOLLOWUP_MARKERS)
+    imperative_hint = bool(
+        re.search(
+            r"^(help me|can you|could you|please|write|draft|compose|rewrite|rephrase|summarize|summarise|plan|outline|brainstorm|polish|tighten|continue|finish|redo|try again)\b",
+            text_lower,
+        )
+    )
+    style_hint = any(token in text_lower for token in ["in my tone", "my tone", "my voice", "sound like me", "write like me"])
+    should_probe_history = followup_hint or imperative_hint or style_hint
+
+    if explicit_task and not (followup_hint or style_hint):
+        return explicit_task
+
+    if history and should_probe_history:
+        user_turns = [
+            (turn.get("content") or "").strip()
+            for turn in history
+            if turn.get("role") == "user" and (turn.get("content") or "").strip()
+        ]
+        if user_turns and user_turns[-1].lower() == text_lower:
+            user_turns = user_turns[:-1]
+
+        for prior_text in reversed(user_turns[-10:]):
+            prior_explicit = detect_explicit_task_command(prior_text)
+            if prior_explicit in CONTEXTUAL_TASK_TYPES:
+                return prior_explicit
+
+            prior_inferred = classify_assistant_task(prior_text.lower())
+            if prior_inferred in CONTEXTUAL_TASK_TYPES:
+                return prior_inferred
+
+    if explicit_task in CONTEXTUAL_TASK_TYPES:
+        return explicit_task
+
+    inferred_task = classify_assistant_task(text_lower)
+    if inferred_task in CONTEXTUAL_TASK_TYPES and should_probe_history:
+        return inferred_task
+
+    return None
 
 # ============================================================================
 # ADAPTIVE PERSONA MIRROR SYSTEM
@@ -1201,15 +1320,20 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     Stores all messages in database.
     Falls back to templates if LLM is not available.
     """
+    effective_mode = normalize_interaction_mode(request.mode)
     logger.info(
-        "💬 /chat payload received: user_id=%s conversation_id=%s mode=%s message_len=%s",
+        "💬 /chat payload received: user_id=%s conversation_id=%s requested_mode=%s effective_mode=%s message_len=%s",
         request.user_id,
         request.conversation_id,
         request.mode,
+        effective_mode,
         len(request.message or ""),
     )
-    
-    if request.mode not in {"reflection", "mirror"}:
+
+    if request.mode.strip().lower() == "assistant":
+        logger.warning("⚠️ Deprecated mode alias 'assistant' received; routing as mirror mode")
+
+    if effective_mode not in {"reflection", "mirror"}:
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'reflection' or 'mirror'.")
 
     try:
@@ -1232,11 +1356,11 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             db=db,
             user_id=user_id_uuid,
             title=conversation_title,
-            mode=request.mode,
+            mode=effective_mode,
             metadata={},
         )
         conversation_id_uuid = conversation.id
-        logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {request.mode}")
+        logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {effective_mode}")
     else:
         # Get existing conversation
         conversation = await crud.get_conversation_by_id(
@@ -1248,17 +1372,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             raise HTTPException(status_code=404, detail="Conversation not found")
         
         # Validate that conversation mode matches request mode
-        if conversation.mode != request.mode:
+        if conversation.mode == "assistant" and effective_mode == "mirror":
+            logger.info("🔁 Upgrading existing assistant conversation to mirror mode")
+            conversation.mode = "mirror"
+            await db.flush()
+        elif conversation.mode != effective_mode:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Conversation mode '{conversation.mode}' does not match request mode '{request.mode}'"
+                detail=f"Conversation mode '{conversation.mode}' does not match request mode '{effective_mode}'"
             )
         
         conversation_title = conversation.title
         logger.info(f"✅ Using existing conversation {conversation_id_uuid} with mode: {conversation.mode}")
 
     # Get conversation history from in-memory storage (for AI context)
-    history = get_user_history(request.user_id, request.mode)
+    history = get_user_history(request.user_id, effective_mode)
     history.append({"role": "user", "content": message_text})
 
     # Update profiles (keep for backward compatibility)
@@ -1270,11 +1398,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     active_mirror_style = None
     detected_emotion = None
     reply = None
+    twin_policy = None
+    assistant_task_type = None
+    mirror_runtime_active = effective_mode == "mirror"
 
-    if request.mode == "reflection":
+    if effective_mode == "reflection":
         # FETCH SCHEDULE CONTEXT
         try:
-            from sqlalchemy import select
             from app.db.models import ScheduleContext
             sched_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id_uuid))
             schedule_context = sched_result.scalar_one_or_none()
@@ -1348,43 +1478,71 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             # Continue - persona update failure shouldn't break chat
     
     else:
-        # MIRROR MODE: Use mirror_engine service (reads snapshot, doesn't modify)
-        logger.info(f"🪞 Using mirror_engine service")
-        
+        # MIRROR MODE: Use mirror_engine service with optional explicit task intent.
+        assistant_task_type = resolve_mirror_task_type(message_text, history)
+        logger.info(
+            "🪞 Using mirror_engine service | explicit_task=%s",
+            assistant_task_type or "none",
+        )
+
+        from app.services.mirror_engine import generate_mirror_response
+        from app.services.memory_service import check_and_recalibrate_drift
+
+        settings_result = await db.execute(select(UserSettings).where(UserSettings.user_id == user_id_uuid))
+        settings_record = settings_result.scalar_one_or_none()
+        twin_policy = resolve_twin_settings(settings_record)
+
         try:
-            from app.services.mirror_engine import generate_mirror_response
-            from app.services.memory_service import check_and_recalibrate_drift
-            
-            # Mirror engine handles: snapshot retrieval, message style analysis, 
-            # persona-based prompt building, variation buffer, and latency cap
+            # Mirror engine handles: snapshot retrieval, message style analysis,
+            # persona-based prompt building, variation buffer, and latency cap.
             reply, metadata = await generate_mirror_response(
                 db,
                 user_id_uuid,
                 message_text,
                 recent_history=history,
+                twin_policy=twin_policy,
+                task_type=assistant_task_type,
             )
-            
+
             # Unpack observability metrics
             inference_duration_ms = metadata.get("inference_duration_ms", 0)
             realism_score = metadata.get("realism_score", 0.0)
             retries_used = metadata.get("retries_used", 0)
             fallback_triggered = metadata.get("fallback_triggered", False)
-            
-            logger.info(f"✅ Mirror engine response: {reply[:50]}... | Realism: {realism_score} | Time: {inference_duration_ms}ms")
-            
-            # Async recalibration check for long term drifts
-            await check_and_recalibrate_drift(db, user_id_uuid)
-            
+            mirror_runtime_active = not bool(
+                fallback_triggered and metadata.get("policy_mode") in {"disabled", "persona_mirroring_disabled"}
+            )
+
+            preview = (reply or "")[:50]
+            logger.info(
+                "✅ Mirror engine response: %s... | Realism: %s | Time: %sms",
+                preview,
+                realism_score,
+                inference_duration_ms,
+            )
         except Exception as e:
-            logger.error(f"⚠️ Mirror engine failed: {e}")
-            reply = "hmm"
+            logger.exception("⚠️ Mirror generation failed")
+            if assistant_task_type:
+                reply = build_assistant_fallback_reply(message_text, assistant_task_type)
+            else:
+                reply = MIRROR_FALLBACK_REPLY
             inference_duration_ms = 0
             realism_score = 0.0
             retries_used = 0
             fallback_triggered = True
+            mirror_runtime_active = False
+
+        # Never overwrite a valid mirror reply due to recalibration failures.
+        try:
+            await check_and_recalibrate_drift(db, user_id_uuid)
+        except Exception:
+            logger.exception("⚠️ Drift recalibration failed; keeping generated mirror reply")
             
         if reply is None:
-            reply = "hmm"
+            if assistant_task_type:
+                reply = build_assistant_fallback_reply(message_text, assistant_task_type)
+            else:
+                reply = MIRROR_FALLBACK_REPLY
             fallback_triggered = True
 
     history.append({"role": "assistant", "content": reply})
@@ -1420,7 +1578,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         )
         
         # Log to MirrorLog observability database if mode is mirror
-        if request.mode == "mirror":
+        if effective_mode == "mirror":
             from app.db.models import MirrorLog
             mirror_log = MirrorLog(
                 user_id=user_id_uuid,
@@ -1446,11 +1604,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         conversation_id=str(conversation_id_uuid),
         title=conversation_title,
         reply=reply,
-        mirror_active=request.mode == "mirror",
+        mirror_active=mirror_runtime_active,
         confidence_level="medium",
-        mode=request.mode,
+        mode=effective_mode,
+        assistant_task_type=assistant_task_type,
         active_mirror_style=active_mirror_style,
-        detected_emotion=detected_emotion
+        detected_emotion=detected_emotion,
+        twin_policy=twin_policy,
     )
 
 
@@ -1468,6 +1628,10 @@ async def list_conversations(
     logger.info(f"{'='*60}")
     
     try:
+        effective_mode = normalize_interaction_mode(mode)
+        if mode and effective_mode not in {"reflection", "mirror"}:
+            raise HTTPException(status_code=400, detail="Invalid mode filter. Use 'reflection' or 'mirror'.")
+
         user_id_uuid = UUID(user_id)
         logger.info(f"🔍 Converted user_id string to UUID: {user_id_uuid}")
         logger.info(f"📊 UUID type: {type(user_id_uuid)}")
@@ -1475,7 +1639,7 @@ async def list_conversations(
         conversations = await crud.get_user_conversations(
             db=db, 
             user_id=user_id_uuid,
-            mode=mode  # Passed but ignored in crud function
+            mode=effective_mode
         )
         
         logger.info(f"\n📊 Retrieved {len(conversations)} conversations from database")

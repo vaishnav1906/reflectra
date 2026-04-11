@@ -179,6 +179,10 @@ class UserSettings(Base):
     persona_mirroring = Column(Boolean, nullable=False, server_default=text("true"))
     pattern_tracking = Column(Boolean, nullable=False, server_default=text("true"))
     daily_reflections = Column(Boolean, nullable=False, server_default=text("true"))
+    digital_twin_enabled = Column(Boolean, nullable=False, server_default=text("true"))
+    twin_autonomy_mode = Column(String(32), nullable=False, server_default=text("'draft_only'"))
+    twin_mirror_intensity = Column(Float, nullable=False, server_default=text("0.8"))
+    twin_require_approval = Column(Boolean, nullable=False, server_default=text("true"))
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="user_settings")
