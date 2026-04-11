@@ -69,7 +69,7 @@ fi
 echo ""
 echo "6️⃣ Running comprehensive validation..."
 echo "======================================================================"
-python validate_startup.py
+python ../scripts/backend/validate_startup.py
 validation_result=$?
 
 if [ $validation_result -ne 0 ]; then

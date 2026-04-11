@@ -12,14 +12,14 @@ if curl -s http://localhost:8000/health > /dev/null 2>&1; then
     echo "✅ Backend is running"
 else
     echo "❌ Backend is not running!"
-    echo "   Start it with: cd /workspaces/reflectra/backend && source ../.venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+    echo "   Start it with: cd backend && source .venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
     exit 1
 fi
 
 echo ""
 echo "2️⃣ Running database check script..."
-cd /workspaces/reflectra/backend
-python test_conversations.py
+# Run the test script from the tests folder
+python ../backend/test_conversations.py
 
 echo ""
 echo "3️⃣ Testing API endpoint directly..."

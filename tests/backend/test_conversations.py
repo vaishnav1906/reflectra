@@ -10,7 +10,10 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 # Load environment
-env_path = Path(__file__).parent / ".env"
+import sys
+backend_dir = Path(__file__).resolve().parent.parent.parent / "backend"
+sys.path.insert(0, str(backend_dir))
+env_path = backend_dir / ".env"
 load_dotenv(env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL")

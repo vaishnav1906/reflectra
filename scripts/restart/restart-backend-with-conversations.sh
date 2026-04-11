@@ -5,7 +5,7 @@
 echo "🔄 Restarting Reflectra Backend..."
 echo ""
 
-cd "$(dirname "$0")/backend"
+cd "$(dirname "$0")/../../backend"
 
 # Kill any existing backend processes
 echo "🛑 Stopping existing backend processes..."

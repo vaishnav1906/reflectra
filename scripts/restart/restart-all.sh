@@ -1,6 +1,9 @@
 #!/bin/bash
 # Complete restart of both frontend and backend
 
+# CD to project root
+cd "$(dirname "$0")/../.."
+
 echo "🔄 Restarting Reflectra services..."
 echo ""
 

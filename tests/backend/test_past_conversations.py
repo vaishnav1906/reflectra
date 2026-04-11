@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 # Load environment
-env_path = Path(__file__).parent / "backend" / ".env"
+env_path = Path(__file__).resolve().parent.parent.parent / "backend" / ".env"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backend"))
 load_dotenv(env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
