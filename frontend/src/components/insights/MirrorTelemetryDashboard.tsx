@@ -4,6 +4,7 @@ import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { cn } from "@/lib/utils";
 
 const API_BASE = "/api/db";
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface TelemetryData {
   total_generations: number;
@@ -13,7 +14,11 @@ interface TelemetryData {
   total_fallbacks: number;
 }
 
-export function MirrorTelemetryDashboard() {
+interface MirrorTelemetryDashboardProps {
+  userId?: string;
+}
+
+export function MirrorTelemetryDashboard({ userId }: MirrorTelemetryDashboardProps) {
   const [data, setData] = useState<TelemetryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,14 +27,33 @@ export function MirrorTelemetryDashboard() {
   const fetchTelemetry = async () => {
     try {
       setRefreshing(true);
-      const userId = localStorage.getItem("user_id");
-      if (!userId) {
+      const resolvedUserId = userId || localStorage.getItem("user_id") || "";
+      if (!resolvedUserId || resolvedUserId === "anonymous") {
+        setData(null);
+        setError(null);
         setLoading(false);
         setRefreshing(false);
         return;
       }
-      const res = await fetch(`${API_BASE}/mirror-telemetry/${userId}`);
-      if (!res.ok) throw new Error("Failed to fetch telemetry");
+      if (!UUID_REGEX.test(resolvedUserId)) {
+        setData(null);
+        setError("Telemetry unavailable: user id is not in UUID format.");
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
+      const res = await fetch(`${API_BASE}/mirror-telemetry/${encodeURIComponent(resolvedUserId)}`);
+      if (!res.ok) {
+        let detail = "Failed to fetch telemetry";
+        try {
+          const errPayload = await res.json();
+          if (errPayload?.detail) detail = String(errPayload.detail);
+        } catch {
+          // keep default detail
+        }
+        throw new Error(detail);
+      }
       const json = await res.json();
       setData(json);
       setError(null);
@@ -42,11 +66,11 @@ export function MirrorTelemetryDashboard() {
   };
 
   useEffect(() => {
-    fetchTelemetry();
+    void fetchTelemetry();
     // Refresh every 10 seconds
     const interval = setInterval(fetchTelemetry, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [userId]);
 
   return (
     <div className="bg-card border border-border rounded-xl p-6 relative overflow-hidden">
@@ -75,6 +99,10 @@ export function MirrorTelemetryDashboard() {
       {loading ? (
         <div className="flex items-center justify-center py-8">
           <Activity className="w-6 h-6 animate-pulse text-muted-foreground" />
+        </div>
+      ) : !userId || userId === "anonymous" ? (
+        <div className="py-8 text-center text-sm text-muted-foreground bg-muted/30 rounded-lg">
+          Log in to view Mirror telemetry.
         </div>
       ) : error ? (
         <div className="py-8 text-center text-sm text-red-500 bg-red-500/10 rounded-lg">

@@ -27,15 +27,19 @@ ALLOWED_CONTENT_TYPES = {
 }
 
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+whisper_model = None
 
-try:
-    # Load once at startup/import time to avoid per-request cold starts.
-    whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
-    logger.info("Whisper model loaded: %s", WHISPER_MODEL_NAME)
-except Exception:
-    whisper_model = None
-    logger.exception("Failed to load Whisper model '%s'", WHISPER_MODEL_NAME)
-
+def get_whisper_model():
+    global whisper_model
+    if whisper_model is None:
+        try:
+            logger.info("Loading Whisper model: %s. This might take a moment on the first run...", WHISPER_MODEL_NAME)
+            whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
+            logger.info("Whisper model loaded: %s", WHISPER_MODEL_NAME)
+        except Exception:
+            logger.exception("Failed to load Whisper model '%s'", WHISPER_MODEL_NAME)
+            raise RuntimeError("Whisper model is not available")
+    return whisper_model
 
 def _convert_to_wav(input_path: str, output_path: str) -> None:
     ffmpeg.input(input_path).output(
@@ -48,10 +52,8 @@ def _convert_to_wav(input_path: str, output_path: str) -> None:
 
 
 def _transcribe_audio(wav_path: str) -> dict:
-    if whisper_model is None:
-        raise RuntimeError("Whisper model is not available")
-
-    return whisper_model.transcribe(wav_path, fp16=False)
+    model = get_whisper_model()
+    return model.transcribe(wav_path, fp16=False)
 
 
 @router.post("/transcribe")

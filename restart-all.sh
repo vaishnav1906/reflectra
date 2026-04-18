@@ -19,7 +19,7 @@ echo "  ✓ Backend dependencies installed"
 
 echo ""
 echo "🚀 Starting backend..."
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload > ../backend.log 2>&1 &
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app > ../backend.log 2>&1 &
 BACKEND_PID=$!
 echo "  ✓ Backend starting (PID: $BACKEND_PID)"
 echo "  📋 Logs: tail -f backend.log"

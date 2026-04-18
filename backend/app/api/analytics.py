@@ -16,6 +16,7 @@ from app.db.models import (
     PersonaSnapshot,
     ScheduleContext,
 )
+from app.services.confidence_interval_service import build_confidence_explainability
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -603,3 +604,33 @@ async def get_timeline_patterns(
         "overview": overview,
         "events": ranked_events,
     }
+
+
+@router.get("/confidence-explainability/{user_id}")
+async def get_confidence_explainability(
+    user_id: UUID,
+    message: Optional[str] = Query(None, description="Optional message text for per-request explainability"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Expose confidence interval source contributions for explainability."""
+    message_text = (message or "").strip()
+    if not message_text:
+        latest_stmt = (
+            select(Message.content)
+            .where(
+                Message.user_id == user_id,
+                Message.role == "user",
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        latest_result = await db.execute(latest_stmt)
+        message_text = (latest_result.scalar_one_or_none() or "")
+
+    payload = await build_confidence_explainability(
+        db=db,
+        user_id=user_id,
+        message_text=message_text,
+    )
+    payload["message_used"] = message_text
+    return payload

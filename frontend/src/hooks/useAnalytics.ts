@@ -57,6 +57,34 @@ export interface TimelineResponse {
   events: TimelineEvent[];
 }
 
+export interface ConfidenceExplainabilityControls {
+  phrase_usage_frequency: number;
+  tone_strength: number;
+  reaction_accuracy_threshold: number;
+  style_enforcement_intensity: number;
+  include_uncertainty_note: boolean;
+}
+
+export interface ConfidenceExplainabilityResponse {
+  center: number;
+  interval: {
+    lower: number;
+    upper: number;
+  };
+  tier: 'very_low' | 'partial' | 'moderate' | 'high';
+  source_scores: Record<string, number>;
+  source_weights: Record<string, number>;
+  source_contributions: Record<string, number>;
+  timeline_recency_override: {
+    applied: boolean;
+    recent_avg: number;
+    older_avg: number;
+    override_strength: number;
+  };
+  controls: ConfidenceExplainabilityControls;
+  message_used: string;
+}
+
 export function useBehavioralMetrics(userId: string, view: 'day' | 'week' | 'month') {
   return useQuery({
     queryKey: ['analytics', 'metrics', userId, view],
@@ -106,5 +134,28 @@ export function useTimelineEvents(userId: string, range: TimelineRange = '7d') {
     },
     enabled: !!userId && userId !== 'anonymous',
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useConfidenceExplainability(userId: string, message?: string) {
+  return useQuery({
+    queryKey: ['analytics', 'confidence-explainability', userId, message || 'latest'],
+    queryFn: async (): Promise<ConfidenceExplainabilityResponse> => {
+      const params = new URLSearchParams();
+      if (message && message.trim()) {
+        params.set('message', message.trim());
+      }
+      const query = params.toString();
+      const endpoint = query
+        ? `/api/analytics/confidence-explainability/${userId}?${query}`
+        : `/api/analytics/confidence-explainability/${userId}`;
+
+      const response = await fetch(endpoint);
+      if (!response.ok) throw new Error('Failed to fetch confidence explainability');
+      return response.json();
+    },
+    enabled: !!userId && userId !== 'anonymous',
+    staleTime: 15 * 1000,
+    refetchInterval: 15 * 1000,
   });
 }

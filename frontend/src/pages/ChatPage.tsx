@@ -236,7 +236,7 @@ export function ChatPage() {
                 />
               )}
 
-              {mode === "mirror" && assistantTaskType && (
+              {mode === "mirror" && assistantTaskType && assistantTaskType !== "generic" && (
                 <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
                   <span className="text-xs text-amber-700 font-medium">
                     Task: {formatTaskType(assistantTaskType)}

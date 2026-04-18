@@ -34,6 +34,10 @@ class User(Base):
     user_settings = relationship("UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
     behavioral_insights = relationship("BehavioralInsight", back_populates="user", cascade="all, delete-orphan")
     reflection_logs = relationship("ReflectionLog", back_populates="user", cascade="all, delete-orphan")
+    linguistic_fingerprint = relationship("LinguisticFingerprint", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    reaction_patterns = relationship("ReactionPattern", back_populates="user", cascade="all, delete-orphan")
+    mirror_response_memories = relationship("MirrorResponseMemory", back_populates="user", cascade="all, delete-orphan")
+    external_inputs = relationship("ExternalInput", back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -51,6 +55,7 @@ class Conversation(Base):
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
     behavioral_insights = relationship("BehavioralInsight", back_populates="conversation")
     reflection_logs = relationship("ReflectionLog", back_populates="conversation")
+    mirror_response_memories = relationship("MirrorResponseMemory", back_populates="conversation")
 
 
 class Message(Base):
@@ -199,4 +204,75 @@ class MirrorLog(Base):
     realism_score = Column(Numeric(4, 3), nullable=False)
     retries_used = Column(Integer, nullable=False, server_default=text("0"))
     fallback_triggered = Column(Boolean, nullable=False, server_default=text("false"))
+    confidence_lower = Column(Float)
+    confidence_upper = Column(Float)
+    confidence_tier = Column(String(32))
+    style_enforcement_strength = Column(Float)
+    reaction_match_score = Column(Float)
+    source_weights = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class MirrorResponseMemory(Base):
+    __tablename__ = "mirror_response_memories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    response_hash = Column(String(64), nullable=False, index=True)
+    response_text = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="mirror_response_memories")
+    conversation = relationship("Conversation", back_populates="mirror_response_memories")
+
+
+class LinguisticFingerprint(Base):
+    __tablename__ = "linguistic_fingerprints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    characteristic_phrases = Column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    abbreviation_stats = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    sentence_patterns = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    sample_count = Column(Integer, nullable=False, server_default=text("0"))
+    confidence = Column(Float, nullable=False, server_default=text("0.1"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="linguistic_fingerprint")
+
+
+class ReactionPattern(Base):
+    __tablename__ = "reaction_patterns"
+    __table_args__ = (
+        UniqueConstraint("user_id", "stimulus_tag", "response_template", name="uq_reaction_pattern_user_stimulus_template"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    stimulus_tag = Column(String(64), nullable=False, index=True)
+    response_template = Column(Text, nullable=False)
+    phrase_bank = Column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    style_signature = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    confidence = Column(Float, nullable=False, server_default=text("0.3"))
+    frequency = Column(Integer, nullable=False, server_default=text("1"))
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="reaction_patterns")
+
+
+class ExternalInput(Base):
+    __tablename__ = "external_inputs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    source = Column(String(64), nullable=False, server_default=text("'pasted_prompt'"))
+    content = Column(Text, nullable=False)
+    extracted_markers = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    confidence_weight = Column(Float, nullable=False, server_default=text("0.1"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="external_inputs")

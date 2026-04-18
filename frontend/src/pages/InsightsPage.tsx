@@ -11,6 +11,7 @@ import { useBehavioralMetrics, useActivityHeatmap } from "@/hooks/useAnalytics";
 import { ActivityRings } from "@/components/insights/ActivityRings";
 import { BehavioralLineChart } from "@/components/insights/BehavioralLineChart";
 import { ActivityHeatmap } from "@/components/insights/ActivityHeatmap";
+import { ConfidenceExplainabilityCard } from "@/components/insights/ConfidenceExplainabilityCard";
 
 const topicData = [
   { topic: "Vocational", sessions: 18 },
@@ -139,7 +140,11 @@ export function InsightsPage() {
               </div>
             </div>
             
-            <MirrorTelemetryDashboard />
+            <MirrorTelemetryDashboard userId={userId} />
+
+            {userId !== "anonymous" ? (
+              <ConfidenceExplainabilityCard userId={userId} />
+            ) : null}
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {weeklyStats.map((stat) => (

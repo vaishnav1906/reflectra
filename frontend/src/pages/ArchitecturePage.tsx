@@ -15,7 +15,8 @@ import {
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { MirrorTelemetryDashboard } from "@/components/insights/MirrorTelemetryDashboard";
-import { useState } from "react";
+import { ConfidenceExplainabilityCard } from "@/components/insights/ConfidenceExplainabilityCard";
+import { useEffect, useState } from "react";
 
 interface PipelineBlock {
   id: string;
@@ -113,6 +114,14 @@ const learningLoopSteps = [
 
 export function ArchitecturePage() {
   const [selectedBlock, setSelectedBlock] = useState<PipelineBlock | null>(null);
+  const [userId, setUserId] = useState<string>("anonymous");
+
+  useEffect(() => {
+    const id = localStorage.getItem("user_id");
+    if (id) {
+      setUserId(id);
+    }
+  }, []);
 
   return (
     <div className="h-screen flex flex-col">
@@ -150,7 +159,11 @@ export function ArchitecturePage() {
               </div>
             </div>
             
-            <MirrorTelemetryDashboard />
+            <MirrorTelemetryDashboard userId={userId} />
+
+            {userId !== "anonymous" ? (
+              <ConfidenceExplainabilityCard userId={userId} />
+            ) : null}
 
             {/* Pipeline Visualization */}
             <div className="relative">

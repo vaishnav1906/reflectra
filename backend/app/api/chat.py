@@ -38,6 +38,8 @@ class ChatRequest(BaseModel):
     message: Optional[str] = None
     text: Optional[str] = Field(default=None, description="Deprecated alias for message")
     mode: str  # "reflection" or "mirror" ("assistant" accepted as deprecated alias)
+    external_input_text: Optional[str] = None
+    external_input_source: Optional[str] = "pasted_prompt"
 
     @model_validator(mode="after")
     def validate_message_field(self):
@@ -59,6 +61,9 @@ class ChatResponse(BaseModel):
     active_mirror_style: Optional[str] = None  # Currently active mirror style
     detected_emotion: Optional[str] = None  # Detected emotional tone
     twin_policy: Optional[Dict[str, Any]] = None
+    confidence_interval: Optional[Dict[str, float]] = None
+    style_strength: Optional[float] = None
+    reaction_source: Optional[str] = None
 
 def init_mistral_client() -> None:
     global MISTRAL_AVAILABLE, mistral_client
@@ -1352,12 +1357,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         logger.info(f"📝 Creating new conversation with title: {conversation_title}")
         
         # Create new conversation
+        metadata_payload = {}
+        if request.external_input_text:
+            metadata_payload["external_input_source"] = request.external_input_source or "pasted_prompt"
+
         conversation = await crud.create_conversation(
             db=db,
             user_id=user_id_uuid,
             title=conversation_title,
             mode=effective_mode,
-            metadata={},
+            metadata=metadata_payload,
         )
         conversation_id_uuid = conversation.id
         logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {effective_mode}")
@@ -1401,6 +1410,10 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     twin_policy = None
     assistant_task_type = None
     mirror_runtime_active = effective_mode == "mirror"
+    confidence_interval = None
+    style_strength = None
+    reaction_source = None
+    reaction_match_score = 0.0
 
     if effective_mode == "reflection":
         # FETCH SCHEDULE CONTEXT
@@ -1478,11 +1491,23 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             # Continue - persona update failure shouldn't break chat
     
     else:
-        # MIRROR MODE: Use mirror_engine service with optional explicit task intent.
-        assistant_task_type = resolve_mirror_task_type(message_text, history)
+        # MIRROR MODE: Always keep full assistant capability while preserving mirror style.
+        explicit_task_type = resolve_mirror_task_type(message_text, history)
+        inferred_task_type = classify_assistant_task(message_text.lower())
+        assistant_task_type = explicit_task_type or inferred_task_type
+
+        # Detect emotional tone and resolve adaptive mirror archetype for this turn.
+        active_mirror_style, detected_emotion = get_adaptive_mirror_style(
+            request.user_id,
+            message_text,
+            personality_profile,
+        )
+
         logger.info(
-            "🪞 Using mirror_engine service | explicit_task=%s",
+            "🪞 Using mirror_engine service | task=%s | style=%s | emotion=%s",
             assistant_task_type or "none",
+            active_mirror_style,
+            detected_emotion,
         )
 
         from app.services.mirror_engine import generate_mirror_response
@@ -1502,6 +1527,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
                 recent_history=history,
                 twin_policy=twin_policy,
                 task_type=assistant_task_type,
+                detected_emotion=detected_emotion,
+                active_mirror_style=active_mirror_style,
+                conversation_id=conversation_id_uuid,
             )
 
             # Unpack observability metrics
@@ -1509,6 +1537,17 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             realism_score = metadata.get("realism_score", 0.0)
             retries_used = metadata.get("retries_used", 0)
             fallback_triggered = metadata.get("fallback_triggered", False)
+            confidence_lower = float(metadata.get("confidence_lower", 0.0))
+            confidence_upper = float(metadata.get("confidence_upper", 0.0))
+            confidence_tier = str(metadata.get("confidence_tier", "very_low"))
+            style_strength = float(metadata.get("style_enforcement_strength", 0.0))
+            reaction_match_score = float(metadata.get("reaction_match_score", 0.0))
+            source_weights = metadata.get("source_weights", {})
+            reaction_source = str(metadata.get("stimulus_tag", "general"))
+            confidence_interval = {
+                "lower": confidence_lower,
+                "upper": confidence_upper,
+            }
             mirror_runtime_active = not bool(
                 fallback_triggered and metadata.get("policy_mode") in {"disabled", "persona_mirroring_disabled"}
             )
@@ -1522,6 +1561,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             )
         except Exception as e:
             logger.exception("⚠️ Mirror generation failed")
+            await db.rollback()
             if assistant_task_type:
                 reply = build_assistant_fallback_reply(message_text, assistant_task_type)
             else:
@@ -1531,12 +1571,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             retries_used = 0
             fallback_triggered = True
             mirror_runtime_active = False
+            confidence_lower = 0.0
+            confidence_upper = 0.0
+            confidence_tier = "very_low"
+            style_strength = 0.0
+            reaction_match_score = 0.0
+            source_weights = {}
+            reaction_source = "general"
+            confidence_interval = {"lower": 0.0, "upper": 0.0}
 
         # Never overwrite a valid mirror reply due to recalibration failures.
         try:
             await check_and_recalibrate_drift(db, user_id_uuid)
         except Exception:
             logger.exception("⚠️ Drift recalibration failed; keeping generated mirror reply")
+            await db.rollback()
             
         if reply is None:
             if assistant_task_type:
@@ -1544,6 +1593,25 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             else:
                 reply = MIRROR_FALLBACK_REPLY
             fallback_triggered = True
+
+        if request.external_input_text:
+            from app.db.models import ExternalInput
+            try:
+                db.add(
+                    ExternalInput(
+                        user_id=user_id_uuid,
+                        conversation_id=conversation_id_uuid,
+                        source=request.external_input_source or "pasted_prompt",
+                        content=request.external_input_text,
+                        extracted_markers={},
+                        confidence_weight=0.1,
+                    )
+                )
+                await db.flush()
+            except Exception as ext_err:
+                # External input persistence is optional and should not break chat flow.
+                logger.warning("⚠️ Skipping external input persistence: %s", ext_err)
+                await db.rollback()
 
     history.append({"role": "assistant", "content": reply})
 
@@ -1564,6 +1632,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         logger.error(f"❌ Failed to store user message: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store user message: {str(e)}")
 
+    try:
+        from app.services.behavioral_memory_service import update_linguistic_fingerprint
+
+        await update_linguistic_fingerprint(db, user_id_uuid, message_text)
+        await db.commit()
+    except Exception as fingerprint_err:
+        # Behavioral memory persistence is optional and should not break main chat flow.
+        logger.warning("⚠️ Skipping linguistic fingerprint update: %s", fingerprint_err)
+        await db.rollback()
+
     # Store AI response in database
     logger.info(f"💾 Storing assistant message for conversation {conversation_id_uuid}")
     try:
@@ -1576,10 +1654,25 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             embedding=None,
             token_count=None,
         )
-        
-        # Log to MirrorLog observability database if mode is mirror
-        if effective_mode == "mirror":
+        logger.info(f"✅ Stored assistant message {assistant_message.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to store assistant message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to store assistant message: {str(e)}")
+
+    # Log mirror telemetry in a best-effort manner so missing optional schema never breaks chat.
+    if effective_mode == "mirror":
+        try:
             from app.db.models import MirrorLog
+            from app.services.behavioral_memory_service import upsert_reaction_pattern
+
+            await upsert_reaction_pattern(
+                db=db,
+                user_id=user_id_uuid,
+                stimulus_tag=reaction_source or "general",
+                response_template=reply,
+                reaction_match_score=reaction_match_score,
+            )
+
             mirror_log = MirrorLog(
                 user_id=user_id_uuid,
                 conversation_id=conversation_id_uuid,
@@ -1587,16 +1680,20 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
                 inference_duration_ms=inference_duration_ms,
                 realism_score=realism_score,
                 retries_used=retries_used,
-                fallback_triggered=fallback_triggered
+                fallback_triggered=fallback_triggered,
+                confidence_lower=confidence_lower,
+                confidence_upper=confidence_upper,
+                confidence_tier=confidence_tier,
+                style_enforcement_strength=style_strength,
+                reaction_match_score=reaction_match_score,
+                source_weights=source_weights,
             )
             db.add(mirror_log)
             await db.commit()
             logger.info("📊 Saved Mirror Observability Log")
-
-        logger.info(f"✅ Stored assistant message {assistant_message.id}")
-    except Exception as e:
-        logger.error(f"❌ Failed to store assistant message: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to store assistant message: {str(e)}")
+        except Exception as telemetry_err:
+            logger.warning("⚠️ Skipping mirror telemetry persistence: %s", telemetry_err)
+            await db.rollback()
 
     logger.info(f"✅ Generated response and stored 2 messages for conversation {conversation_id_uuid}")
     
@@ -1605,12 +1702,15 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         title=conversation_title,
         reply=reply,
         mirror_active=mirror_runtime_active,
-        confidence_level="medium",
+        confidence_level=(confidence_tier if effective_mode == "mirror" else "medium"),
         mode=effective_mode,
         assistant_task_type=assistant_task_type,
         active_mirror_style=active_mirror_style,
         detected_emotion=detected_emotion,
         twin_policy=twin_policy,
+        confidence_interval=confidence_interval,
+        style_strength=style_strength,
+        reaction_source=reaction_source,
     )
 
 
