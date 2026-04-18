@@ -17,6 +17,27 @@ export interface ChatMessageProps {
 export function ChatMessage({ role, content, timestamp, indicators, className }: ChatMessageProps) {
   const isAI = role === "assistant";
 
+  const parseMarkdown = (text: string) => {
+    return text.split('\n').map((line, lineIndex, arr) => {
+      // Find both **bold** and *bold* avoiding capturing empty strings
+      const regex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+      const parts = line.split(regex);
+      return (
+        <span key={lineIndex}>
+          {parts.map((part, i) => {
+            if (part.startsWith('**') && part.endsWith('**')) {
+              return <strong key={i}>{part.slice(2, -2)}</strong>;
+            } else if (part.startsWith('*') && part.endsWith('*')) {
+              return <strong key={i}>{part.slice(1, -1)}</strong>;
+            }
+            return part;
+          })}
+          {lineIndex < arr.length - 1 && <br />}
+        </span>
+      );
+    });
+  };
+
   return (
     <div className={cn("flex gap-4 fade-in", isAI ? "flex-row" : "flex-row-reverse", className)}>
       {/* Avatar */}
@@ -41,7 +62,7 @@ export function ChatMessage({ role, content, timestamp, indicators, className }:
             isAI ? "chat-bubble-ai rounded-tl-sm" : "chat-bubble-user rounded-tr-sm"
           )}
         >
-          <p className="text-sm leading-relaxed">{content}</p>
+          <p className="text-sm leading-relaxed">{parseMarkdown(content)}</p>
         </div>
 
         {/* Metadata & Indicators */}

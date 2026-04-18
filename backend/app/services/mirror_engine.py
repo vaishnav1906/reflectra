@@ -186,7 +186,7 @@ def _generate_local_fallback_reply(message: str) -> str:
     lower = text.lower()
 
     if not text:
-        return "say more"
+        return "What's on your mind?"
 
     if "?" in text:
         return random.choice(
@@ -531,8 +531,10 @@ async def generate_mirror_response(
             final_reply = build_assistant_fallback_reply(message, resolved_task_type)
         else:
             final_reply = await generate_baseline_mirror_response(message)
+            # If the baseline also triggers low quality, we just use it anyway to avoid
+            # hard-looping on "say more" which feels completely unnatural.
             if _is_low_quality_candidate(final_reply, message, recent_outputs, task_type=resolved_task_type):
-                final_reply = "say more"
+                logger.warning("Baseline fallback also triggered low-quality heuristic, using it anyway.")
         telemetry["fallback_triggered"] = True
     else:
         final_reply = best_candidate
@@ -923,7 +925,8 @@ STRICT RULES:
 6. FORBIDDEN OUTPUTS:
 - Fabricated claims that an external action was completed
 - AI self-references or policy disclosures
- - Generic fillers: "hmm", "ok", "idk", "same" as standalone replies
+- Generic fillers: "hmm", "ok", "idk", "same" as standalone replies
+- Excessive use of asterisks (*) for emphasis. Use bold/italics rarely and ONLY for truly important words. Do not bold alternate words.
 7. VALIDATION CHECK:
 Before output, verify: "Would the user realistically type this?"
 
@@ -1014,8 +1017,6 @@ Respond as if you're them talking back to themselves.
         )
         
         candidate = response.choices[0].message.content.strip()
-        if _is_low_quality_candidate(candidate, message, []):
-            return "say more"
         return candidate
         
     except Exception as e:
@@ -1083,26 +1084,5 @@ def _is_low_quality_candidate(
     recent_lower = {item.strip().lower() for item in recent_outputs[-3:] if item.strip()}
     if lower in recent_lower:
         return True
-
-    # Require topical overlap for non-structured responses; drafts can be structurally different.
-    if len(user_words) >= 4 and not is_structured_task:
-        stop_words = {
-            "a",
-            "an",
-            "the",
-            "is",
-            "it",
-            "to",
-            "for",
-            "and",
-            "or",
-            "but",
-            "this",
-            "that",
-        }
-        meaningful_user = {w for w in user_words if w not in stop_words}
-        meaningful_candidate = {w for w in cand_words if w not in stop_words}
-        if meaningful_user and meaningful_candidate and not (meaningful_user & meaningful_candidate):
-            return True
 
     return False

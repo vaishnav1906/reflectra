@@ -93,7 +93,7 @@ async def enforce_style(
 ) -> StyleEnforcementResult:
     text = (draft or "").strip()
     if not text:
-        text = "say more"
+        text = "I'm not sure what to say."
 
     stimulus_tag = detect_stimulus_tag(original_message)
     reaction_prefix, reaction_score = await select_reaction_prefix(
