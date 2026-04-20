@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import asyncio
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backend"))
 
 # Load environment variables
 load_dotenv()
@@ -188,7 +188,7 @@ def check_file_structure():
     print("\n📁 Checking required files:")
     all_exist = True
     for file in required_files:
-        file_path = Path(__file__).parent / file
+        file_path = Path(__file__).resolve().parent.parent.parent / "backend" / file
         if file_path.exists():
             print(f"  ✅ {file}")
         else:
