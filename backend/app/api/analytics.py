@@ -409,25 +409,35 @@ async def _build_timeline_events(
 @router.get("/metrics/{user_id}")
 async def get_behavioral_metrics(
     user_id: UUID,
-    view: str = Query("week", description="Timeframe view: day, week, month"),
+    view: str = Query("week", description="Timeframe view: day, week, month, all"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Fetch aggregated behavioral metrics over time for Activity Rings and Line Charts.
     """
     now = _utc_now()
-    
+
     if view == "day":
         start_date = now - timedelta(days=1)
         trunc_period = "hour"
     elif view == "month":
         start_date = now - timedelta(days=30)
         trunc_period = "day"
+    elif view == "all":
+        start_date = None
+        trunc_period = "day"
     else: # default week
         start_date = now - timedelta(days=7)
         trunc_period = "day"
         
     date_trunc_expr = func.date_trunc(trunc_period, Message.created_at)
+
+    filters = [
+        Message.user_id == user_id,
+        Message.role == "user",
+    ]
+    if start_date is not None:
+        filters.append(Message.created_at >= start_date)
 
     stmt = select(
         date_trunc_expr.label("period"),
@@ -437,9 +447,7 @@ async def get_behavioral_metrics(
         func.avg(Message.reflection_depth).label("avg_reflection_depth"),
         func.avg(Message.response_delay_ms).label("avg_delay_ms"),
     ).where(
-        Message.user_id == user_id,
-        Message.role == "user",
-        Message.created_at >= start_date
+        *filters
     ).group_by(date_trunc_expr).order_by(date_trunc_expr)
 
     result = await db.execute(stmt)
@@ -465,7 +473,7 @@ async def get_behavioral_metrics(
 
     return {
         "view": view,
-        "start_date": start_date.isoformat(),
+        "start_date": start_date.isoformat() if start_date is not None else "all",
         "totals": totals,
         "timeline": data,
     }

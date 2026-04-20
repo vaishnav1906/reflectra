@@ -79,9 +79,10 @@ export function PersonalityPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [ringValues, setRingValues] = useState<Record<string, number>>({});
+  const [timelineView, setTimelineView] = useState<"week" | "month" | "all">("all");
   
   const userId = localStorage.getItem("user_id") || "anonymous";
-  const { data: metricsData, isLoading: isLoadingMetrics } = useBehavioralMetrics(userId, "week");
+  const { data: metricsData, isLoading: isLoadingMetrics } = useBehavioralMetrics(userId, timelineView);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -145,16 +146,10 @@ export function PersonalityPage() {
     const dayInitial = date.toLocaleDateString('en-US', { weekday: 'short' }).charAt(0);
     return { name: dayInitial, count: d.message_count };
   });
-  
-  // Pad out to 7 days if lacking data
-  const paddedCharData = [...charData];
-  while (paddedCharData.length < 7) {
-     paddedCharData.unshift({ name: "-", count: 0 });
-  }
 
-  const recent7 = paddedCharData.slice(-7);
+  const fullTimeline = charData.length > 0 ? charData : [{ name: "-", count: 0 }];
   const totalMessages = timelineData.reduce((sum, d) => sum + d.message_count, 0);
-  const weeklyAvg = totalMessages > 0 ? (totalMessages / timelineData.length).toFixed(1) : "0.0";
+  const averageMessagesPerPeriod = totalMessages > 0 ? (totalMessages / timelineData.length).toFixed(1) : "0.0";
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground">
@@ -277,12 +272,35 @@ export function PersonalityPage() {
                    </div>
                 ) : (
                   <div className="bg-card border border-border rounded-[2.5rem] p-10 relative overflow-hidden">
+                    <div className="flex justify-end mb-6">
+                      <div className="flex bg-muted rounded-lg p-1 border border-border">
+                        {([
+                          { label: "Last 7 days", value: "week" as const },
+                          { label: "Last 30 days", value: "month" as const },
+                          { label: "All time", value: "all" as const },
+                        ]).map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => setTimelineView(option.value)}
+                            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                              timelineView === option.value
+                                ? "bg-background text-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Ring Tracker */}
-                    <div className="flex gap-4 mb-10 w-full justify-between sm:justify-start">
-                      {recent7.map((d, i) => (
+                    <div className="mb-10 w-full overflow-x-auto">
+                      <div className="flex gap-4 min-w-max pb-2">
+                      {fullTimeline.map((d, i) => (
                         <div key={i} className="flex flex-col items-center gap-3">
                            <FitnessRing
-                             value={Math.min(((d.count || 0.1) / Math.max(parseFloat(weeklyAvg), 1)) * 50, 100)} 
+                             value={Math.min(((d.count || 0.1) / Math.max(parseFloat(averageMessagesPerPeriod), 1)) * 50, 100)} 
                              size={36}
                              strokeWidth={6}
                              color="#A4FF00"
@@ -291,13 +309,14 @@ export function PersonalityPage() {
                            <span className="text-[10px] font-black text-muted-foreground uppercase">{d.name}</span>
                         </div>
                       ))}
+                      </div>
                     </div>
 
                     <div className="mb-16">
                       <h3 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-4">Daily Average</h3>
                       <div className="flex items-baseline gap-2">
                         <span className="text-[5rem] font-black tracking-tighter leading-none text-[#A4FF00] drop-shadow-[0_0_12px_rgba(164,255,0,0.3)]">
-                          {weeklyAvg}
+                          {averageMessagesPerPeriod}
                         </span>
                         <span className="text-2xl font-black tracking-widest text-[#A4FF00]/60">
                           MSG
@@ -308,7 +327,7 @@ export function PersonalityPage() {
                     {/* Chart Container */}
                     <div className="w-full relative z-10" style={{ marginLeft: '-15px' }}>
                       <CapsuleBarChart 
-                        data={recent7}
+                        data={fullTimeline}
                         dataKey="count"
                         color="#A4FF00"
                         height={400}

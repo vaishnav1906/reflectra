@@ -14,7 +14,7 @@ export interface MetricTotals {
 }
 
 export interface BehavioralMetricsResponse {
-  view: 'day' | 'week' | 'month';
+  view: 'day' | 'week' | 'month' | 'all';
   start_date: string;
   totals: MetricTotals;
   timeline: BehavioralMetric[];
@@ -85,7 +85,7 @@ export interface ConfidenceExplainabilityResponse {
   message_used: string;
 }
 
-export function useBehavioralMetrics(userId: string, view: 'day' | 'week' | 'month') {
+export function useBehavioralMetrics(userId: string, view: 'day' | 'week' | 'month' | 'all') {
   return useQuery({
     queryKey: ['analytics', 'metrics', userId, view],
     queryFn: async (): Promise<BehavioralMetricsResponse> => {
