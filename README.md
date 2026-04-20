@@ -1,129 +1,110 @@
-# Reflectra - AI-Powered Self-Reflection Platform
+# Reflectra
 
-A full-stack application with React frontend and FastAPI backend, powered by Mistral AI.
+AI-powered self-reflection platform with a FastAPI backend and React frontend.
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.12+
 - Node.js 18+
-- Mistral API key ([Get one here](https://console.mistral.ai/api-keys/))
 
-### Setup & Run
+### Setup
 
-**1. Backend Setup:**
+1) Python environment (single shared env at repo root)
+
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Add your Mistral API key and database URL
-cat <<'EOF' > .env
-MISTRAL_API_KEY=your_key_here
-DATABASE_URL=postgresql+asyncpg://postgres.rnddxkfgddwcwuedwaog:your_db_password@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres
-EOF
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
 ```
 
-**2. Frontend Setup:**
+2) Frontend dependencies
+
 ```bash
 cd frontend
 npm install
+cd ..
 ```
 
-**3. Start Services:**
+3) Backend environment file
 
-Terminal 1 - Backend:
+Create `backend/.env` with required values:
+
+```env
+MISTRAL_API_KEY=your_key_here
+DATABASE_URL=your_database_url_here
+```
+
+### Run
+
+Use utility scripts:
+
 ```bash
+./scripts/restart-all.sh
+./scripts/check-status.sh
+```
+
+Or manually:
+
+```bash
+source .venv/bin/activate
 cd backend
-source venv/bin/activate
 alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Terminal 2 - Frontend:
+In another terminal:
+
 ```bash
 cd frontend
 npm run dev
 ```
 
-**4. Access:**
-- Frontend: http://localhost:8080
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+## Repository Layout
 
-## 📁 Project Structure
-
-```
-reflectra-frontend/
-├── backend/              # FastAPI backend
-│   ├── app/
-│   │   ├── main.py      # FastAPI app entry
-│   │   └── api/
-│   │       └── chat.py  # Chat endpoints with Mistral AI
-│   ├── .env             # API keys (gitignored)
-│   └── requirements.txt # Python dependencies
-├── frontend/            # React + TypeScript frontend
-│   ├── src/
-│   │   ├── pages/      # Page components
-│   │   ├── components/ # UI components
-│   │   └── lib/        # Utils
-│   └── package.json    # Node dependencies
-└── README.md
+```text
+.
+├── backend/
+├── frontend/
+├── scripts/
+├── tests/
+├── docs/
+├── data/
+├── README.md
+└── .gitignore
 ```
 
-## 🤖 Features
+## Key Scripts
 
-- **Reflection Mode**: Asks thought-provoking questions
-- **Mirror Mode**: Provides empathetic validation
-- **AI-Powered**: Uses Mistral AI for responses
-- **Modern UI**: shadcn/ui + Tailwind CSS
+- `scripts/restart-all.sh` - restart backend and frontend
+- `scripts/restart-backend-with-conversations.sh` - restart backend only
+- `scripts/check-status.sh` - health and dependency checks
+- `scripts/test-conversations.sh` - conversation endpoint checks
 
-## 🔧 Backend (.env)
+## Tests
 
-```env
-MISTRAL_API_KEY=your_key_here
-DATABASE_URL=postgresql+asyncpg://postgres.rnddxkfgddwcwuedwaog:your_db_password@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres
+Backend and integration-style tests are centralized under `tests/backend`.
+
+Examples:
+
+```bash
+python tests/backend/test_conversations.py
+python tests/backend/test_past_conversations.py
+python tests/backend/test_mirror_confidence_updates.py
 ```
 
-## 🐛 Troubleshooting
+## Documentation
 
-**401 Unauthorized?**
-- Check API key at https://console.mistral.ai/
-- Ensure no spaces in `.env` file
-- Restart backend after changing `.env`
+Canonical docs are in `docs/`.
 
-**Backend not starting?**
-- Activate venv: `source backend/venv/bin/activate`
-- Install deps: `pip install -r requirements.txt`
+- architecture-fix.md
+- conversation-history.md
+- past-conversations.md
+- persona-quickstart.md
+- persona-system.md
+- error-handling-improvements.md
+- backend-cors-fix.md
 
-**Frontend can't connect?**
-- Ensure backend is running on port 8000
-- Check browser console for errors
-
-## 📚 Tech Stack
-
-**Backend:** FastAPI, Mistral AI, Uvicorn, Pydantic  
-**Frontend:** React, TypeScript, Vite, shadcn/ui, Tailwind CSS
-
-## 📄 License
+## License
 
 MIT
-4. **Hot reload** enabled for both frontend and backend
-
-## 🐛 Troubleshooting
-
-**CORS errors?**
-- Make sure backend is running on port 8000
-- Check `backend/app/main.py` CORS configuration
-- Verify `frontend/.env.local` has correct URL
-
-**Proxy not working?**
-- Restart frontend dev server after backend starts
-- Check console logs for proxy messages
-- Verify `frontend/vite.config.ts` proxy configuration
-
-**Backend not starting?**
-- Activate virtual environment: `source backend/venv/bin/activate`
-- Install dependencies: `pip install -r backend/requirements.txt`
-- Check if port 8000 is already in use

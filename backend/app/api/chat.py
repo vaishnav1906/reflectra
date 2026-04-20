@@ -1594,6 +1594,30 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
                 reply = MIRROR_FALLBACK_REPLY
             fallback_triggered = True
 
+        # PERSONA SERVICE INTEGRATION: Mirror messages should also grow confidence.
+        logger.info("🔄 Updating persona from mirror message")
+        try:
+            from app.services.trait_extraction_service import extract_traits
+            from app.services.persona_update_service import update_traits
+            from app.services.snapshot_service import generate_persona_snapshot
+            from app.services.mirror_engine import invalidate_snapshot_cache
+
+            extracted_traits = await extract_traits(message_text)
+            if not extracted_traits:
+                extracted_traits = derive_fallback_traits(message_text)
+                logger.info(f"🔁 Using fallback trait extraction (mirror): {len(extracted_traits)} traits")
+            else:
+                logger.info(f"🔍 Extracted {len(extracted_traits)} traits (mirror)")
+
+            if extracted_traits:
+                await update_traits(db, user_id_uuid, extracted_traits)
+                await generate_persona_snapshot(db, user_id_uuid)
+                invalidate_snapshot_cache(user_id_uuid)
+                logger.info("✅ Persona updated from mirror message and snapshot regenerated")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to update persona from mirror message: {e}")
+            await db.rollback()
+
         if request.external_input_text:
             from app.db.models import ExternalInput
             try:

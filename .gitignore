@@ -1,16 +1,20 @@
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+env/
+ENV/
+backend/venv/
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-venv/
-env/
-ENV/
 *.egg-info/
-dist/
-build/
-*.pyc
+.pytest_cache/
+.mypy_cache/
 
 # Node
 node_modules/
@@ -30,31 +34,33 @@ out/
 .env
 .env.local
 .env.*.local
+
+# Logs and runtime artifacts
 *.log
 backend.log
 frontend.log
+data/*.log
+data/*.tmp
 
-# IDEs
+# Test/coverage artifacts
+coverage/
+.nyc_output/
+.coverage
+htmlcov/
+
+# IDE/editor
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
 
-# OS
+# OS/system
 .DS_Store
 Thumbs.db
 *.bak
 
-# Test files
-coverage/
-.nyc_output/
-
-# Temporary files
+# Temp/cache
 *.tmp
 *.temp
 .cache/
-
-backend/venv/
-backend/venv

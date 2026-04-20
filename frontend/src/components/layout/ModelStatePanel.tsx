@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
+import { toast } from "@/components/ui/sonner";
 
 const API_BASE = "/api";
 
@@ -60,6 +61,15 @@ export function ModelStatePanel() {
         const data: SystemState = await response.json();
         if (isMounted) {
           setSystemState(data);
+
+          const warningKey = `mirror-low-confidence-warning:${userId}`;
+          const alreadyWarned = sessionStorage.getItem(warningKey) === "1";
+          if (data.confidence <= 10 && !alreadyWarned) {
+            toast.warning(
+              "Confidence is low right now. Persona Mirror may not fully reflect your persona yet - chat in Reflection Mode more to improve it.",
+            );
+            sessionStorage.setItem(warningKey, "1");
+          }
         }
       } catch (error) {
         console.error("❌ Failed to fetch system state:", error);
