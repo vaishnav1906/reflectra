@@ -41,3 +41,23 @@ async def call_mistral(request: Request):
             return resp.json()
         except httpx.HTTPError as e:
             return {"error": "upstream request failed", "detail": str(e)}
+
+
+@app.post("/auth/login")
+async def auth_login(payload: dict):
+    """
+    Minimal login stub for Vercel deployment.
+    Accepts JSON payload (e.g. {"email":"...","display_name":"..."})
+    and returns a simple token and user object. Replace with real auth logic.
+    """
+    email = payload.get("email") if isinstance(payload, dict) else None
+    display_name = payload.get("display_name") if isinstance(
+        payload, dict) else None
+    if not email:
+        return {"error": "email required"}
+
+    # In a real app: validate credentials, create session, issue JWT, etc.
+    fake_token = "dev-token-12345"
+    user = {"email": email,
+            "display_name": display_name or email.split("@")[0]}
+    return {"token": fake_token, "user": user}
