@@ -80,7 +80,8 @@ async def user_system_state(user_id: Optional[str] = None):
         "status": "inactive",
         "last_inference": None,
         "memory_count": 0,
-        "confidence": None,
+        # Provide numeric default so frontend can safely call numeric methods
+        "confidence": 0.0,
         "learning_inactive_cycle_days": 7,
     }
     return response
