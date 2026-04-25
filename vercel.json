@@ -1,0 +1,18 @@
+{
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "routePrefix": "/",
+      "framework": "vite",
+      "buildCommand": "npm --prefix frontend run build",
+      "outputDirectory": "frontend/dist"
+    },
+    "backend": {
+      "entrypoint": "backend",
+      "routePrefix": "/api",
+      "framework": "docker",
+      "dockerfile": "backend/Dockerfile",
+      "buildCommand": "docker build -f backend/Dockerfile -t reflectra-backend ./backend"
+    }
+  }
+}
