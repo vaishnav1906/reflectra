@@ -28,9 +28,9 @@ Deploy steps (Vercel UI):
 3. Deploy — Vercel will build the frontend and the lightweight backend using `requirements.vercel.txt` which should fit within the 500 MB function bundle limit.
 
 Notes
+
 - This lightweight backend intentionally avoids installing heavy packages (torch, whisper, weasyprint). Use managed APIs for heavy workloads and proxy them through this app.
 - If you later want to run the full backend with native deps, use the `backend/Dockerfile` and a container host (Render/Cloud Run).
-
 
 Files added to help Vercel:
 

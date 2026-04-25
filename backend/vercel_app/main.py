@@ -32,7 +32,8 @@ async def call_mistral(request: Request):
         return {"error": "MISTRAL_API_URL or MISTRAL_API_KEY not configured"}
 
     body = await request.json()
-    headers = {"Authorization": f"Bearer {mistral_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {mistral_key}",
+               "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
