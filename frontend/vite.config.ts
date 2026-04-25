@@ -60,5 +60,10 @@ export default defineConfig(({ mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    build: {
+      // Increase chunk size warning limit from the default 500 KB to 1500 KB
+      // to avoid noisy warnings for large vendor bundles. Value is in KB.
+      chunkSizeWarningLimit: 1500,
+    },
   };
 });
