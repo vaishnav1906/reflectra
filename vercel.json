@@ -4,8 +4,7 @@
       "entrypoint": "frontend",
       "routePrefix": "/",
       "framework": "vite",
-      "buildCommand": "npm --prefix frontend run build",
-      "outputDirectory": "frontend/dist"
+      "buildCommand": "npm --prefix frontend run build"
     },
     "backend": {
       "entrypoint": "backend",
