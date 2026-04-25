@@ -4,7 +4,7 @@
       "entrypoint": "frontend",
       "routePrefix": "/",
       "framework": "vite",
-      "buildCommand": "npm --prefix frontend run build"
+      "buildCommand": "npm run build"
     },
     "backend": {
       "entrypoint": "backend",
