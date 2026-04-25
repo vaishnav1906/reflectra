@@ -10,7 +10,6 @@
       "entrypoint": "backend",
       "routePrefix": "/api",
       "framework": "docker",
-      "dockerfile": "backend/Dockerfile",
       "buildCommand": "docker build -f backend/Dockerfile -t reflectra-backend ./backend"
     }
   }
