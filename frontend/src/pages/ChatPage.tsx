@@ -8,7 +8,8 @@ import { ActiveMirrorIndicator, MirrorStyle } from "@/components/chat/ActiveMirr
 import { ConversationHistoryModal } from "@/components/chat/ConversationHistoryModal";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { MessageSquare } from "lucide-react";
+import { MessageSquare, EyeOff } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useChatContext, isInteractionMode, type InteractionMode, type Message } from "@/contexts/ChatContext";
 import { triggerConversationRefresh } from "@/utils/conversationRefresh";
@@ -21,6 +22,7 @@ export function ChatPage() {
   const [assistantTaskType, setAssistantTaskType] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [incognitoFeedback, setIncognitoFeedback] = useState<"enabled" | "disabled" | null>(null);
   
   // Get chat state from context (persists across navigation)
   const {
@@ -36,6 +38,9 @@ export function ChatPage() {
     setActiveMirrorStyle,
     detectedEmotion,
     setDetectedEmotion,
+    isIncognito,
+    incognitoSessionId,
+    setIncognitoMode,
     startNewConversation,
   } = useChatContext();
 
@@ -97,6 +102,21 @@ export function ChatPage() {
     setSearchParams({ mode: newMode });
   };
 
+  const handleIncognitoChange = (enabled: boolean) => {
+    setIncognitoFeedback(enabled ? "enabled" : "disabled");
+    setIncognitoMode(enabled);
+  };
+
+  useEffect(() => {
+    if (!incognitoFeedback) return;
+
+    const timeout = window.setTimeout(() => {
+      setIncognitoFeedback(null);
+    }, 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [incognitoFeedback]);
+
   const handleSend = async (content: string) => {
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -121,6 +141,8 @@ export function ChatPage() {
           conversation_id: activeConversationId,
           message: content,
           mode,
+          is_incognito: isIncognito,
+          incognito_session_id: incognitoSessionId,
         }),
       });
 
@@ -144,7 +166,7 @@ export function ChatPage() {
       }
 
       // Update conversation ID for new conversations
-      if (!activeConversationId && data.conversation_id) {
+      if (!isIncognito && !activeConversationId && data.conversation_id) {
         setActiveConversationId(data.conversation_id);
         setConversationTitle(data.title);
         setSearchParams({ 
@@ -155,6 +177,8 @@ export function ChatPage() {
         // Trigger refresh for any subscribers (like the conversation history modal)
         console.log("✅ New conversation created, triggering refresh");
         triggerConversationRefresh();
+      } else if (isIncognito && data.conversation_id) {
+        setConversationTitle(data.title || "Incognito Session");
       }
 
       const aiMessage: Message = {
@@ -220,7 +244,7 @@ export function ChatPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-lg font-semibold">
-                {conversationTitle || "New Conversation"}
+                {conversationTitle || (isIncognito ? "Incognito Session" : "New Conversation")}
               </h1>
               <p className="text-sm text-muted-foreground">
                 {modeDescriptions[mode]}
@@ -228,6 +252,17 @@ export function ChatPage() {
             </div>
             <div className="flex items-center gap-4">
               <ModeToggle mode={mode} onModeChange={handleModeChange} />
+
+              <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <EyeOff className="h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Incognito</p>
+                    <p className="text-[10px] text-muted-foreground">Temporary session</p>
+                  </div>
+                </div>
+                <Switch checked={isIncognito} onCheckedChange={handleIncognitoChange} />
+              </div>
               
               {mode === "mirror" && activeMirrorStyle && (
                 <ActiveMirrorIndicator
@@ -263,6 +298,39 @@ export function ChatPage() {
             </div>
           </div>
         </header>
+
+        {incognitoFeedback && (
+          <div className="mx-8 mt-3">
+            <div
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-medium shadow-lg",
+                "animate-in fade-in slide-in-from-top-2 zoom-in-95 duration-300",
+                incognitoFeedback === "enabled"
+                  ? "border-primary/30 bg-primary/15 text-primary"
+                  : "border-border bg-muted/80 text-muted-foreground"
+              )}
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+              {incognitoFeedback === "enabled" ? "Incognito enabled" : "Incognito disabled"}
+            </div>
+          </div>
+        )}
+
+        {isIncognito && (
+          <div className="mx-8 mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-sm">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <EyeOff className="h-4 w-4" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground">Incognito Mode ON</p>
+                <p className="text-sm text-muted-foreground">
+                  This conversation is temporary and won’t be saved or used to improve your profile.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <ScrollArea className="flex-1 px-8 py-6">
           <div className="max-w-3xl mx-auto space-y-6">

@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -19,12 +20,15 @@ from weasyprint import HTML
 from app.db.models import (
     BehavioralInsight,
     Message,
+    PersonalityProfile,
     PersonaSnapshot,
     ReflectionLog,
     ScheduleContext,
     User,
     UserPersonaMetric,
 )
+
+logger = logging.getLogger(__name__)
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
@@ -81,6 +85,115 @@ def _load_brand_icon_uri() -> str | None:
         return _file_to_data_uri(fallback_svg, "image/svg+xml")
     return None
 
+
+def _profile_numeric_dimensions(profile: PersonalityProfile | None) -> Dict[str, float]:
+    if not profile:
+        return {}
+
+    raw_dimensions = {
+        "Openness": _safe_float(profile.openness, 0.5),
+        "Conscientiousness": _safe_float(profile.conscientiousness, 0.5),
+        "Extraversion": _safe_float(profile.extraversion, 0.5),
+        "Agreeableness": _safe_float(profile.agreeableness, 0.5),
+        "Neuroticism": _safe_float(profile.neuroticism, 0.5),
+    }
+    return {name: _clamp(value) for name, value in raw_dimensions.items()}
+
+
+def _profile_signal_counter(profile: PersonalityProfile | None) -> Counter:
+    counter = Counter()
+    if not profile:
+        return counter
+
+    for group in (profile.themes, profile.traits, profile.values, profile.stressors):
+        if not isinstance(group, dict):
+            continue
+
+        for raw_label, raw_value in group.items():
+            if not raw_label:
+                continue
+
+            label = str(raw_label).replace("_", "-").strip().lower()
+            if not label:
+                continue
+
+            weight = 1.0
+            if isinstance(raw_value, (int, float)):
+                weight = float(raw_value)
+            elif isinstance(raw_value, dict):
+                for key in ("count", "score", "weight", "value"):
+                    nested = raw_value.get(key)
+                    if isinstance(nested, (int, float)):
+                        weight = float(nested)
+                        break
+                else:
+                    weight = float(len(raw_value)) if raw_value else 1.0
+            elif isinstance(raw_value, list):
+                weight = float(len(raw_value)) if raw_value else 1.0
+
+            counter[label] += max(weight, 1.0)
+
+    return counter
+
+
+def _profile_communication_traits(profile_dimensions: Dict[str, float]) -> Dict[str, float]:
+    if not profile_dimensions:
+        return {}
+
+    openness = profile_dimensions.get("Openness", 0.5)
+    conscientiousness = profile_dimensions.get("Conscientiousness", 0.5)
+    extraversion = profile_dimensions.get("Extraversion", 0.5)
+    agreeableness = profile_dimensions.get("Agreeableness", 0.5)
+    neuroticism = profile_dimensions.get("Neuroticism", 0.5)
+
+    return {
+        "Curiosity": _clamp((openness * 0.72) + (extraversion * 0.28)),
+        "Directness": _clamp((conscientiousness * 0.55) + ((1 - agreeableness) * 0.2) + ((1 - neuroticism) * 0.25)),
+        "Detail Level": _clamp((conscientiousness * 0.62) + (openness * 0.23) + ((1 - neuroticism) * 0.15)),
+    }
+
+
+def _profile_personality_dimensions(profile_dimensions: Dict[str, float]) -> Dict[str, float]:
+    if not profile_dimensions:
+        return {}
+
+    openness = profile_dimensions.get("Openness", 0.5)
+    conscientiousness = profile_dimensions.get("Conscientiousness", 0.5)
+    extraversion = profile_dimensions.get("Extraversion", 0.5)
+    agreeableness = profile_dimensions.get("Agreeableness", 0.5)
+    neuroticism = profile_dimensions.get("Neuroticism", 0.5)
+
+    return {
+        "Analytical": _clamp((conscientiousness * 0.65) + ((1 - neuroticism) * 0.35)),
+        "Creative": _clamp((openness * 0.72) + (extraversion * 0.28)),
+        "Structured": _clamp((conscientiousness * 0.78) + ((1 - openness) * 0.22)),
+        "Expressive": _clamp(extraversion),
+        "Decisive": _clamp((conscientiousness * 0.45) + ((1 - neuroticism) * 0.55)),
+    }
+
+
+def _blend_trait_maps(primary: Dict[str, float], secondary: Dict[str, float], primary_weight: float = 0.75) -> Dict[str, float]:
+    if not primary:
+        return secondary
+    if not secondary:
+        return primary
+
+    blended: Dict[str, float] = {}
+    keys = set(primary) | set(secondary)
+    for key in keys:
+        blended[key] = _clamp((primary.get(key, 0.5) * primary_weight) + (secondary.get(key, 0.5) * (1 - primary_weight)))
+    return blended
+
+
+def _build_profile_highlights(profile_dimensions: Dict[str, float]) -> List[Tuple[str, str]]:
+    if not profile_dimensions:
+        return [("Profile", "No stored profile signals yet")]
+
+    highlights: List[Tuple[str, str]] = []
+    for label, value in sorted(profile_dimensions.items(), key=lambda item: item[1], reverse=True):
+        highlights.append((label, f"{value:.2f}"))
+    return highlights[:6]
+
 @dataclass
 class ReportPayload:
     display_name: str
@@ -106,6 +219,7 @@ class ReportPayload:
     interests_distribution: Dict[str, float]
     communication_traits: Dict[str, float]
     personality_dimensions: Dict[str, float]
+    profile_highlights: List[Tuple[str, str]]
     timeline_points: List[Tuple[str, float, float]]
 
 async def build_persona_report_pdf(db: AsyncSession, user_id: UUID) -> bytes:
@@ -124,6 +238,11 @@ async def build_persona_report_pdf(db: AsyncSession, user_id: UUID) -> bytes:
 async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
+
+    profile_result = await db.execute(
+        select(PersonalityProfile).where(PersonalityProfile.user_id == user_id)
+    )
+    personality_profile = profile_result.scalar_one_or_none()
 
     snapshots_result = await db.execute(
         select(PersonaSnapshot).where(PersonaSnapshot.user_id == user_id).order_by(PersonaSnapshot.created_at.asc()).limit(30)
@@ -153,6 +272,11 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
     schedule_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id))
     schedule = schedule_result.scalar_one_or_none()
 
+    profile_dimensions = _profile_numeric_dimensions(personality_profile)
+    profile_signals = _profile_signal_counter(personality_profile)
+    profile_communication_traits = _profile_communication_traits(profile_dimensions)
+    profile_personality_dimensions = _profile_personality_dimensions(profile_dimensions)
+
     metric_map = {m.trait_name: _safe_float(m.score) for m in metrics}
 
     comm_style = metric_map.get("communication_style", 0.5)
@@ -161,15 +285,17 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
     reflection_depth = metric_map.get("reflection_depth", 0.5)
 
     texts = [m.content for m in messages if m.content] + [r.response for r in reflections if r.response]
-    communication_traits = _derive_communication_traits(texts, comm_style, decision_framing)
+    metric_communication_traits = _derive_communication_traits(texts, comm_style, decision_framing)
+    communication_traits = _blend_trait_maps(profile_communication_traits, metric_communication_traits, primary_weight=0.7)
 
-    personality_dimensions = {
+    metric_personality_dimensions = {
         "Analytical": _clamp((reflection_depth * 0.6) + (decision_framing * 0.4)),
         "Creative": _clamp((emotional_expr * 0.55) + (comm_style * 0.45)),
         "Structured": _clamp((decision_framing * 0.7) + ((1 - comm_style) * 0.3)),
         "Expressive": _clamp(emotional_expr),
         "Decisive": _clamp(decision_framing),
     }
+    personality_dimensions = _blend_trait_maps(profile_personality_dimensions, metric_personality_dimensions, primary_weight=0.7)
 
     tags_counter = Counter()
     for insight in insights:
@@ -182,7 +308,7 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
             tags_counter[normalized] += 1
 
     if not tags_counter:
-        tags_counter.update({"self-reflection": 3, "decision-making": 2, "growth": 2, "communication": 2})
+        tags_counter.update(profile_signals or {"self-reflection": 3, "decision-making": 2, "growth": 2, "communication": 2})
 
     top_tags = [name for name, _ in tags_counter.most_common(8)]
     interests_distribution = _normalize_distribution(tags_counter, max_items=6)
@@ -190,6 +316,7 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
 
     inferred_tags = _humanize_tags(top_tags)
     insight_cards = _build_insight_cards(communication_traits, personality_dimensions, schedule)
+    profile_highlights = _build_profile_highlights(profile_dimensions)
 
     archetype_name, archetype_tagline, archetype_summary = _build_archetype(communication_traits, personality_dimensions)
     overall_score = int((
@@ -241,8 +368,47 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
         interests_distribution=interests_distribution,
         communication_traits=communication_traits,
         personality_dimensions=personality_dimensions,
+        profile_highlights=profile_highlights,
         timeline_points=timeline_points,
     )
+
+
+@dataclass
+class CoreTrait:
+    name: str
+    left_label: str
+    right_label: str
+    score: float
+    lean_label: str
+
+
+@dataclass
+class PatternNote:
+    pattern: str
+    meaning: str
+
+
+@dataclass
+class ModernReportPayload:
+    display_name: str
+    report_date_long: str
+    report_date_short: str
+    basis_line: str
+    snapshot_summary: str
+    activity_points: List[Tuple[str, int]]
+    activity_what: str
+    activity_meaning: str
+    depth_frequency_class: str
+    depth_frequency_what: str
+    depth_frequency_meaning: str
+    emotional_what: str
+    emotional_meaning: str
+    emotional_points: List[Tuple[str, float]]
+    core_traits: List[CoreTrait]
+    key_patterns: List[PatternNote]
+    big_picture: str
+    stage_label: str
+    action_plan: List[str]
 
 
 def _build_executive_analysis(comm: Dict[str, float], pers: Dict[str, float], arch_name: str) -> str:

@@ -89,6 +89,7 @@ export function ConversationHistoryModal({
                 <X className="h-4 w-4" />
               </Button>
             </div>
+
           </CardHeader>
 
           <CardContent className="flex-1 p-0 overflow-hidden">

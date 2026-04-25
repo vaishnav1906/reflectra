@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -12,48 +12,48 @@
     --background: 222 47% 6%;
     --foreground: 210 40% 96%;
 
-    --card: 222 47% 8%;
+    --card: 222 35% 9%;
     --card-foreground: 210 40% 96%;
 
-    --popover: 222 47% 10%;
+    --popover: 222 35% 10%;
     --popover-foreground: 210 40% 96%;
 
     /* Primary - Soft cyan for intelligence/clarity */
-    --primary: 187 70% 55%;
+    --primary: 194 68% 58%;
     --primary-foreground: 222 47% 6%;
 
     /* Secondary - Muted slate for depth */
-    --secondary: 217 33% 17%;
+    --secondary: 217 28% 16%;
     --secondary-foreground: 210 40% 90%;
 
-    --muted: 217 33% 14%;
-    --muted-foreground: 215 20% 55%;
+    --muted: 217 28% 14%;
+    --muted-foreground: 215 18% 62%;
 
     /* Accent - Warm amber for human touch */
-    --accent: 38 92% 60%;
+    --accent: 36 60% 66%;
     --accent-foreground: 222 47% 6%;
 
     --destructive: 0 62% 50%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 217 33% 18%;
-    --input: 217 33% 15%;
-    --ring: 187 70% 55%;
+    --border: 217 24% 18%;
+    --input: 217 24% 16%;
+    --ring: 194 68% 58%;
 
     --radius: 0.75rem;
 
     /* Custom tokens */
-    --glow-primary: 187 70% 55%;
-    --glow-accent: 38 92% 60%;
-    --surface-elevated: 222 47% 11%;
+    --glow-primary: 194 68% 58%;
+    --glow-accent: 36 60% 66%;
+    --surface-elevated: 222 35% 11%;
     --surface-subtle: 222 47% 7%;
     
     /* Trait colors */
-    --trait-analytical: 210 80% 60%;
-    --trait-empathetic: 340 65% 60%;
-    --trait-creative: 280 65% 60%;
-    --trait-consistent: 160 55% 50%;
-    --trait-introspective: 260 50% 60%;
+    --trait-analytical: 208 70% 62%;
+    --trait-empathetic: 340 48% 64%;
+    --trait-creative: 282 54% 66%;
+    --trait-consistent: 164 42% 58%;
+    --trait-introspective: 258 46% 66%;
 
     /* Sidebar */
     --sidebar-background: 222 47% 5%;
@@ -96,6 +96,16 @@
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', system-ui, sans-serif;
   }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: 'Manrope', 'Inter', system-ui, sans-serif;
+    letter-spacing: -0.03em;
+  }
 }
 
 @layer components {
@@ -128,6 +138,13 @@
       hsl(var(--card)) 0%,
       hsl(var(--surface-elevated)) 100%
     );
+  }
+
+  .glass-panel {
+    background: linear-gradient(135deg, hsl(var(--card) / 0.72) 0%, hsl(var(--surface-elevated) / 0.58) 100%);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow: 0 22px 70px rgba(0, 0, 0, 0.28);
   }
 
   /* Trait badge colors */
@@ -183,6 +200,26 @@
   @keyframes slideInLeft {
     from { opacity: 0; transform: translateX(-12px); }
     to { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Sidebar nav click feedback */
+  .sidebar-nav-pop {
+    animation: sidebarNavPop 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes sidebarNavPop {
+    0% {
+      transform: translateX(0) scale(0.98);
+      box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+    }
+    55% {
+      transform: translateX(2px) scale(1.02);
+      box-shadow: 0 0 0 6px hsl(var(--primary) / 0.08);
+    }
+    100% {
+      transform: translateX(0) scale(1);
+      box-shadow: 0 0 30px -10px hsl(var(--primary) / 0.15);
+    }
   }
 
   /* Typing indicator */

@@ -1,4 +1,4 @@
-import { Brain, Github, Twitter } from "lucide-react";
+import { Brain, Github } from "lucide-react";
 import { Link } from "react-router-dom";
 
 export function LandingFooter() {
@@ -19,10 +19,13 @@ export function LandingFooter() {
               memory, and self-reflection. Built with privacy and ethics at its core.
             </p>
             <div className="flex items-center gap-4">
-              <a href="#" className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
-                <Twitter className="w-4 h-4" />
-              </a>
-              <a href="#" className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors">
+              <a
+                href="https://github.com/vaishnav1906/reflectra"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Reflectra GitHub repository"
+                className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+              >
                 <Github className="w-4 h-4" />
               </a>
             </div>

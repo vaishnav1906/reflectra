@@ -1,5 +1,5 @@
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   MessageSquare,
   User,
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ModelStatePanel } from "./ModelStatePanel";
 import { ProfileMenu } from "./ProfileMenu";
 import { ConversationHistoryModal } from "@/components/chat/ConversationHistoryModal";
+import type { InteractionMode } from "@/contexts/ChatContext";
 
 const navItems = [
   { title: "Home", path: "/", icon: Home },
@@ -29,10 +30,11 @@ export function AppSidebar() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [showConversationModal, setShowConversationModal] = useState(false);
+  const [animatedNavPath, setAnimatedNavPath] = useState<string | null>(null);
 
   // Get userId dynamically each time - it might change after login
   const userId = localStorage.getItem("user_id") || "";
-  const currentMode = searchParams.get("mode") || "reflection";
+  const currentMode: InteractionMode = searchParams.get("mode") === "mirror" ? "mirror" : "reflection";
 
   // Debug logs
   console.log("📊 AppSidebar:", {
@@ -54,7 +56,19 @@ export function AppSidebar() {
       e.preventDefault();
       setShowConversationModal(true);
     }
+
+    setAnimatedNavPath(item.path);
   };
+
+  useEffect(() => {
+    if (!animatedNavPath) return;
+
+    const timeout = window.setTimeout(() => {
+      setAnimatedNavPath(null);
+    }, 360);
+
+    return () => window.clearTimeout(timeout);
+  }, [animatedNavPath]);
 
   const handleSelectConversation = (conversationId: string) => {
     navigate(`/app/chat?conversation_id=${conversationId}&mode=${currentMode}`);
@@ -98,13 +112,13 @@ export function AppSidebar() {
               onClick={(e) => handleNavClick(e, item)}
               onContextMenu={(e) => handleNavContextMenu(e, item)}
               className={cn(
-                "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200",
-                isActive
-                  ? "bg-sidebar-accent text-primary glow-subtle"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground"
+                "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 will-change-transform",
+                isActive || animatedNavPath === item.path
+                  ? "bg-sidebar-accent text-primary glow-subtle sidebar-nav-pop"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground hover:translate-x-0.5"
               )}
             >
-              <item.icon className={cn("w-4 h-4", isActive && "text-primary")} />
+              <item.icon className={cn("w-4 h-4 transition-transform duration-200", isActive && "text-primary", animatedNavPath === item.path && "scale-110")} />
               <span>{item.title}</span>
               {item.path === "/app/chat" && (
                 <span className="ml-auto w-2 h-2 rounded-full bg-primary pulse-indicator" />

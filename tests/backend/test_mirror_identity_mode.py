@@ -16,7 +16,6 @@ from app.services.mirror_engine import (
     ASSISTANT_FALLBACK_TASK_TYPES,
     _hash_response_text,
     _is_recent_duplicate,
-    _is_low_quality_candidate,
     _normalize_response_text,
     build_mirror_system_prompt,
 )
@@ -48,12 +47,10 @@ class MirrorIdentityContractTests(unittest.TestCase):
     def test_prompt_enforces_full_capability(self):
         prompt = build_mirror_system_prompt(
             sampled_profile={
-                "emotional_intensity": 0.6,
-                "emotional_stability": 0.5,
-                "directness": 0.7,
-                "expressiveness": 0.6,
-                "analytical_thinking": 0.55,
-                "decision_confidence": 0.65,
+                "communication_style": 0.72,
+                "emotional_expressiveness": 0.66,
+                "decision_framing": 0.71,
+                "reflection_depth": 0.63,
             },
             stability_index=0.52,
             message_style={
@@ -74,6 +71,10 @@ class MirrorIdentityContractTests(unittest.TestCase):
 
         self.assertIn("Always answer with full assistant capability", prompt)
         self.assertIn("Active Archetype: chaotic", prompt)
+        self.assertIn("Communication Style (Concise", prompt)
+        self.assertIn("Decision Framing (Hesitant", prompt)
+        self.assertIn("Continue the same thought thread", prompt)
+        self.assertIn("self-directed", prompt)
 
     def test_normalization_and_hash_are_stable(self):
         left = "  Same   Reply  Text "

@@ -30,6 +30,8 @@ def classify_assistant_task(message: str) -> str:
         return "message_draft"
     if any(token in text for token in ["rewrite", "rephrase", "paraphrase", "make this sound", "edit this"]):
         return "rewrite"
+    if re.search(r"\b(generate|create)\b", text):
+        return "message_draft"
     if re.search(r"\b(write|draft|compose)\b", text):
         return "message_draft"
     if any(token in text for token in ["summarize", "summary", "tl;dr", "tldr", "condense"]):

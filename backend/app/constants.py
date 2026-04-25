@@ -3,6 +3,71 @@
 # Feature Flags
 ENABLE_MIRROR_MODE = True
 
+# Mirror mode trait controls
+MIRROR_CORE_TRAITS = [
+    "communication_style",
+    "emotional_expressiveness",
+    "decision_framing",
+    "reflection_depth",
+]
+
+MIRROR_DEFAULT_TRAIT_SCORES = {
+    "communication_style": 0.5,
+    "emotional_expressiveness": 0.5,
+    "decision_framing": 0.5,
+    "reflection_depth": 0.5,
+}
+
+MIRROR_MIN_CONFIDENCE_FOR_TRAIT = 0.2
+
+MIRROR_GENERIC_FILLERS = {
+    "hmm",
+    "ok",
+    "okay",
+    "k",
+    "idk",
+    "sure",
+    "same",
+    "nah",
+    "yeah",
+    "sup",
+}
+
+MIRROR_HEDGING_MARKERS = {
+    "maybe",
+    "i think",
+    "probably",
+    "possibly",
+    "might",
+    "not sure",
+    "i guess",
+    "sort of",
+    "kind of",
+}
+
+MIRROR_DECISIVE_MARKERS = {
+    "definitely",
+    "for sure",
+    "will",
+    "must",
+    "clearly",
+    "the answer is",
+    "do this",
+}
+
+MIRROR_DEPTH_MARKERS = {
+    "because",
+    "pattern",
+    "cycle",
+    "underneath",
+    "root",
+    "meaning",
+    "why",
+    "loop",
+}
+
+MIRROR_MIN_TOPIC_OVERLAP = 0.12
+
 # Trait taxonomy for gradual behavioral trait shifting
 # These 4 core traits map to observable behavioral patterns
 TRAIT_LIST = [

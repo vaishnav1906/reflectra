@@ -18,6 +18,8 @@ interface ChatContextType {
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
   loadingMessages: boolean;
+  isIncognito: boolean;
+  incognitoSessionId: string | null;
   // Backwards-compatible aliases for existing consumers
   conversationId: string | null;
   setConversationId: (id: string | null) => void;
@@ -30,6 +32,7 @@ interface ChatContextType {
   setActiveMirrorStyle: (style: string | null) => void;
   detectedEmotion: string | null;
   setDetectedEmotion: (emotion: string | null) => void;
+  setIncognitoMode: (enabled: boolean) => void;
   startNewConversation: () => void;
   loadConversation: (convId: string) => Promise<void>;
 }
@@ -46,6 +49,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
   const [activeMirrorStyle, setActiveMirrorStyle] = useState<string | null>(null);
   const [detectedEmotion, setDetectedEmotion] = useState<string | null>(null);
+  const [isIncognito, setIsIncognito] = useState(false);
+  const [incognitoSessionId, setIncognitoSessionId] = useState<string | null>(null);
   const latestMessageRequestId = useRef(0);
 
   // Get mode from URL, default to reflection
@@ -54,8 +59,49 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const urlConversationId = searchParams.get("conversation_id");
 
+  const clearConversationState = () => {
+    setActiveConversationId(null);
+    setMessages([]);
+    setLoadingMessages(false);
+    setConversationTitle(null);
+    setActiveMirrorStyle(null);
+    setDetectedEmotion(null);
+  };
+
+  const clearIncognitoSessionHistory = (sessionId: string) => {
+    void fetch(`/api/chat/incognito-history/${sessionId}`, {
+      method: "DELETE",
+    }).catch((error) => {
+      console.warn("Failed to clear incognito session history:", error);
+    });
+  };
+
+  const setIncognitoMode = (enabled: boolean) => {
+    const previousSessionId = incognitoSessionId;
+    setIsIncognito(enabled);
+    clearConversationState();
+
+    if (enabled) {
+      if (previousSessionId) {
+        clearIncognitoSessionHistory(previousSessionId);
+      }
+      setIncognitoSessionId(crypto.randomUUID());
+    } else {
+      if (previousSessionId) {
+        clearIncognitoSessionHistory(previousSessionId);
+      }
+      setIncognitoSessionId(null);
+    }
+
+    setSearchParams({ mode });
+  };
+
   // Sync active conversation from URL
   useEffect(() => {
+    if (isIncognito) {
+      return;
+    }
+
     if (urlConversationId !== activeConversationId) {
       console.log("🔄 ChatContext: Syncing active conversation from URL:", urlConversationId);
       setActiveConversationId(urlConversationId);
@@ -68,12 +114,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveMirrorStyle(null);
       setDetectedEmotion(null);
     }
-  }, [urlConversationId, activeConversationId]);
+  }, [urlConversationId, activeConversationId, isIncognito]);
 
   // Load messages whenever the active conversation changes.
   // Uses cancellation to prevent stale responses from overwriting current state.
   useEffect(() => {
-    if (!activeConversationId) {
+    if (!activeConversationId || isIncognito) {
       setLoadingMessages(false);
       return;
     }
@@ -133,20 +179,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       isCancelled = true;
       controller.abort();
     };
-  }, [activeConversationId]);
+  }, [activeConversationId, isIncognito]);
 
   const loadConversation = async (convId: string) => {
+    if (isIncognito) {
+      return;
+    }
+
     setActiveConversationId(convId);
   };
 
   const startNewConversation = () => {
     console.log("🆕 ChatContext: Explicitly starting new conversation");
-    setActiveConversationId(null);
-    setMessages([]);
-    setLoadingMessages(false);
-    setConversationTitle(null);
-    setActiveMirrorStyle(null);
-    setDetectedEmotion(null);
+    const previousSessionId = isIncognito ? incognitoSessionId : null;
+    clearConversationState();
+
+    if (isIncognito) {
+      if (previousSessionId) {
+        clearIncognitoSessionHistory(previousSessionId);
+      }
+      setIncognitoSessionId(crypto.randomUUID());
+    }
     
     // Update URL to remove conversation_id
     const newParams: Record<string, string> = { mode };
@@ -168,6 +221,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setActiveMirrorStyle,
     detectedEmotion,
     setDetectedEmotion,
+    isIncognito,
+    incognitoSessionId,
+    setIncognitoMode,
     startNewConversation,
     loadConversation,
   };

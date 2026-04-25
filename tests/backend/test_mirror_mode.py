@@ -1,176 +1,147 @@
 #!/usr/bin/env python3
-<<<<<<< HEAD
-"""Manual-style mirror mode behavior probe."""
-=======
-"""
-Test the new Mirror Mode system prompt.
-
-This demonstrates how the mirror engine analyzes both:
-1. Stored personality traits
-2. Live message style
-"""
->>>>>>> 2e802b708e180667c3c686074a7dcd5835c21525
+"""Unit tests for strict 4-trait Mirror Mode behavior."""
 
 import sys
+import unittest
 from pathlib import Path
 
-<<<<<<< HEAD
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.services.mirror_engine import analyze_message_style, extract_key_traits, format_trait_score
-=======
-# Add backend directory to path
-backend_dir = Path(__file__).resolve().parent.parent.parent / "backend"
-sys.path.insert(0, str(backend_dir))
-
-from app.services.mirror_engine import (
+from app.services.mirror_engine import (  # noqa: E402
+    _is_low_quality_candidate,
     analyze_message_style,
+    build_mirror_system_prompt,
     extract_key_traits,
-    format_trait_score,
 )
->>>>>>> 2e802b708e180667c3c686074a7dcd5835c21525
 
-print("=" * 80)
-print("MIRROR MODE - MESSAGE STYLE ANALYSIS TEST")
-print("=" * 80)
 
-<<<<<<< HEAD
-test_messages = [
-    {"name": "Short & Direct", "message": "I'm done. Not doing this anymore. Moving on."},
-    {"name": "Casual & Slang", "message": "Yeah I'm kinda worried about this whole thing tbh, like it's just a lot you know?"},
-    {"name": "Question-heavy", "message": "What should I do? Is this the right choice? Am I making a mistake?"},
-]
+class MirrorModeBehaviorTests(unittest.TestCase):
+    def test_message_style_detects_slang_and_questions(self):
+        style = analyze_message_style("yeah tbh this is wild... what should i do?")
 
-for test in test_messages:
-    print(f"\n--- {test['name']} ---")
-    style = analyze_message_style(test["message"])
-    print(style)
+        self.assertTrue(style["has_slang"])
+        self.assertTrue(style["has_questions"])
+        self.assertGreater(style["avg_sentence_length"], 2)
 
-=======
-# Test different message styles
-test_messages = [
-    {
-        "name": "Short & Direct",
-        "message": "I'm done. Not doing this anymore. Moving on."
-    },
-    {
-        "name": "Casual & Slang",
-        "message": "Yeah I'm kinda worried about this whole thing tbh, like it's just a lot you know?"
-    },
-    {
-        "name": "Analytical & Long",
-        "message": "I've been analyzing this situation from multiple angles, and while I understand the logical framework, I'm still uncertain about the optimal decision path given the current constraints."
-    },
-    {
-        "name": "Excited & Punctuation",
-        "message": "OMG this is amazing!!! I can't believe it!! So excited!!!"
-    },
-    {
-        "name": "Question-heavy",
-        "message": "What should I do? Is this the right choice? Am I making a mistake?"
-    },
-]
+    def test_extract_key_traits_uses_core_trait_keys(self):
+        persona_vector = {
+            "behavioral_profile": {
+                "communication_style": {"score": 0.77, "confidence": 0.64},
+                "emotional_expressiveness": {"score": 0.22, "confidence": 0.75},
+                "decision_framing": {"score": 0.81, "confidence": 0.66},
+                "reflection_depth": {"score": 0.69, "confidence": 0.72},
+            }
+        }
 
-for test in test_messages:
-    print(f"\n{'-' * 80}")
-    print(f"Message Type: {test['name']}")
-    print(f"Message: \"{test['message']}\"")
-    print(f"{'-' * 80}")
-    
-    style = analyze_message_style(test['message'])
-    
-    print(f"\nStyle Analysis:")
-    print(f"  • Avg Sentence Length: {style['avg_sentence_length']} words")
-    print(f"  • Punctuation Intensity: {style['punctuation_intensity']}")
-    print(f"  • Has Slang: {'Yes' if style['has_slang'] else 'No'}")
-    print(f"  • Emotional Markers: {style['emotional_markers']}")
-    print(f"  • Caps Intensity: {int(style['caps_intensity'] * 100)}%")
-    print(f"  • Has Questions: {'Yes' if style['has_questions'] else 'No'}")
-    
-    print(f"\nMirroring Instructions:")
-    if style['avg_sentence_length'] < 5:
-        print(f"  → Match short, punchy sentences")
-    elif style['avg_sentence_length'] > 15:
-        print(f"  → Match longer, flowing sentences")
-    
-    if style['has_slang']:
-        print(f"  → Use casual, conversational language")
-    
-    if style['has_questions']:
-        print(f"  → Questions detected - can mirror with questions")
-    else:
-        print(f"  → NO reflection-style questions allowed")
-    
-    if style['punctuation_intensity'] > 2:
-        print(f"  → HIGH energy - match their punctuation")
+        traits = extract_key_traits(persona_vector)
 
-print(f"\n{'=' * 80}")
-print("TRAIT EXTRACTION TEST")
-print(f"{'=' * 80}")
+        self.assertEqual(set(traits.keys()), {
+            "communication_style",
+            "emotional_expressiveness",
+            "decision_framing",
+            "reflection_depth",
+        })
+        self.assertAlmostEqual(traits["communication_style"], 0.77)
+        self.assertAlmostEqual(traits["emotional_expressiveness"], 0.22)
 
-# Mock persona vector
->>>>>>> 2e802b708e180667c3c686074a7dcd5835c21525
-mock_persona = {
-    "emotional_profile": {
-        "emotional_intensity": {"score": 0.75, "confidence": 0.8},
-        "emotional_stability": {"score": 0.45, "confidence": 0.6},
-    },
-    "cognitive_profile": {
-        "analytical_thinking": {"score": 0.82, "confidence": 0.9},
-        "decision_confidence": {"score": 0.38, "confidence": 0.5},
-    },
-    "communication_profile": {
-        "directness": {"score": 0.68, "confidence": 0.7},
-        "expressiveness": {"score": 0.55, "confidence": 0.6},
-    },
-}
+    def test_extract_key_traits_ignores_low_confidence_updates(self):
+        persona_vector = {
+            "behavioral_profile": {
+                "communication_style": {"score": 0.9, "confidence": 0.05},
+                "reflection_depth": {"score": 0.1, "confidence": 0.1},
+            }
+        }
 
-traits = extract_key_traits(mock_persona)
-<<<<<<< HEAD
-print("\nExtracted Key Traits:")
-for trait_name, score in traits.items():
-    print(f"- {trait_name}: {format_trait_score(score)}")
+        traits = extract_key_traits(persona_vector)
 
-print("\nTEST COMPLETE")
-=======
+        self.assertAlmostEqual(traits["communication_style"], 0.5)
+        self.assertAlmostEqual(traits["reflection_depth"], 0.5)
 
-print(f"\nExtracted Key Traits for Mirroring:")
-for trait_name, score in traits.items():
-    print(f"  • {trait_name.replace('_', ' ').title()}: {format_trait_score(score)}")
+    def test_prompt_includes_four_trait_contract(self):
+        prompt = build_mirror_system_prompt(
+            sampled_profile={
+                "communication_style": 0.72,
+                "emotional_expressiveness": 0.31,
+                "decision_framing": 0.75,
+                "reflection_depth": 0.82,
+            },
+            stability_index=0.66,
+            message_style={
+                "avg_sentence_length": 11.0,
+                "punctuation_intensity": 1,
+                "has_slang": False,
+                "emotional_markers": 1,
+                "caps_intensity": 0.0,
+                "has_questions": False,
+            },
+            task_type="generic",
+            confidence_tier="moderate",
+            detected_emotion="neutral",
+            active_mirror_style="calm",
+        )
 
-print(f"\n{'=' * 80}")
-print("KEY DIFFERENCES FROM REFLECTION MODE")
-print(f"{'=' * 80}")
+        self.assertIn("Communication Style (Concise", prompt)
+        self.assertIn("Emotional Expressiveness (Reserved", prompt)
+        self.assertIn("Decision Framing (Hesitant", prompt)
+        self.assertIn("Reflection Depth (Surface", prompt)
+        self.assertIn("Keep mirror interpretation active even for task routes", prompt)
+        self.assertIn("Continue the same thought thread", prompt)
+        self.assertIn("Stay in first person", prompt)
+        self.assertIn("Allow light starters", prompt)
 
-print("""
-REFLECTION MODE:
-  ❌ Asks probing questions
-  ❌ Explains emotions back to user
-  ❌ Performs analytical breakdowns
-  ❌ Acts like therapist/coach
-  ❌ Encourages deeper exploration
+    def test_quality_filter_allows_concise_when_profile_is_concise(self):
+        is_low_quality = _is_low_quality_candidate(
+            candidate="I need to do this now.",
+            message="I need a quick response here about the meeting.",
+            recent_outputs=[],
+            task_type="generic",
+            sampled_profile={"response_detail_target": "concise"},
+        )
 
-MIRROR MODE:
-  ✅ Responds as user would respond to themselves
-  ✅ Matches their exact communication style
-  ✅ Stays within their emotional intensity bounds
-  ✅ NO questions unless they ask questions
-  ✅ "You talking back to yourself at 110% clarity"
-  ✅ Direct, authentic, natural
+        self.assertFalse(is_low_quality)
 
-EXAMPLE:
-  User: "I'm stressed about this deadline."
-  
-  Reflection: "What specifically about the deadline is causing stress? 
-              How do you typically handle time pressure?"
-  
-  Mirror: "Yeah, this deadline is tight. Need to just tackle it."
-          (Matches their directness and intensity)
-""")
+    def test_quality_filter_rejects_generic_fillers(self):
+        is_low_quality = _is_low_quality_candidate(
+            candidate="ok",
+            message="Can you help me decide what to send?",
+            recent_outputs=[],
+            task_type="generic",
+            sampled_profile={"response_detail_target": "balanced"},
+        )
 
-print(f"{'=' * 80}")
-print("✅ TEST COMPLETE")
-print(f"{'=' * 80}\n")
->>>>>>> 2e802b708e180667c3c686074a7dcd5835c21525
+        self.assertTrue(is_low_quality)
+
+    def test_quality_filter_rejects_external_second_person_prompts(self):
+        question_candidate = _is_low_quality_candidate(
+            candidate="Should you do this now?",
+            message="I need to settle this today.",
+            recent_outputs=[],
+            task_type="generic",
+            sampled_profile={"response_detail_target": "balanced"},
+        )
+
+        second_person_candidate = _is_low_quality_candidate(
+            candidate="You should move now.",
+            message="I need to settle this today.",
+            recent_outputs=[],
+            task_type="generic",
+            sampled_profile={"response_detail_target": "balanced"},
+        )
+
+        self_question_candidate = _is_low_quality_candidate(
+            candidate="I'm still circling this, but why does this same pattern keep repeating?",
+            message="I keep repeating this loop.",
+            recent_outputs=[],
+            task_type="generic",
+            sampled_profile={"response_detail_target": "balanced"},
+        )
+
+        self.assertTrue(question_candidate)
+        self.assertTrue(second_person_candidate)
+        self.assertFalse(self_question_candidate)
+
+
+if __name__ == "__main__":
+    unittest.main()

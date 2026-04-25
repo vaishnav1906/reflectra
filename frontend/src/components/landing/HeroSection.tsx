@@ -1,4 +1,4 @@
-import { Brain, ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 
@@ -31,12 +31,6 @@ export function HeroSection({ onShowLogin }: HeroSectionProps) {
       <div className="absolute bottom-32 right-[30%] w-2.5 h-2.5 rounded-full bg-primary/30 animate-pulse-soft" style={{ animationDelay: "0.5s" }} />
 
       <div className="relative z-10 max-w-5xl mx-auto px-6 text-center">
-        {/* Badge */}
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 border border-primary/20 mb-8 fade-in">
-          <Brain className="w-4 h-4 text-primary" />
-          <span className="text-sm text-primary font-medium">Cognitive AI Research</span>
-        </div>
-
         {/* Main Headline */}
         <h1 className="text-5xl md:text-7xl font-bold text-foreground mb-6 leading-tight fade-in" style={{ animationDelay: "0.1s" }}>
           An AI that{" "}
