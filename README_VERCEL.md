@@ -24,6 +24,7 @@ Steps (Vercel UI):
 4. Deploy. Vercel will run the frontend build and build the backend Docker image.
 
 Notes & troubleshooting
+
 - If Vercel build of the backend fails due to missing system libs required by `weasyprint`/`torch`, consider using a different base image in `backend/Dockerfile` (e.g., `python:3.11-bullseye`) or building the backend in a separate cloud service (Cloud Run, ECS) and pointing the frontend to that URL.
 - For local testing, build the frontend and backend container locally (see `backend/README.md`).
 
