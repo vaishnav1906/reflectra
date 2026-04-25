@@ -10,7 +10,7 @@
       "entrypoint": "backend/vercel_app",
       "routePrefix": "/api",
       "framework": "fastapi",
-      "buildCommand": "pip install -r backend/requirements.vercel.txt"
+      "buildCommand": "pip install -r ../requirements.vercel.txt"
     }
   }
 }
