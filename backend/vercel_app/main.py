@@ -3,6 +3,8 @@ from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import httpx
+import uuid
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Reflectra Vercel Backend", version="1.0.0")
 
@@ -59,9 +61,57 @@ async def auth_login(payload: dict):
 
     # In a real app: validate credentials, create session, issue JWT, etc.
     fake_token = "dev-token-12345"
-    user = {"email": email,
-            "display_name": display_name or email.split("@")[0]}
-    return {"token": fake_token, "user": user}
+    user_id = str(uuid.uuid4())
+    display = display_name or email.split("@")[0]
+
+    # Return fields the frontend expects: id, email, display_name, token
+    return {
+        "id": user_id,
+        "email": email,
+        "display_name": display,
+        "token": fake_token,
+    }
+
+
+@app.get("/analytics/metrics/{user_id}")
+async def analytics_metrics(user_id: str, view: Optional[str] = "all"):
+    """Return a minimal BehavioralMetricsResponse with an empty timeline."""
+    now = datetime.utcnow()
+    start = (now - timedelta(days=30)).date().isoformat()
+    return {
+        "view": view,
+        "start_date": start,
+        "totals": {"message_count": 0},
+        "timeline": [],
+    }
+
+
+@app.get("/analytics/heatmap/{user_id}")
+async def analytics_heatmap(user_id: str, days: Optional[int] = 30):
+    """Return a 7x24 zeroed heatmap."""
+    heatmap = [[0 for _ in range(24)] for _ in range(7)]
+    return {"range_days": days, "heatmap": heatmap}
+
+
+@app.get("/analytics/reflections/{user_id}")
+async def analytics_reflections(user_id: str, range: Optional[str] = "30d"):
+    """Return an empty list of reflections."""
+    return []
+
+
+@app.get("/analytics/timeline/{user_id}")
+async def analytics_timeline(user_id: str, range: Optional[str] = "7d"):
+    """Return an empty timeline response."""
+    now = datetime.utcnow()
+    start = (now - timedelta(days=7)).date().isoformat()
+    end = now.date().isoformat()
+    return {"range": range, "start_date": start, "end_date": end, "overview": "", "events": []}
+
+
+@app.get("/persona/profile/{user_id}")
+async def persona_profile(user_id: str):
+    """Return a minimal persona profile so the frontend can render defaults."""
+    return {"traits": {}, "stability": 0.0, "summary": ""}
 
 
 @app.get("/user/system-state")
