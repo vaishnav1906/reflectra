@@ -9,8 +9,7 @@
     "backend": {
       "entrypoint": "backend",
       "routePrefix": "/api",
-      "framework": "docker",
-      "buildCommand": "docker build -f backend/Dockerfile -t reflectra-backend ./backend"
+      "framework": "fastapi"
     }
   }
 }
