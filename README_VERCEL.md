@@ -60,3 +60,20 @@ To enable backend image publishing:
 2. On push, Actions will build `backend/Dockerfile` and push `ghcr.io/<org-or-user>/reflectra-backend:sha` and `:latest`.
 
 You can then point Vercel's backend service to pull that image from GHCR (or use Vercel's Docker build directly). If you want, I can add a short workflow step to also notify Vercel via the Vercel API to trigger a redeploy after the image is pushed.
+
+Important note about Vercel build limits
+
+Vercel's Python serverless functions have a 500 MB ephemeral storage limit for bundled dependencies. The `backend/requirements.txt` includes large native packages (e.g. `torch`, `weasyprint`, `ffmpeg`) which exceed this limit and will cause Vercel builds to fail (bundle size > 500 MB).
+
+Recommended approaches:
+
+- Deploy the backend as a container to a service designed for larger images (Cloud Run, AWS ECS/Fargate, Render, Fly). The included CI workflow can push the backend image to GHCR and optionally deploy it to Google Cloud Run when `GCP_SA_KEY` and `GCP_PROJECT_ID` secrets are configured.
+- Offload heavy workloads (transcription / model inference) to managed APIs (Mistral, OpenAI, Hugging Face Inference) and keep the Vercel backend lightweight if you must keep everything on Vercel.
+
+If you'd like, I added an optional CI job to deploy the backend image to Cloud Run automatically when the following repo secrets are present:
+
+- `GHCR_TOKEN` — push image to GitHub Container Registry (already used by the CI job)
+- `GCP_SA_KEY` — JSON service account key for GCP with `roles/run.admin` and `roles/iam.serviceAccountUser`
+- `GCP_PROJECT_ID` — your Google Cloud project id
+
+With those configured, pushing to `main` will build the backend image, push it to GHCR, and deploy to Cloud Run.

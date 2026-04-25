@@ -1,0 +1,21 @@
+# Render service definitions (template)
+# Review and modify before using. Render will auto-detect services on GitHub when
+# this file is present, or you can create services in the Render dashboard.
+
+services:
+  - type: web
+    name: reflectra-backend
+    # Use Docker to build the backend from the provided Dockerfile
+    env: docker
+    dockerfilePath: backend/Dockerfile
+    # Optional: set region and instance type if desired
+    # region: oregon
+    # plan: starter
+
+  - type: static
+    name: reflectra-frontend
+    env: static
+    buildCommand: npm --prefix frontend run build
+    publishPath: frontend/dist
+    # Optional: set region
+    # region: oregon

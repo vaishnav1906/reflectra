@@ -58,3 +58,40 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/reflectra-backend:${{ github.sha }}
             ghcr.io/${{ github.repository_owner }}/reflectra-backend:latest
+
+  deploy-backend-cloudrun:
+    name: Deploy backend to Cloud Run (optional)
+    needs: backend-build
+    if: ${{ secrets.GCP_SA_KEY != '' && secrets.GHCR_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Configure Docker to use gcloud as a credential helper
+        run: |
+          gcloud --quiet auth configure-docker
+      - name: Pull image from GHCR
+        run: |
+          docker pull ghcr.io/${{ github.repository_owner }}/reflectra-backend:latest
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v1
+        with:
+          service: reflectra-backend
+          image: ghcr.io/${{ github.repository_owner }}/reflectra-backend:latest
+          region: us-central1
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+  notify-render:
+    name: Trigger Render deploy hook (optional)
+    needs: [frontend-build, backend-build]
+    if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          echo "Triggering Render deploy hook"
+          curl -X POST -sS "${{ secrets.RENDER_DEPLOY_HOOK }}"
