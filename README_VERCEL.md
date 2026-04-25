@@ -5,6 +5,33 @@ This repository is prepared for a two-service Vercel deployment:
 - **frontend**: Vite React app in `frontend/` (build -> `frontend/dist`)
 - **backend**: Containerized FastAPI service from `backend/Dockerfile`
 
+Lightweight Vercel backend (recommended)
+
+This repository now includes a lightweight Vercel-friendly backend at `backend/vercel_app` that is intended to proxy requests to managed inference APIs (Mistral, OpenAI, etc.). It avoids installing heavy native dependencies on Vercel by using `backend/requirements.vercel.txt`.
+
+Files added/changed for this flow:
+
+- `backend/requirements.vercel.txt` — minimal Python dependencies for the Vercel service.
+- `backend/vercel_app/main.py` — tiny FastAPI app with `/` health and `/mistral` proxy endpoints.
+- `vercel.json` — maps `frontend` and `backend/vercel_app` services for multi-service deploys.
+
+Environment variables to set in Vercel project settings:
+
+- `MISTRAL_API_URL` — full URL of the managed inference endpoint to call.
+- `MISTRAL_API_KEY` — API key for the managed inference provider.
+- `VITE_BACKEND_URL` — (frontend build-time) URL for the deployed backend, e.g. `https://<your-project>.vercel.app/api`
+
+Deploy steps (Vercel UI):
+
+1. Import the repository into Vercel if not already.
+2. Ensure the project settings have the environment variables above configured for Preview and Production.
+3. Deploy — Vercel will build the frontend and the lightweight backend using `requirements.vercel.txt` which should fit within the 500 MB function bundle limit.
+
+Notes
+- This lightweight backend intentionally avoids installing heavy packages (torch, whisper, weasyprint). Use managed APIs for heavy workloads and proxy them through this app.
+- If you later want to run the full backend with native deps, use the `backend/Dockerfile` and a container host (Render/Cloud Run).
+
+
 Files added to help Vercel:
 
 - `vercel.json` — maps the two services (`frontend` and `backend`).
