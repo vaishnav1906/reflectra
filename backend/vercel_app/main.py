@@ -114,6 +114,64 @@ async def persona_profile(user_id: str):
     return {"traits": {}, "stability": 0.0, "summary": ""}
 
 
+@app.post("/chat")
+async def chat_endpoint(request: Request):
+    """Minimal /chat handler to satisfy frontend during Vercel deployment.
+    Returns a simple reply and conversation metadata so the UI can continue.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    user_id = body.get("user_id")
+    conversation_id = body.get("conversation_id") or str(uuid.uuid4())
+    message = body.get("message") or ""
+
+    if not message or (isinstance(message, str) and message.strip() == ""):
+        # Match possible frontend validation message
+        return {"error": "not enough payload", "detail": "message is required"}, 400
+
+    reply_text = f"Stub reply to: {message[:120]}"
+
+    return {
+        "reply": reply_text,
+        "conversation_id": conversation_id,
+        "title": "Stub Conversation",
+        "active_mirror_style": None,
+        "detected_emotion": None,
+        "assistant_task_type": None,
+    }
+
+
+@app.get("/analytics/confidence-explainability/{user_id}")
+async def analytics_confidence_explainability(user_id: str, message: Optional[str] = None):
+    """Return a minimal ConfidenceExplainabilityResponse so frontend can render safely."""
+    response = {
+        "center": 0.0,
+        "interval": {"lower": 0.0, "upper": 1.0},
+        "tier": "partial",
+        "source_scores": {},
+        "source_weights": {},
+        "source_contributions": {},
+        "timeline_recency_override": {
+            "applied": False,
+            "recent_avg": 0.0,
+            "older_avg": 0.0,
+            "override_strength": 0.0,
+        },
+        "controls": {
+            "phrase_usage_frequency": 0,
+            "tone_strength": 0,
+            "reaction_accuracy_threshold": 0,
+            "style_enforcement_intensity": 0,
+            "include_uncertainty_note": False,
+        },
+        "message_used": message or "",
+    }
+    return response
+
+
 @app.get("/user/system-state")
 async def user_system_state(user_id: Optional[str] = None):
     """
