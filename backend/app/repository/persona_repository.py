@@ -147,6 +147,22 @@ class PersonaRepository:
         return snapshot
 
     @staticmethod
+    async def update_snapshot(
+        db: AsyncSession,
+        snapshot: PersonaSnapshot,
+        persona_vector: Dict,
+        stability_index: float,
+        summary_text: str,
+    ) -> PersonaSnapshot:
+        """Refresh an existing snapshot in place."""
+        snapshot.persona_vector = persona_vector
+        snapshot.stability_index = stability_index
+        snapshot.summary_text = summary_text
+        await db.commit()
+        await db.refresh(snapshot)
+        return snapshot
+
+    @staticmethod
     async def get_latest_snapshot(
         db: AsyncSession, user_id: UUID
     ) -> Optional[PersonaSnapshot]:

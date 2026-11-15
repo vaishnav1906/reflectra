@@ -7,7 +7,7 @@ import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -50,29 +50,19 @@ async def compute_confidence_interval(
 ) -> ConfidenceIntervalResult:
     """Fuse all mandatory sources into a confidence interval and generation controls."""
     timeline_score, timeline_details = await _score_timeline_with_details(db, user_id)
-    source_scores = {
+    raw_scores: Dict[str, Optional[float]] = {
         "conversations": await _score_conversations(db, user_id),
         "traits": await _score_traits(db, user_id),
         "timeline_reflections": timeline_score,
         "reflection_summaries": await _score_reflections(db, user_id),
         "external_inputs": await _score_external_inputs(db, user_id, message_text),
     }
-
-    center = 0.0
-    source_contributions: Dict[str, float] = {}
-    for source, weight in SOURCE_WEIGHTS.items():
-        contribution = source_scores[source] * weight
-        source_contributions[source] = contribution
-        center += contribution
-
-    scores = list(source_scores.values())
-    disagreement = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-    evidence_density = sum(1 for v in scores if v >= 0.4) / max(len(scores), 1)
-    uncertainty = 0.32 + (0.45 * disagreement) - (0.20 * evidence_density)
-    uncertainty = _clamp(uncertainty, 0.08, 0.45)
-
-    lower = _clamp(center - (uncertainty / 2.0), 0.0, 1.0)
-    upper = _clamp(center + (uncertainty / 2.0), 0.0, 1.0)
+    result = fuse_source_scores(raw_scores)
+    center = result["center"]
+    lower = result["lower"]
+    upper = result["upper"]
+    source_scores = result["source_scores"]
+    source_contributions = result["source_contributions"]
 
     tier = tier_from_confidence_lower(lower)
     controls = controls_for_tier(tier)
@@ -92,6 +82,50 @@ async def compute_confidence_interval(
         source_contributions={k: round(v, 4) for k, v in source_contributions.items()},
         timeline_recency_override=timeline_details,
     )
+
+
+def fuse_source_scores(raw_scores: Dict[str, Optional[float]]) -> Dict[str, object]:
+    """Fuse per-source scores into a confidence interval.
+
+    A source with no data (score None) is left out and the remaining weights are
+    renormalized, instead of counting as a near-zero score. Otherwise sources a
+    user never touches (e.g. external inputs) would permanently cap confidence
+    and make the higher tiers unreachable. Missing coverage still widens the
+    interval, so sparse evidence stays conservative.
+    """
+    available = {k: float(v) for k, v in raw_scores.items() if v is not None and k in SOURCE_WEIGHTS}
+    source_scores = {k: round(float(raw_scores.get(k) or 0.0), 4) for k in SOURCE_WEIGHTS}
+
+    if not available:
+        return {
+            "center": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "source_scores": source_scores,
+            "source_contributions": {k: 0.0 for k in SOURCE_WEIGHTS},
+        }
+
+    coverage = sum(SOURCE_WEIGHTS[k] for k in available)
+    source_contributions: Dict[str, float] = {k: 0.0 for k in SOURCE_WEIGHTS}
+    center = 0.0
+    for source, score in available.items():
+        contribution = score * (SOURCE_WEIGHTS[source] / coverage)
+        source_contributions[source] = round(contribution, 4)
+        center += contribution
+
+    scores = list(available.values())
+    disagreement = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+    evidence_density = sum(1 for v in scores if v >= 0.4) / len(scores)
+    uncertainty = 0.32 + (0.45 * disagreement) - (0.20 * evidence_density) + (0.12 * (1.0 - coverage))
+    uncertainty = _clamp(uncertainty, 0.08, 0.45)
+
+    return {
+        "center": center,
+        "lower": _clamp(center - (uncertainty / 2.0), 0.0, 1.0),
+        "upper": _clamp(center + (uncertainty / 2.0), 0.0, 1.0),
+        "source_scores": source_scores,
+        "source_contributions": source_contributions,
+    }
 
 
 async def build_confidence_explainability(
@@ -122,7 +156,7 @@ async def build_confidence_explainability(
     }
 
 
-async def _score_conversations(db: AsyncSession, user_id: UUID) -> float:
+async def _score_conversations(db: AsyncSession, user_id: UUID) -> Optional[float]:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=45)
 
@@ -140,7 +174,7 @@ async def _score_conversations(db: AsyncSession, user_id: UUID) -> float:
     rows = result.all()
 
     if not rows:
-        return 0.05
+        return None
 
     count_score = _clamp(len(rows) / 120.0, 0.0, 1.0)
 
@@ -165,13 +199,13 @@ async def _score_conversations(db: AsyncSession, user_id: UUID) -> float:
     return _clamp((0.50 * count_score) + (0.30 * slang_consistency) + (0.20 * length_stability), 0.0, 1.0)
 
 
-async def _score_traits(db: AsyncSession, user_id: UUID) -> float:
+async def _score_traits(db: AsyncSession, user_id: UUID) -> Optional[float]:
     stmt = select(UserPersonaMetric.confidence, UserPersonaMetric.last_updated).where(UserPersonaMetric.user_id == user_id)
     result = await db.execute(stmt)
     rows = result.all()
 
     if not rows:
-        return 0.05
+        return None
 
     avg_conf = statistics.mean(float(row[0] or 0.0) for row in rows)
     now = datetime.now(timezone.utc)
@@ -187,7 +221,7 @@ async def _score_traits(db: AsyncSession, user_id: UUID) -> float:
     return _clamp((0.75 * avg_conf) + (0.25 * recency), 0.0, 1.0)
 
 
-async def _score_timeline_with_details(db: AsyncSession, user_id: UUID) -> tuple[float, Dict[str, float | bool]]:
+async def _score_timeline_with_details(db: AsyncSession, user_id: UUID) -> tuple[Optional[float], Dict[str, float | bool]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     stmt = (
         select(BehavioralInsight.confidence, BehavioralInsight.created_at)
@@ -202,7 +236,7 @@ async def _score_timeline_with_details(db: AsyncSession, user_id: UUID) -> tuple
     rows = result.all()
 
     if not rows:
-        return 0.05, {
+        return None, {
             "applied": False,
             "recent_avg": 0.0,
             "older_avg": 0.0,
@@ -245,7 +279,7 @@ async def _score_timeline_with_details(db: AsyncSession, user_id: UUID) -> tuple
     }
 
 
-async def _score_reflections(db: AsyncSession, user_id: UUID) -> float:
+async def _score_reflections(db: AsyncSession, user_id: UUID) -> Optional[float]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=45)
     stmt = (
         select(ReflectionLog.sentiment, ReflectionLog.created_at)
@@ -260,14 +294,14 @@ async def _score_reflections(db: AsyncSession, user_id: UUID) -> float:
     rows = result.all()
 
     if not rows:
-        return 0.05
+        return None
 
     density = _clamp(len(rows) / 60.0, 0.0, 1.0)
     sentiment_defined = sum(1 for sentiment, _ in rows if sentiment is not None) / max(len(rows), 1)
     return _clamp((0.60 * density) + (0.40 * sentiment_defined), 0.0, 1.0)
 
 
-async def _score_external_inputs(db: AsyncSession, user_id: UUID, message_text: str) -> float:
+async def _score_external_inputs(db: AsyncSession, user_id: UUID, message_text: str) -> Optional[float]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=60)
     stmt = (
         select(ExternalInput.content, ExternalInput.created_at, ExternalInput.confidence_weight)
@@ -285,10 +319,10 @@ async def _score_external_inputs(db: AsyncSession, user_id: UUID, message_text: 
         # External input memory is optional; return conservative score if table is unavailable.
         logger.warning("Skipping external input scoring: %s", exc)
         await db.rollback()
-        return 0.05
+        return None
 
     if not rows:
-        return 0.05
+        return None
 
     density = _clamp(len(rows) / 40.0, 0.0, 1.0)
     avg_weight = statistics.mean(float(weight or 0.1) for _, _, weight in rows)
@@ -350,7 +384,7 @@ def controls_for_tier(tier: str) -> Dict[str, float | bool]:
     }
 
 
-async def _score_timeline(db: AsyncSession, user_id: UUID) -> float:
+async def _score_timeline(db: AsyncSession, user_id: UUID) -> Optional[float]:
     score, _ = await _score_timeline_with_details(db, user_id)
     return score
 

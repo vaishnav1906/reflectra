@@ -2,7 +2,6 @@
 
 import hashlib
 import logging
-import os
 import re
 import time
 import random
@@ -31,24 +30,9 @@ from app.services.confidence_interval_service import compute_confidence_interval
 from app.services.style_enforcement_service import enforce_style
 from app.services.context_policy_service import classify_response_context, apply_context_policy_gates
 
+from app.services.llm import chat_complete, llm_available
+
 logger = logging.getLogger(__name__)
-
-# Initialize Mistral client
-MISTRAL_AVAILABLE = False
-mistral_client = None
-
-try:
-    from mistralai import Mistral
-    api_key = os.getenv("MISTRAL_API_KEY")
-    if api_key:
-        mistral_client = Mistral(api_key=api_key)
-        MISTRAL_AVAILABLE = True
-        logger.info("✅ Mistral client initialized for mirror engine")
-except Exception as e:
-    logger.warning(f"⚠️ Mistral not available for mirror engine: {e}")
-
-# Cache for latest snapshots (user_id -> snapshot)
-_snapshot_cache: Dict[str, Dict] = {}
 
 # Variation buffer to track recent responses to avoid precise repetition
 _variation_buffer: Dict[str, List[str]] = {}
@@ -325,7 +309,7 @@ async def generate_mirror_response(
         logger.info("Silence bypass: Empty message received.")
         return "", telemetry
 
-    if not MISTRAL_AVAILABLE or not mistral_client:
+    if not llm_available():
         logger.warning("⚠️ LLM unavailable; using local mirror fallback")
         telemetry["fallback_triggered"] = True
         telemetry["policy_mode"] = "llm_unavailable"
@@ -524,16 +508,15 @@ async def generate_mirror_response(
             # Ensure latest user message is the final turn.
             messages.append({"role": "user", "content": message})
             
-            response = mistral_client.chat.complete(
-                model="mistral-small-latest",
-                messages=messages,
+            candidate = await chat_complete(
+                messages,
                 max_tokens=320 if is_structured_task else 260,
                 temperature=(0.5 if is_structured_task else 0.58)
                 + (0.25 * telemetry["mirror_intensity"] * context_policy.tone_strength)
                 + (0.05 * attempt),
             )
-            
-            candidate = response.choices[0].message.content.strip()
+            if not candidate:
+                continue
             if _is_low_quality_candidate(
                 candidate,
                 message,
@@ -666,38 +649,18 @@ def _sample_profile(traits: Dict[str, float]) -> Dict[str, Any]:
 
 
 async def get_cached_snapshot(db: AsyncSession, user_id: UUID):
-    """Get snapshot from cache or database."""
-    cache_key = str(user_id)
-    
-    # Check cache first
-    if cache_key in _snapshot_cache:
-        logger.debug(f"📦 Using cached snapshot for user {user_id}")
-        # Return a simple dict-like object for cached data
-        cached = _snapshot_cache[cache_key]
-        # Fetch fresh from DB to ensure we have the model object
-        snapshot = await PersonaRepository.get_latest_snapshot(db, user_id)
-        return snapshot
-    
-    # Fetch from database
-    snapshot = await PersonaRepository.get_latest_snapshot(db, user_id)
-    
-    if snapshot:
-        # Cache it
-        _snapshot_cache[cache_key] = {
-            "persona_vector": snapshot.persona_vector,
-            "stability_index": snapshot.stability_index,
-        }
-        logger.debug(f"💾 Cached snapshot for user {user_id}")
-    
-    return snapshot
+    """Get the latest snapshot.
+
+    The old in-process cache always re-queried the database anyway (and could not
+    be shared across workers), so this is now a plain lookup. The name is kept
+    for compatibility with existing callers.
+    """
+    return await PersonaRepository.get_latest_snapshot(db, user_id)
 
 
 def invalidate_snapshot_cache(user_id: UUID) -> None:
-    """Invalidate cached snapshot for a user."""
-    cache_key = str(user_id)
-    if cache_key in _snapshot_cache:
-        del _snapshot_cache[cache_key]
-        logger.debug(f"🗑️ Invalidated snapshot cache for user {user_id}")
+    """No-op kept for API compatibility; snapshots are no longer cached in-process."""
+    return None
 
 
 def analyze_message_style(message: str) -> Dict[str, Any]:
@@ -1113,7 +1076,7 @@ def get_trait_level(score: float) -> str:
 
 async def generate_baseline_mirror_response(message: str) -> str:
     """Generate a basic mirror response without personality data."""
-    if not MISTRAL_AVAILABLE or not mistral_client:
+    if not llm_available():
         return "I'm still learning your style. Keep talking to me and I'll start mirroring you more accurately."
     
     # Analyze message style even without persona
@@ -1150,15 +1113,8 @@ MIRROR MODE CONTRACT:
             {"role": "user", "content": message}
         ]
         
-        response = mistral_client.chat.complete(
-            model="mistral-small-latest",
-            messages=messages,
-            max_tokens=200,
-            temperature=0.7,
-        )
-        
-        candidate = response.choices[0].message.content.strip()
-        return candidate
+        candidate = await chat_complete(messages, max_tokens=200, temperature=0.7)
+        return candidate or "Got it. What else?"
         
     except Exception as e:
         logger.error(f"❌ Baseline mirror error: {e}")

@@ -1,4 +1,10 @@
-"""Post-draft style enforcement and reaction mapping for Persona Mirror."""
+"""Post-draft style enforcement and reaction mapping for Persona Mirror.
+
+Every stylistic addition is grounded in the user's own linguistic fingerprint:
+- slang/abbreviation rewrites only use abbreviations the user has typed,
+- reaction openers come from the user's own recurring openers (ReactionPattern),
+- emojis are only added for users who use emojis, picked from their own set.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +12,37 @@ import random
 import re
 from dataclasses import dataclass
 import logging
-from typing import Dict
+from typing import Dict, Optional, Set
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ReactionPattern
+from app.db.models import LinguisticFingerprint, ReactionPattern
 
 logger = logging.getLogger(__name__)
 
-EMOJI_CANDIDATES = ["😂", "😅", "😭", "🔥", "💀", "😮", "🤝", "😬"]
-EMOJI_REGEX = re.compile(r"[\U0001F300-\U0001FAFF]")
+EMOJI_REGEX = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
+MIN_ABBREVIATION_USES = 2  # an abbreviation must appear at least this often to be reused
+
+# (pattern, replacement, abbreviation the user must already use)
+SLANG_REWRITES = [
+    (r"\bI am not sure\b", "idk", "idk"),
+    (r"\bI'm not sure\b", "idk", "idk"),
+    (r"\bI do not know\b", "idk", "idk"),
+    (r"\bI don't know\b", "idk", "idk"),
+    (r"\bto be honest\b", "tbh", "tbh"),
+    (r"\bnot going to lie\b", "ngl", "ngl"),
+    (r"\bkind of\b", "kinda", "kinda"),
+    (r"\bgoing to\b", "gonna", "gonna"),
+    (r"\bwant to\b", "wanna", "wanna"),
+]
+
+FORMAL_REWRITES = [
+    (r"\bidk\b", "I am not sure"),
+    (r"\btbh\b", "to be honest"),
+    (r"\bngl\b", "to be honest"),
+    (r"\bbro\b", ""),
+]
 
 
 @dataclass
@@ -24,6 +50,13 @@ class StyleEnforcementResult:
     text: str
     reaction_match_score: float
     stimulus_tag: str
+
+
+@dataclass
+class UserStyleProfile:
+    abbreviations: Set[str]
+    emoji_rate: float
+    emojis: list
 
 
 def detect_stimulus_tag(message: str) -> str:
@@ -40,12 +73,42 @@ def detect_stimulus_tag(message: str) -> str:
     return "general"
 
 
+def build_user_style_profile(fingerprint: Optional[LinguisticFingerprint]) -> UserStyleProfile:
+    if fingerprint is None:
+        return UserStyleProfile(abbreviations=set(), emoji_rate=0.0, emojis=[])
+
+    abbreviation_stats: Dict[str, int] = dict(fingerprint.abbreviation_stats or {})
+    abbreviations = {
+        key for key, count in abbreviation_stats.items()
+        if isinstance(count, (int, float)) and count >= MIN_ABBREVIATION_USES
+    }
+
+    patterns = dict(fingerprint.sentence_patterns or {})
+    samples = max(int(fingerprint.sample_count or 0), 1)
+    emoji_rate = min(1.0, float(patterns.get("emoji_messages", 0)) / samples)
+    emoji_counts = dict(patterns.get("emoji_counts") or {})
+    emojis = [emoji for emoji, _ in sorted(emoji_counts.items(), key=lambda kv: kv[1], reverse=True)][:5]
+    return UserStyleProfile(abbreviations=abbreviations, emoji_rate=emoji_rate, emojis=emojis)
+
+
+async def _load_user_style_profile(db: AsyncSession, user_id) -> UserStyleProfile:
+    try:
+        result = await db.execute(select(LinguisticFingerprint).where(LinguisticFingerprint.user_id == user_id))
+        fingerprint = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Skipping fingerprint lookup: %s", exc)
+        await db.rollback()
+        fingerprint = None
+    return build_user_style_profile(fingerprint)
+
+
 async def select_reaction_prefix(
     db: AsyncSession,
     user_id,
     stimulus_tag: str,
     threshold: float,
-) -> tuple[str, float]:
+) -> tuple[Optional[str], float]:
+    """Return the user's own established opener for this stimulus, if any."""
     stmt = (
         select(ReactionPattern)
         .where(
@@ -53,7 +116,7 @@ async def select_reaction_prefix(
             ReactionPattern.stimulus_tag == stimulus_tag,
             ReactionPattern.confidence >= threshold,
         )
-        .order_by(desc(ReactionPattern.last_seen_at), desc(ReactionPattern.confidence), desc(ReactionPattern.frequency))
+        .order_by(desc(ReactionPattern.confidence), desc(ReactionPattern.frequency), desc(ReactionPattern.last_seen_at))
         .limit(1)
     )
     try:
@@ -64,17 +127,9 @@ async def select_reaction_prefix(
         await db.rollback()
         pattern = None
 
-    if pattern:
-        return pattern.response_template.strip(), float(pattern.confidence or 0.5)
-
-    fallback = {
-        "doubt": "idk man",
-        "disagreement": "this feels off tbh",
-        "interest": "this is kinda cool ngl",
-        "pressure": "nah this is a lot tbh",
-        "general": "tbh",
-    }
-    return fallback.get(stimulus_tag, "tbh"), 0.35
+    if pattern and pattern.response_template:
+        return pattern.response_template.strip(), float(pattern.confidence or 0.0)
+    return None, 0.0
 
 
 async def enforce_style(
@@ -91,10 +146,17 @@ async def enforce_style(
     allow_slang: bool = True,
     allow_imperfect_grammar: bool = True,
 ) -> StyleEnforcementResult:
+    """Apply light, user-grounded style adjustments to a drafted reply.
+
+    `include_uncertainty_note` is accepted for API compatibility; low-confidence
+    framing is handled in the generation prompt rather than by prepending a
+    fixed disclaimer to every reply.
+    """
     text = (draft or "").strip()
     if not text:
         text = "I'm not sure what to say."
 
+    style_profile = await _load_user_style_profile(db, user_id)
     stimulus_tag = detect_stimulus_tag(original_message)
     reaction_prefix, reaction_score = await select_reaction_prefix(
         db=db,
@@ -113,25 +175,22 @@ async def enforce_style(
         effective_style_intensity,
         allow_slang=allow_slang,
         allow_imperfect_grammar=allow_imperfect_grammar,
+        user_abbreviations=style_profile.abbreviations,
     )
 
-    if allow_slang and random.random() < effective_phrase_frequency:
+    if allow_slang and reaction_prefix and random.random() < effective_phrase_frequency:
         text = _inject_prefix(text, reaction_prefix)
 
     if tone_strength < 0.3:
-        text = _clean_aggressive_slang(text)
-
-    if include_uncertainty_note and not professional_context:
-        uncertainty = "This might not fully match your style yet, but "
-        if not text.lower().startswith("this might not fully match"):
-            text = f"{uncertainty}{text[0].lower() + text[1:] if len(text) > 1 else text.lower()}"
+        text = _clean_aggressive_slang(text, keep=style_profile.abbreviations)
 
     if not professional_context:
         text = _prefer_reaction_over_explanation(text)
         text = _inject_natural_emoji(
             text=text,
             tone_strength=tone_strength,
-            phrase_usage_frequency=effective_phrase_frequency,
+            user_emoji_rate=style_profile.emoji_rate,
+            user_emojis=style_profile.emojis,
         )
 
     if professional_context:
@@ -160,47 +219,32 @@ def _apply_rewrites(
     style_intensity: float,
     allow_slang: bool,
     allow_imperfect_grammar: bool,
+    user_abbreviations: Optional[Set[str]] = None,
 ) -> str:
-    if allow_slang:
-        rewrites = [
-            (r"\bI am not sure\b", "idk man"),
-            (r"\bI'm not sure\b", "idk man"),
-            (r"\bI do not know\b", "idk"),
-            (r"\bI don't know\b", "idk"),
-            (r"\bThis seems incorrect\b", "this feels off tbh"),
-            (r"\bThis is incorrect\b", "this feels off tbh"),
-            (r"\bto be honest\b", "tbh"),
-            (r"\bnot going to lie\b", "ngl"),
-        ]
-    else:
-        rewrites = [
-            (r"\bidk\b", "I am not sure"),
-            (r"\btbh\b", "to be honest"),
-            (r"\bngl\b", "to be honest"),
-            (r"\bbro\b", ""),
-        ]
-
     out = text
-    for pattern, replacement in rewrites:
-        if random.random() <= style_intensity:
-            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-
-    # Slight grammar relaxation for high confidence and non-professional contexts.
-    if allow_imperfect_grammar and style_intensity >= 0.75:
-        out = re.sub(r"\bkind of\b", "kinda", out, flags=re.IGNORECASE)
-        out = re.sub(r"\bgoing to\b", "gonna", out, flags=re.IGNORECASE)
+    if allow_slang:
+        known = user_abbreviations or set()
+        for pattern, replacement, required in SLANG_REWRITES:
+            if required not in known:
+                continue
+            # Grammar-relaxing rewrites (kinda/gonna/wanna) also need imperfect grammar allowed.
+            if required in {"kinda", "gonna", "wanna"} and not allow_imperfect_grammar:
+                continue
+            if random.random() <= style_intensity:
+                out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+    else:
+        for pattern, replacement in FORMAL_REWRITES:
+            if random.random() <= style_intensity:
+                out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
     return out
 
 
-def _clean_aggressive_slang(text: str) -> str:
-    replacements = {
-        "bro": "",
-        "fr": "",
-        "deadass": "",
-    }
+def _clean_aggressive_slang(text: str, keep: Optional[Set[str]] = None) -> str:
     out = text
-    for token, replacement in replacements.items():
-        out = re.sub(rf"\b{re.escape(token)}\b", replacement, out, flags=re.IGNORECASE)
+    for token in ("bro", "fr", "deadass"):
+        if keep and token in keep:
+            continue
+        out = re.sub(rf"\b{re.escape(token)}\b", "", out, flags=re.IGNORECASE)
     return _normalize_spacing(out)
 
 
@@ -230,8 +274,6 @@ def _prefer_reaction_over_explanation(text: str) -> str:
         (r"^(here(?:'s| is) what .*?:\s*)", ""),
         (r"^(let me explain\s*)", ""),
         (r"^(to clarify,\s*)", ""),
-        (r"^(i would recommend\s*)", "lowkey "),
-        (r"^(you should\s*)", "honestly "),
     ]
     for pattern, replacement in rewrites:
         out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
@@ -239,9 +281,14 @@ def _prefer_reaction_over_explanation(text: str) -> str:
     return _normalize_spacing(out)
 
 
-def _inject_natural_emoji(text: str, tone_strength: float, phrase_usage_frequency: float) -> str:
-    """Add a casual emoji when tone suggests it and text does not already have one."""
-    if not text:
+def _inject_natural_emoji(
+    text: str,
+    tone_strength: float,
+    user_emoji_rate: float,
+    user_emojis: list,
+) -> str:
+    """Add one of the user's own emojis, roughly as often as the user uses emojis."""
+    if not text or not user_emojis or user_emoji_rate <= 0:
         return text
 
     if EMOJI_REGEX.search(text):
@@ -250,11 +297,8 @@ def _inject_natural_emoji(text: str, tone_strength: float, phrase_usage_frequenc
     if "http://" in text or "https://" in text:
         return text
 
-    probability = min(0.45, max(0.06, (0.12 + (0.28 * tone_strength) + (0.20 * phrase_usage_frequency))))
+    probability = min(0.6, user_emoji_rate * (0.5 + tone_strength))
     if random.random() > probability:
         return text
 
-    emoji = random.choice(EMOJI_CANDIDATES)
-    if text.endswith(("!", "?", ".")):
-        return f"{text} {emoji}"
-    return f"{text} {emoji}"
+    return f"{text} {random.choice(user_emojis)}"

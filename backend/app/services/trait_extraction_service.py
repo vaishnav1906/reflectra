@@ -2,26 +2,12 @@
 
 import json
 import logging
-import os
 from typing import Dict, List
 
 from app.constants import TRAIT_LIST, TRAIT_DEFINITIONS, MAX_STRENGTH_PER_MESSAGE
+from app.services.llm import chat_complete, llm_available
 
 logger = logging.getLogger(__name__)
-
-# Initialize Mistral client
-MISTRAL_AVAILABLE = False
-mistral_client = None
-
-try:
-    from mistralai import Mistral
-    api_key = os.getenv("MISTRAL_API_KEY")
-    if api_key:
-        mistral_client = Mistral(api_key=api_key)
-        MISTRAL_AVAILABLE = True
-        logger.info("✅ Mistral client initialized for trait extraction")
-except Exception as e:
-    logger.warning(f"⚠️ Mistral not available for trait extraction: {e}")
 
 
 # Build trait definitions for prompt
@@ -92,26 +78,25 @@ async def extract_traits(message: str) -> List[Dict]:
         List of dicts with keys: name, signal, strength
         (Note: Returns 'name' instead of 'trait' for backward compatibility)
     """
-    if not MISTRAL_AVAILABLE or not mistral_client:
+    if not llm_available():
         logger.warning("⚠️ Mistral not available, returning empty nudge list")
         return []
-    
+
     try:
         logger.info(f"🔍 Extracting behavioral nudges from: '{message[:50]}...'")
-        
+
         messages = [
             {"role": "system", "content": NUDGE_EXTRACTION_PROMPT},
             {"role": "user", "content": message}
         ]
-        
-        response = mistral_client.chat.complete(
-            model="mistral-small-latest",
-            messages=messages,
+
+        content = await chat_complete(
+            messages,
             max_tokens=400,
             temperature=0.2,  # Very low temperature for consistent extraction
         )
-        
-        content = response.choices[0].message.content.strip()
+        if not content:
+            return []
         logger.info(f"📥 LLM response: {content[:100]}...")
         
         # Try to extract JSON from the response
@@ -240,27 +225,21 @@ async def extract_bootstrap_traits(summary_text: str) -> Dict[str, float]:
     Returns:
         Dict mapping trait names to their absolute scores (0.0-1.0).
     """
-    if not MISTRAL_AVAILABLE or not mistral_client:
+    if not llm_available():
         logger.warning("⚠️ Mistral not available for bootstrap extraction, using defaults")
         return {trait: 0.5 for trait in TRAIT_LIST}
-    
+
     try:
         logger.info(f"🔍 Extracting bootstrap traits from external summary...")
-        
+
         messages = [
             {"role": "system", "content": BOOTSTRAP_PROMPT},
             {"role": "user", "content": summary_text}
         ]
-        
-        # Use mistral-medium/large or mistral-small for reasoning
-        response = mistral_client.chat.complete(
-            model="mistral-small-latest",
-            messages=messages,
-            max_tokens=400,
-            temperature=0.3,
-        )
-        
-        content = response.choices[0].message.content.strip()
+
+        content = await chat_complete(messages, max_tokens=400, temperature=0.3)
+        if not content:
+            return {trait: 0.5 for trait in TRAIT_LIST}
         
         if "```json" in content:
             json_start = content.find("```json") + 7

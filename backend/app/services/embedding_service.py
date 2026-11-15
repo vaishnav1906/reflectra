@@ -1,41 +1,28 @@
-import os
-from mistralai import Mistral
 import logging
 
+from app.services.llm import get_client
+
 logger = logging.getLogger(__name__)
-
-mistral_client = None
-
-def get_client():
-    global mistral_client
-    if mistral_client is None:
-        api_key = os.getenv("MISTRAL_API_KEY")
-        if not api_key:
-            raise ValueError("MISTRAL_API_KEY not found")
-        mistral_client = Mistral(api_key=api_key)
-    return mistral_client
 
 
 async def generate_embedding(text: str):
     """
     Generate vector embedding for text using Mistral.
-    Returns list[float]
+    Returns list[float], or None when the LLM is unavailable or the call fails.
+
+    Note: mistral-embed returns 1024-dim vectors, while messages.embedding is
+    declared as Vector(1536). Fix the column size before persisting these.
     """
+    client = get_client()
+    if client is None:
+        return None
 
     try:
-        client = get_client()
-
-        response = client.embeddings.create(
+        response = await client.embeddings.create_async(
             model="mistral-embed",
-            inputs=[text]
+            inputs=[text],
         )
-
-        embedding = response.data[0].embedding
-        if embedding is None:
-            print("⚠️ Embedding failed (rate limit)")
-            return None
-        return embedding
-
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
         return None

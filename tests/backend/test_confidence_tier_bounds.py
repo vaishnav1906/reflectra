@@ -67,7 +67,7 @@ class TierBehaviorOutputTests(unittest.TestCase):
     def _run_async(self, coro):
         return asyncio.run(coro)
 
-    def test_very_low_includes_uncertainty_prefix(self):
+    def test_very_low_does_not_prepend_fixed_disclaimer(self):
         db = DummyDB()
         with patch("app.services.style_enforcement_service.random.random", return_value=1.0):
             result = self._run_async(
@@ -86,7 +86,10 @@ class TierBehaviorOutputTests(unittest.TestCase):
                     allow_imperfect_grammar=False,
                 )
             )
-        self.assertIn("This might not fully match your style yet", result.text)
+        # Low-confidence framing lives in the generation prompt; replies are not
+        # prefixed with a fixed disclaimer anymore.
+        self.assertNotIn("This might not fully match your style yet", result.text)
+        self.assertEqual(result.text, "I am not sure")
 
 
 class ContextPolicyTests(unittest.TestCase):

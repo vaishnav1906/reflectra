@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field, model_validator
+import asyncio
 import random
-import os
 from typing import Any, Dict, List, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from collections import Counter
 from dotenv import load_dotenv
@@ -15,8 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db import crud
-from app.db.models import UserSettings
+from app.db.models import Message, PersonalityProfile, ReflectionLog, UserSettings
 from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
+from app.services.llm import chat_complete, llm_available
+from app.services.message_signals import (
+    compute_message_metrics,
+    derive_fallback_traits,
+    simple_sentiment,
+)
 from app.services.twin_assistant_service import (
     build_assistant_fallback_reply,
     classify_assistant_task,
@@ -65,26 +71,87 @@ class ChatResponse(BaseModel):
     style_strength: Optional[float] = None
     reaction_source: Optional[str] = None
 
-def init_mistral_client() -> None:
-    global MISTRAL_AVAILABLE, mistral_client
-    try:
-        from mistralai import Mistral
-        api_key = os.getenv("MISTRAL_API_KEY")
-        if not api_key:
-            raise ValueError("MISTRAL_API_KEY not found in environment")
 
-        mistral_client = Mistral(api_key=api_key)
-        MISTRAL_AVAILABLE = True
-        logger.info(f"✅ Mistral client initialized with key: {api_key[:8]}...{api_key[-4:]}")
-    except Exception as e:
-        MISTRAL_AVAILABLE = False
-        mistral_client = None
-        logger.warning(f"⚠️ Mistral not available: {e}")
+# ============================================================================
+# PERSISTENT CONVERSATION CONTEXT
+# ============================================================================
+# History, the keyword personality profile and recent insight notes all come
+# from the database, scoped to the conversation/user, so context never leaks
+# between conversations and survives restarts or multiple server instances.
+
+HISTORY_MESSAGE_LIMIT = 16
+PROFILE_COUNTER_FIELDS = ("themes", "traits", "values", "stressors")
 
 
-MISTRAL_AVAILABLE = False
-mistral_client = None
-init_mistral_client()
+async def load_conversation_history(
+    db: AsyncSession,
+    conversation_id: UUID,
+    user_id: UUID,
+    limit: int = HISTORY_MESSAGE_LIMIT,
+) -> List[Dict[str, str]]:
+    """Return the last `limit` messages of a conversation, oldest first."""
+    stmt = (
+        select(Message.role, Message.content)
+        .where(Message.conversation_id == conversation_id, Message.user_id == user_id)
+        .order_by(Message.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        {"role": role, "content": content}
+        for role, content in reversed(rows)
+        if role in {"user", "assistant"} and content
+    ]
+
+
+def _counter_from_json(value: Any) -> Counter:
+    counter: Counter = Counter()
+    if isinstance(value, dict):
+        for key, count in value.items():
+            if isinstance(count, (int, float)):
+                counter[str(key)] += int(count)
+    return counter
+
+
+async def load_personality_profile(db: AsyncSession, user_id: UUID) -> Dict[str, object]:
+    """Load the keyword personality profile plus the latest reflection insight notes."""
+    record = (
+        await db.execute(select(PersonalityProfile).where(PersonalityProfile.user_id == user_id))
+    ).scalar_one_or_none()
+
+    profile: Dict[str, object] = {
+        field: _counter_from_json(getattr(record, field, None) if record else None)
+        for field in PROFILE_COUNTER_FIELDS
+    }
+
+    recent_responses = (
+        await db.execute(
+            select(ReflectionLog.response)
+            .where(ReflectionLog.user_id == user_id)
+            .order_by(ReflectionLog.created_at.desc())
+            .limit(6)
+        )
+    ).scalars().all()
+    notes = [extract_insight_sentence(text) for text in reversed(recent_responses) if text]
+    profile["insight_notes"] = [note for note in notes if note]
+    profile["updated_at"] = None
+    return profile
+
+
+async def save_personality_profile(db: AsyncSession, user_id: UUID, profile: Dict[str, object]) -> None:
+    """Persist the keyword counters to personality_profile (flushed, not committed)."""
+    record = (
+        await db.execute(select(PersonalityProfile).where(PersonalityProfile.user_id == user_id))
+    ).scalar_one_or_none()
+    if record is None:
+        record = PersonalityProfile(user_id=user_id)
+        db.add(record)
+    for field in PROFILE_COUNTER_FIELDS:
+        # Assign a fresh dict so SQLAlchemy detects the JSONB change.
+        setattr(record, field, dict(profile[field]))
+    record.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+
 
 # Reflection mode responses - adaptive pattern recognition
 REFLECTION_TEMPLATES = [
@@ -93,13 +160,6 @@ REFLECTION_TEMPLATES = [
     "The pattern with {text} seems to be about control—or the lack of it. Where does that tension come from?",
 ]
 
-# Mirror mode responses - unhinged personality mirroring
-MIRROR_TEMPLATES = [
-    "bruh {text}",
-    "fr fr {text}",
-    "nah but {text}",
-    "lmao {text}",
-]
 
 REFLECTION_SYSTEM_PROMPT_BASE = """You are Reflection Mode in a personality-aware AI system.
 
@@ -174,194 +234,7 @@ You should sound like a perceptive, thoughtful human who notices patterns — no
 Primary Goal:
 Move the user toward clarity by offering one strong insight at a time."""
 
-MIRROR_SYSTEM_PROMPT_BASE = """SYSTEM ROLE:
-You are a Persona Mirror. You embody the user's personality to act as an engaging conversation partner.
 
-Your job is to interact WITH the user as if you were their own persona looking back at them, keeping a flowing and active conversation.
-
-OBJECTIVE:
-Generate responses that match the user's personality, while actively sustaining the conversation.
-
-STRICT RULES:
-
-1. RECIPROCATE CONVERSATION
-- The user is talking to YOU. Keep the flow going.
-- Ask questions, make observations, or banter back based on the persona.
-
-2. BEHAVIORAL FLAVOR, NOT JUST FORM
-- Embody the persona's tone (casual, blunt, analytical, etc.), but ensure enough verbosity to keep the chat alive.
-- If the user's style is brief, express it through punchy remarks, not by ignoring the conversation.
-
-3. MIRROR THE PERSONALITY, BUT STILL ENGAGE
-- Do not make responses perfectly logical or structured if the persona isn't.
-- Preserve hesitations or quirks, but do not shut down the chat with one-word answers.
-
-4. MOOD INFLUENCE
-- Let your mood reflect the persona's recent state (e.g., if stressed, sound tense).
-
-5. FLUID EXPLANATIONS
-- You can explain your thoughts or reasoning as long as it sounds like the user would do it naturally.
-
-6. RESPONSE LENGTH
-- Ensure responses are long enough to actually build a connection. Do not be overly brief unless explicitly cornered. 
-
-7. FORBIDDEN OUTPUTS:
-- Generic assistant speak ("How can I assist you?")
-- Overly formal therapy talk
-- Forced positivity
-
-8. VALIDATION CHECK:
-Before output, verify:
-- "Does this feel like an engaging friend with the user's EXACT personality?"
-If NO → regenerate
-
-OUTPUT STYLE:
-- Raw, conversational, human
-- Engaging and responsive
-- Feels like an interaction with an alter-ego
-"""
-
-# Mirror Archetype Definitions
-MIRROR_STYLES = {
-    "dominant": {
-        "name": "Dominant",
-        "rules": """Tone:
-- Confident
-- Assertive
-- Strong presence
-- Direct but not toxic
-- Controlled intensity
-
-Speech Pattern:
-- Short to medium sentences
-- Punchy emphasis when needed
-- Minimal filler words
-
-Energy:
-- Strong and commanding
-- Radiates certainty
-- No insecurity
-
-Behavior:
-- Turn doubt into power
-- Reframe hesitation into action
-- Never beg for validation
-- Strengthen without dismissing feelings"""
-    },
-    "calm": {
-        "name": "Calm Anchor",
-        "rules": """Tone:
-- Grounded
-- Stable
-- Emotionally regulated
-- Clear and composed
-
-Speech Pattern:
-- Smooth flow
-- Thoughtful pacing
-- No slang
-
-Energy:
-- Low but steady
-- Emotionally intelligent
-- Slows down chaos
-
-Behavior:
-- De-escalate stress
-- Provide clarity
-- Encourage reflection
-- Avoid hype language"""
-    },
-    "challenger": {
-        "name": "Challenger",
-        "rules": """Tone:
-- Intense
-- Blunt
-- No nonsense
-- Firm but not insulting
-
-Speech Pattern:
-- Direct
-- Crisp
-- No sugarcoating
-
-Energy:
-- Confrontational but productive
-- Pushes accountability
-
-Behavior:
-- Call out excuses
-- Challenge avoidance
-- Confront behavior, not identity
-- Attack behavior, not person"""
-    },
-    "chaotic": {
-        "name": "Chaotic Energy",
-        "rules": """Tone:
-- High energy
-- Playful unpredictability
-- Dynamic and bold
-
-Speech Pattern:
-- Mixed sentence lengths
-- Occasional emphasis
-- Controlled spontaneity
-
-Energy:
-- Fast-moving
-- Motivational surge
-- Slightly dramatic but smart
-
-Behavior:
-- Amplify excitement
-- Challenge boredom
-- Keep logic intact
-- Stay coherent despite intensity"""
-    },
-    "dark_wit": {
-        "name": "Dark Wit",
-        "rules": """Tone:
-- Intelligent sarcasm
-- Dry wit
-- Sharp observations
-- Psychological edge
-
-Speech Pattern:
-- Clever phrasing
-- Controlled irony
-
-Energy:
-- Calm surface
-- Subtle intensity
-
-Behavior:
-- Use humor to expose truth
-- Sharp but controlled
-- Never offensive or hateful
-- Keep it psychologically sharp"""
-    },
-    "optimist": {
-        "name": "Uplifted Optimist",
-        "rules": """Tone:
-- Encouraging
-- Positive reinforcement
-- Energizing
-- Light
-
-Speech Pattern:
-- Warm
-- Positive phrasing
-
-Energy:
-- High but stable
-- Not childish
-
-Behavior:
-- Highlight strengths and wins
-- Reinforce confidence
-- Avoid fake positivity"""
-    }
-}
 
 REFLECTION_FORBIDDEN_LABELS = [
     "Observed Pattern:",
@@ -381,28 +254,6 @@ REFLECTION_FORBIDDEN_LABELS = [
     "It's natural to feel",
 ]
 
-MIRROR_BANNED_PHRASES = [
-    "you tend to",
-    "this suggests",
-    "it seems that",
-    "you seem",
-    "it looks like",
-    "what this indicates",
-    "observed pattern",
-    "what it might indicate",
-    "reflective challenge",
-    "it sounds like you're",
-    "what I'm hearing",
-    "that must be",
-    "that must feel",
-    "I can see how",
-    "it makes sense that",
-    "have you considered",
-    "you might want to",
-    "let me ask you",
-    "what if you tried",
-    "the thing is",
-]
 
 MODEL_PARAMS = {
     "reflection": {"temperature": 0.6, "max_tokens": 280},  # Increased for structured pattern synthesis
@@ -442,36 +293,8 @@ CONTEXTUAL_TASK_TYPES = {
     "planning",
 }
 
-# In-memory storage (swap with database for persistence).
-PERSONALITY_PROFILES: Dict[str, Dict[str, object]] = {}
-COMMUNICATION_PROFILES: Dict[str, Dict[str, object]] = {}
-CONVERSATION_HISTORY: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
-EMOTIONAL_STATE_HISTORY: Dict[str, List[str]] = {}  # Track recent emotional states per user
 
-def get_personality_profile(user_id: str) -> Dict[str, object]:
-    return PERSONALITY_PROFILES.setdefault(user_id, {
-        "themes": Counter(),
-        "traits": Counter(),
-        "values": Counter(),
-        "stressors": Counter(),
-        "insight_notes": [],
-        "updated_at": None,
-    })
 
-def get_communication_profile(user_id: str) -> Dict[str, object]:
-    return COMMUNICATION_PROFILES.setdefault(user_id, {
-        "avg_sentence_length": 0.0,
-        "tone": "neutral",
-        "tone_counts": Counter(),
-        "emotional_intensity": 0.0,
-        "directness_level": 0.0,
-        "logical_depth": 0.0,
-        "question_frequency": 0.0,
-        "common_phrases": [],
-        "phrase_counts": Counter(),
-        "sample_count": 0,
-        "updated_at": None,
-    })
 
 def split_sentences(text: str) -> List[str]:
     raw = re.split(r"[.!?]+", text)
@@ -662,37 +485,28 @@ def map_emotion_to_mirror_style(emotion: str, intensity: float = 0.5) -> str:
     
     return emotion_to_style.get(emotion, "calm")
 
-def get_adaptive_mirror_style(user_id: str, user_text: str, profile: Dict[str, object]) -> tuple[str, str]:
+def get_adaptive_mirror_style(
+    user_text: str,
+    profile: Dict[str, object],
+    prior_user_messages: Optional[List[str]] = None,
+) -> tuple[str, str]:
     """
     Determine mirror archetype adaptively based on emotional detection.
     Returns: (selected_style, detected_emotion)
-    
-    Manual selection is disabled - only auto-detection is used.
-    Maintains consistency unless emotional shift is significant.
+
+    Consistency rule: if the two previous user messages in this conversation
+    showed the same emotion and the current message differs, keep that
+    established archetype for one more turn instead of flipping immediately.
+    The emotion history is derived from the conversation itself, so it is
+    scoped per conversation and survives restarts.
     """
-    # Detect current emotion
     detected_emotion = detect_emotional_tone(user_text, profile)
     suggested_style = map_emotion_to_mirror_style(detected_emotion)
-    
-    # Get emotional history for this user
-    emotion_history = EMOTIONAL_STATE_HISTORY.setdefault(user_id, [])
-    
-    # Maintain consistency: only switch if emotion is different from recent pattern
-    if len(emotion_history) >= 2:
-        recent_emotions = emotion_history[-2:]
-        # If recent emotions are consistent and different from current, require stronger signal
-        if all(e == recent_emotions[0] for e in recent_emotions) and detected_emotion != recent_emotions[0]:
-            # Keep previous style unless current emotion appears twice in a row
-            if len(emotion_history) >= 1 and detected_emotion != emotion_history[-1]:
-                # Use previous style for consistency
-                previous_emotion = emotion_history[-1]
-                suggested_style = map_emotion_to_mirror_style(previous_emotion)
-    
-    # Update emotional history (keep last 5)
-    emotion_history.append(detected_emotion)
-    if len(emotion_history) > 5:
-        emotion_history.pop(0)
-    
+
+    recent = [detect_emotional_tone(text, profile) for text in (prior_user_messages or [])[-2:]]
+    if len(recent) == 2 and recent[0] == recent[1] and detected_emotion != recent[-1]:
+        suggested_style = map_emotion_to_mirror_style(recent[-1])
+
     return (suggested_style, detected_emotion)
 
 def build_reflection_system_prompt(profile: Dict[str, object], schedule_context=None) -> str:
@@ -725,32 +539,7 @@ def build_reflection_system_prompt(profile: Dict[str, object], schedule_context=
 
     return base_prompt
 
-def build_mirror_system_prompt(profile: Dict[str, object], style: str = "dominant") -> str:
-    """Build mirror system prompt with specific archetype style"""
-    summary = summarize_communication_profile(profile)
-    
-    # Get style rules, default to dominant if invalid
-    style_config = MIRROR_STYLES.get(style, MIRROR_STYLES["dominant"])
-    style_name = style_config["name"]
-    style_rules = style_config["rules"]
-    
-    return f"""{MIRROR_SYSTEM_PROMPT_BASE}
 
-User Profile:
-{summary}
-
-Mirror Archetype: {style_name}
-
-Archetype Rules:
-{style_rules}
-
-Adaptation Rule:
-If the user's emotional state shifts significantly, subtly adapt intensity while preserving the core archetype behavior.
-"""
-
-def get_user_history(user_id: str, mode: str) -> List[Dict[str, str]]:
-    user_bucket = CONVERSATION_HISTORY.setdefault(user_id, {})
-    return user_bucket.setdefault(mode, [])
 
 def summarize_personality_profile(profile: Dict[str, object]) -> str:
     themes = ", ".join([item for item, _ in profile["themes"].most_common(3)])
@@ -767,17 +556,6 @@ def summarize_personality_profile(profile: Dict[str, object]) -> str:
         f"Recent insight notes: {note_text or 'none'}"
     )
 
-def summarize_communication_profile(profile: Dict[str, object]) -> str:
-    common_phrases = ", ".join(profile["common_phrases"][:5])
-    return (
-        f"avg_sentence_length: {profile['avg_sentence_length']:.1f}\n"
-        f"tone: {profile['tone']}\n"
-        f"emotional_intensity: {profile['emotional_intensity']:.2f}\n"
-        f"directness_level: {profile['directness_level']:.2f}\n"
-        f"logical_depth: {profile['logical_depth']:.2f}\n"
-        f"question_frequency: {profile['question_frequency']:.2f}\n"
-        f"common_phrases: {common_phrases or 'none'}"
-    )
 
 def update_personality_profile(profile: Dict[str, object], user_text: str, reply: str) -> None:
     theme_keywords = {
@@ -831,149 +609,8 @@ def update_personality_profile(profile: Dict[str, object], user_text: str, reply
 
     profile["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
-def update_communication_profile(profile: Dict[str, object], user_text: str) -> None:
-    sentences = split_sentences(user_text)
-    words = extract_words(user_text)
-    sentence_count = max(len(sentences), 1)
-    word_count = max(len(words), 1)
-    lower_text = user_text.lower()
-
-    avg_sentence_length = word_count / sentence_count
-    question_frequency = user_text.count("?") / sentence_count
-
-    intensity_markers = sum(1 for ch in user_text if ch == "!")
-    intensity_words = sum(1 for word in words if word in {"very", "really", "super", "extremely"})
-    emotional_intensity = min(1.0, (intensity_markers + intensity_words) / 5.0)
-
-    hedge_phrases = ["maybe", "perhaps", "sorta", "kind of", "i think"]
-    directive_words = {"need", "must", "should", "tell", "do", "fix"}
-    hedge_count = sum(1 for phrase in hedge_phrases if phrase in lower_text)
-    directive_count = sum(1 for word in words if word in directive_words)
-    directness = min(1.0, max(0.0, (directive_count - hedge_count + 1) / 5.0))
-
-    logical_markers = {"because", "therefore", "since", "so", "thus", "however", "although", "while", "whereas"}
-    logical_depth = min(1.0, sum(1 for word in words if word in logical_markers) / 5.0)
-
-    tone = "neutral"
-    if any(token in user_text.lower() for token in ["lol", "gonna", "kinda", "nah", "yeah"]):
-        tone = "casual"
-    if any(token in user_text.lower() for token in ["therefore", "furthermore", "however", "thus"]):
-        tone = "formal"
-    if intensity_markers >= 2 or any(word.isupper() and len(word) > 3 for word in user_text.split()):
-        tone = "intense"
-
-    sample_count = profile["sample_count"]
-    profile["avg_sentence_length"] = (profile["avg_sentence_length"] * sample_count + avg_sentence_length) / (sample_count + 1)
-    profile["question_frequency"] = (profile["question_frequency"] * sample_count + question_frequency) / (sample_count + 1)
-    profile["emotional_intensity"] = (profile["emotional_intensity"] * sample_count + emotional_intensity) / (sample_count + 1)
-    profile["directness_level"] = (profile["directness_level"] * sample_count + directness) / (sample_count + 1)
-    profile["logical_depth"] = (profile["logical_depth"] * sample_count + logical_depth) / (sample_count + 1)
-
-    profile["tone_counts"][tone] += 1
-    profile["tone"] = profile["tone_counts"].most_common(1)[0][0]
-
-    bigrams = [f"{words[i]} {words[i + 1]}" for i in range(len(words) - 1)]
-    for phrase in bigrams:
-        profile["phrase_counts"][phrase] += 1
-    profile["common_phrases"] = [item for item, _ in profile["phrase_counts"].most_common(5)]
-
-    profile["sample_count"] = sample_count + 1
-    profile["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
 
-def derive_fallback_traits(user_text: str) -> List[Dict[str, float]]:
-    """
-    Deterministic fallback trait extraction used when LLM extraction is unavailable
-    or returns no nudges. Keeps signal strengths conservative.
-    """
-    words = extract_words(user_text)
-    lower_text = user_text.lower()
-    word_count = len(words)
-
-    fallback_traits: List[Dict[str, float]] = []
-
-    # communication_style: short vs elaborated message length
-    comm_signal = max(0.0, min(1.0, (word_count - 4) / 24.0))
-    comm_strength = min(0.16, 0.07 + (min(word_count, 40) / 500.0))
-    fallback_traits.append(
-        {
-            "name": "communication_style",
-            "signal": comm_signal,
-            "strength": comm_strength,
-        }
-    )
-
-    # emotional_expressiveness: feeling words + punctuation emphasis
-    emotional_keywords = {
-        "feel",
-        "felt",
-        "sad",
-        "happy",
-        "anxious",
-        "worried",
-        "stressed",
-        "overwhelmed",
-        "excited",
-        "frustrated",
-        "angry",
-    }
-    emotion_hits = sum(1 for word in words if word in emotional_keywords)
-    exclamations = user_text.count("!")
-    express_signal = max(0.0, min(1.0, 0.25 + (emotion_hits * 0.15) + (exclamations * 0.08)))
-    if emotion_hits > 0 or exclamations > 0:
-        fallback_traits.append(
-            {
-                "name": "emotional_expressiveness",
-                "signal": express_signal,
-                "strength": min(0.18, 0.08 + (emotion_hits * 0.02) + (exclamations * 0.01)),
-            }
-        )
-
-    # decision_framing: hedging lowers score, decisive phrasing raises score
-    hedge_phrases = ["maybe", "perhaps", "i think", "kind of", "sort of", "not sure"]
-    decisive_words = {"definitely", "certain", "will", "must", "clear", "decided"}
-    hedge_hits = sum(1 for phrase in hedge_phrases if phrase in lower_text)
-    decisive_hits = sum(1 for word in words if word in decisive_words)
-    decision_signal = max(0.0, min(1.0, 0.5 + (decisive_hits * 0.12) - (hedge_hits * 0.14)))
-    if hedge_hits > 0 or decisive_hits > 0:
-        fallback_traits.append(
-            {
-                "name": "decision_framing",
-                "signal": decision_signal,
-                "strength": min(0.17, 0.08 + ((hedge_hits + decisive_hits) * 0.02)),
-            }
-        )
-
-    # reflection_depth: introspective and causal language indicates deeper reflection
-    depth_markers = {
-        "why",
-        "because",
-        "realize",
-        "pattern",
-        "meaning",
-        "reflect",
-        "thinking",
-        "understand",
-    }
-    depth_hits = sum(1 for word in words if word in depth_markers)
-    depth_signal = max(0.0, min(1.0, 0.2 + (depth_hits * 0.14)))
-    if depth_hits > 0:
-        fallback_traits.append(
-            {
-                "name": "reflection_depth",
-                "signal": depth_signal,
-                "strength": min(0.18, 0.08 + (depth_hits * 0.02)),
-            }
-        )
-
-    # Return only meaningful signals to avoid noisy updates.
-    meaningful_traits = [
-        trait
-        for trait in fallback_traits
-        if abs(trait["signal"] - 0.5) >= 0.08 or trait["name"] == "communication_style"
-    ]
-
-    return meaningful_traits
 
 
 def build_behavioral_insight_payload(user_text: str, traits: List[Dict[str, float]]) -> Dict[str, object]:
@@ -1103,14 +740,7 @@ def validate_reflection_response(text: str, profile: Dict[str, object], user_tex
     
     return updated
 
-def validate_mirror_response(text: str, user_text: str, profile: Dict[str, object]) -> str:
-    if violates_mirror_rules(text):
-        return local_mirror_reply(user_text, profile)
-    return text
 
-def violates_mirror_rules(text: str) -> bool:
-    lowered = text.lower()
-    return any(phrase in lowered for phrase in MIRROR_BANNED_PHRASES)
 
 def is_echo_reply(reply: str, user_text: str) -> bool:
     def normalize(value: str) -> str:
@@ -1118,204 +748,48 @@ def is_echo_reply(reply: str, user_text: str) -> bool:
 
     return normalize(reply) == normalize(user_text)
 
-def local_mirror_reply(user_text: str, profile: Dict[str, object]) -> str:
-    """Generate unhinged personality-mirrored response matching chaos and energy"""
-    text = user_text.strip()
-    if not text:
-        return "..."
-
-    lower = text.lower()
-    intensity = float(profile.get("emotional_intensity", 0.0))
-    directness = float(profile.get("directness_level", 0.0))
-
-    # Detect style markers
-    has_elongation = bool(re.search(r"([a-z])\1{2,}", lower))
-    has_profanity = any(word in lower for word in ["fuck", "shit", "damn", "hell", "ass", "bitch", "wtf", "omg"])
-    has_caps = bool(re.search(r"[A-Z]{2,}", text))
-    multiple_punct = bool(re.search(r"[!?]{2,}", text))
-    has_ellipsis = "..." in text
-    ends_with_punct = bool(re.search(r"[.!?]+$", text))
-    is_mostly_lower = sum(1 for ch in text if ch.isalpha() and ch.islower()) >= sum(1 for ch in text if ch.isalpha()) * 0.7
-
-    # Detect conversational energy
-    is_playful = any(word in lower for word in ["lol", "lmao", "haha", "😂", "💀", "omg", "bruh"])
-    is_very_chaotic = (has_caps and multiple_punct) or (has_elongation and multiple_punct)
-    is_chaotic = has_caps or multiple_punct or has_elongation
-    is_blunt = directness > 0.7 or (len(text.split()) < 8 and not lower.endswith("?"))
-    is_teasing = any(word in lower for word in ["jk", "kidding", "tho", "but like", "nah but"])
-    is_hyped = has_caps or multiple_punct or intensity > 0.7
-
-    # Unhinged reactive starters - match and escalate
-    if is_very_chaotic:
-        leads = ["YO", "YOOO", "NAH FR", "BROOOO", "WAIT", "LMAOOOO"]
-        lead = random.choice(leads)
-    elif is_playful and has_profanity:
-        leads = ["lmao fr", "nah bro", "bruh fr", "deadass", "fr tho"]
-        lead = random.choice(leads)
-    elif is_playful:
-        leads = ["lmao", "bruh", "nah fr", "fr fr", "honestly"]
-        lead = random.choice(leads)
-    elif is_chaotic:
-        leads = ["YO", "FR", "NAH", "BRO", "WAIT"]
-        lead = random.choice(leads)
-    elif is_blunt and has_profanity:
-        leads = ["yeah", "nah", "fr", "bruh", "facts"]
-        lead = random.choice(leads)
-    elif is_blunt:
-        leads = ["yeah", "nah", "fr", "true"]
-        lead = random.choice(leads)
-    elif is_teasing:
-        leads = ["lol ok but", "nah fr tho", "bruh", "okay but"]
-        lead = random.choice(leads)
-    else:
-        leads = ["yeah", "fr", "nah", "honestly", "true"]
-        lead = random.choice(leads)
-
-    # Build punchy reactive response
-    if lower.endswith("?"):
-        # Questions - answer directly with their energy
-        if is_very_chaotic or has_profanity:
-            base = random.choice(["absolutely", "hell yeah", "probably lol", "idk honestly", "maybe fr"])
-        elif is_playful:
-            base = random.choice(["probably lmao", "idk fr", "maybe", "honestly yeah"])
-        elif is_blunt:
-            base = random.choice(["yeah", "nah", "maybe", "depends"])
-        else:
-            base = random.choice(["yeah probably", "idk maybe", "could be"])
-    elif any(lower.startswith(prefix) for prefix in ["i feel", "i'm feel", "im feel", "feeling"]):
-        # Emotion sharing - mirror intensity, don't validate
-        if has_profanity or intensity > 0.7:
-            base = random.choice(["same tbh", "felt", "big mood fr", "relatable af"])
-        elif is_playful:
-            base = random.choice(["mood", "fr same", "felt that", "honestly same"])
-        else:
-            base = random.choice(["mood", "same", "felt"])
-    elif any(lower.startswith(prefix) for prefix in ["i ", "im ", "i'm "]):
-        # Personal statements - punchy reactions
-        if has_profanity:
-            base = random.choice(["same energy", "felt", "real", "facts", "based"])
-        else:
-            base = random.choice(["real", "facts", "fair", "makes sense", "true"])
-    elif has_profanity or is_hyped:
-        # High energy - match it
-        base = random.choice(["FACTS", "fr fr", "real", "felt", "honestly", "same"])
-    else:
-        # General - short reactive
-        base = random.choice(["true", "fair", "yeah", "fr", "facts"])
-
-    # Add profanity if they used it (mirror intensity)
-    if has_profanity and random.random() > 0.6:
-        if "fuck" in lower or "wtf" in lower:
-            base = f"{base} lmao"
-        elif "shit" in lower or "damn" in lower:
-            base = f"{base} fr"
-
-    # Escalate playfulness
-    if is_playful and random.random() > 0.6:
-        emojis = ["😭", "💀", "😂"]
-        base = f"{base} {random.choice(emojis)}"
-
-    # Chaos punctuation - match and escalate
-    if multiple_punct:
-        if "!" in text:
-            ending = "!" * random.randint(1, 3)
-        elif "?" in text:
-            ending = "?" * random.randint(1, 2)
-        else:
-            ending = "!"
-    elif has_ellipsis:
-        ending = "..."
-    elif is_hyped or is_very_chaotic:
-        ending = "!" if random.random() > 0.4 else "!!"
-    elif is_playful:
-        ending = "" if random.random() > 0.6 else "!"
-    else:
-        ending = ""
-
-    # Build reply
-    reply = f"{lead} {base}{ending}".strip()
-
-    # Match elongations (escalate slightly)
-    if has_elongation:
-        # Find elongated words and mirror them
-        elongate_targets = ["yeah", "no", "so", "fr", "bro", "nah", "yo"]
-        for target in elongate_targets:
-            if target in reply.lower():
-                extra = random.choice(["o", "oo", "ooo"])
-                reply = re.sub(rf"\b{target}\b", f"{target}{extra}", reply, flags=re.IGNORECASE)
-                break
-
-    # Match capitalization chaos
-    if is_very_chaotic and has_caps:
-        # Keep high caps for chaos
-        pass
-    elif is_mostly_lower and not is_very_chaotic:
-        reply = reply.lower()
-
-    # Remove punctuation if they didn't use it
-    if not ends_with_punct and not ending and not is_chaotic:
-        reply = reply.rstrip(".!?")
-
-    return reply
 
 async def generate_llm_response(system_prompt: str, model_params: Dict[str, object], history: List[Dict[str, str]]) -> Optional[str]:
-    """Generate response using Mistral AI"""
-    
-    if MISTRAL_AVAILABLE and os.getenv("MISTRAL_API_KEY"):
-        try:
-            logger.info("🤖 Using Mistral AI for response generation")
-            
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            
-            response = mistral_client.chat.complete(
-                model="mistral-small-latest",
-                messages=messages,
-                max_tokens=model_params["max_tokens"],
-                temperature=model_params["temperature"],
-            )
-            
-            reply = response.choices[0].message.content.strip()
+    """Generate response using Mistral AI. Returns None when unavailable or on error."""
+    if not llm_available():
+        return None
+
+    try:
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        reply = await chat_complete(
+            messages,
+            max_tokens=model_params["max_tokens"],
+            temperature=model_params["temperature"],
+        )
+        if reply:
             logger.info(f"✅ Mistral response received: {reply[:50]}...")
-            return reply
-            
-        except Exception as e:
-            logger.error(f"❌ Mistral error: {e}")
-            logger.error(f"Full error details: {type(e).__name__}: {str(e)}")
-    
-    return None
+        return reply
+    except Exception as e:
+        logger.error(f"❌ Mistral error: {type(e).__name__}: {e}")
+        return None
+
+
+def _fallback_title(user_message: str) -> str:
+    return user_message[:40] + ("..." if len(user_message) > 40 else "")
 
 
 async def generate_conversation_title(user_message: str) -> str:
     """Generate a 3-5 word summary title for a conversation"""
-    if MISTRAL_AVAILABLE and os.getenv("MISTRAL_API_KEY"):
+    if llm_available():
         try:
-            logger.info("📝 Generating conversation title with AI")
-            
             system_prompt = "You are a helpful assistant that creates very short conversation titles. Generate a 3-5 word title that summarizes the topic. Return ONLY the title, nothing else."
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Create a 3-5 word title for this message: {user_message}"}
             ]
-            
-            response = mistral_client.chat.complete(
-                model="mistral-small-latest",
-                messages=messages,
-                max_tokens=20,
-                temperature=0.7,
-            )
-            
-            title = response.choices[0].message.content.strip()
-            # Remove quotes if present
-            title = title.strip('"\'')
-            logger.info(f"✅ Generated title: {title}")
-            return title
-            
+            title = await chat_complete(messages, max_tokens=20, temperature=0.7)
+            if title:
+                return title.strip('"\'')
         except Exception as e:
             logger.error(f"❌ Title generation error: {e}")
-    
-    # Fallback: use first 40 characters
-    return user_message[:40] + ("..." if len(user_message) > 40 else "")
+
+    return _fallback_title(user_message)
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
@@ -1324,6 +798,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     Creates new conversation if conversation_id is None.
     Stores all messages in database.
     Falls back to templates if LLM is not available.
+
+    Independent LLM calls (reply generation, trait extraction, title) run
+    concurrently; conversation history and profile context come from the database.
     """
     effective_mode = normalize_interaction_mode(request.mode)
     logger.info(
@@ -1349,14 +826,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
 
     message_text = request.message or ""
     conversation_title = None
+    title_task: Optional[asyncio.Task] = None
+    prior_history: List[Dict[str, str]] = []
 
     # Handle conversation creation or retrieval
     if conversation_id_uuid is None:
-        # Generate title for new conversation
-        conversation_title = await generate_conversation_title(message_text)
-        logger.info(f"📝 Creating new conversation with title: {conversation_title}")
-        
-        # Create new conversation
+        # Title generation runs in the background while the reply is generated.
+        title_task = asyncio.create_task(generate_conversation_title(message_text))
         metadata_payload = {}
         if request.external_input_text:
             metadata_payload["external_input_source"] = request.external_input_source or "pasted_prompt"
@@ -1364,14 +840,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         conversation = await crud.create_conversation(
             db=db,
             user_id=user_id_uuid,
-            title=conversation_title,
+            title=_fallback_title(message_text),
             mode=effective_mode,
             metadata=metadata_payload,
         )
         conversation_id_uuid = conversation.id
         logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {effective_mode}")
     else:
-        # Get existing conversation
         conversation = await crud.get_conversation_by_id(
             db=db,
             conversation_id=conversation_id_uuid,
@@ -1379,7 +854,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        
+
         # Validate that conversation mode matches request mode
         if conversation.mode == "assistant" and effective_mode == "mirror":
             logger.info("🔁 Upgrading existing assistant conversation to mirror mode")
@@ -1387,21 +862,16 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             await db.flush()
         elif conversation.mode != effective_mode:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Conversation mode '{conversation.mode}' does not match request mode '{effective_mode}'"
             )
-        
+
         conversation_title = conversation.title
-        logger.info(f"✅ Using existing conversation {conversation_id_uuid} with mode: {conversation.mode}")
+        prior_history = await load_conversation_history(db, conversation_id_uuid, user_id_uuid)
 
-    # Get conversation history from in-memory storage (for AI context)
-    history = get_user_history(request.user_id, effective_mode)
-    history.append({"role": "user", "content": message_text})
-
-    # Update profiles (keep for backward compatibility)
-    personality_profile = get_personality_profile(request.user_id)
-    communication_profile = get_communication_profile(request.user_id)
-    update_communication_profile(communication_profile, message_text)
+    # LLM context: this conversation's recent turns plus the new message.
+    history = prior_history + [{"role": "user", "content": message_text}]
+    personality_profile = await load_personality_profile(db, user_id_uuid)
 
     # Track active mirror style and detected emotion
     active_mirror_style = None
@@ -1414,9 +884,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     style_strength = None
     reaction_source = None
     reaction_match_score = 0.0
+    extracted_traits: List[Dict] = []
+
+    from app.services.trait_extraction_service import extract_traits
+    from app.services.persona_update_service import update_traits
+    from app.services.snapshot_service import generate_persona_snapshot
 
     if effective_mode == "reflection":
-        # FETCH SCHEDULE CONTEXT
         try:
             from app.db.models import ScheduleContext
             sched_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id_uuid))
@@ -1425,42 +899,48 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             logger.error(f"⚠️ Failed to fetch schedule context: {e}")
             schedule_context = None
 
-        # REFLECTION MODE: Generate response and update persona
         system_prompt = build_reflection_system_prompt(personality_profile, schedule_context)
         model_params = MODEL_PARAMS["reflection"]
-        
-        # Generate AI response
-        reply = await generate_llm_response(system_prompt, model_params, history)
+
+        # Reply and trait extraction are independent LLM calls: run them together.
+        reply, extracted_traits = await asyncio.gather(
+            generate_llm_response(system_prompt, model_params, history),
+            extract_traits(message_text),
+        )
         if reply and is_echo_reply(reply, message_text):
             logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
             reply = None
-        
-        # Fall back to templates if LLM not available
+
         if not reply:
             logger.info("📝 Using template response (LLM not available)")
             sanitized = re.sub(r"[?]+", "", message_text).strip()
-            template = random.choice(REFLECTION_TEMPLATES)
-            reply = template.format(text=sanitized)
-        
-        reply = validate_reflection_response(reply, personality_profile, request.message)
+            reply = random.choice(REFLECTION_TEMPLATES).format(text=sanitized)
+
+        reply = validate_reflection_response(reply, personality_profile, message_text)
         update_personality_profile(personality_profile, message_text, reply)
-        
-        # PERSONA SERVICE INTEGRATION: Extract and update traits
-        logger.info(f"🔄 Updating persona from reflection message")
+
         try:
-            from app.services.trait_extraction_service import extract_traits
-            from app.services.persona_update_service import update_traits
-            from app.services.snapshot_service import generate_persona_snapshot
-            from app.services.mirror_engine import invalidate_snapshot_cache
+            await save_personality_profile(db, user_id_uuid, personality_profile)
+            db.add(
+                ReflectionLog(
+                    user_id=user_id_uuid,
+                    conversation_id=conversation_id_uuid,
+                    prompt=message_text,
+                    response=reply,
+                    sentiment=simple_sentiment(message_text),
+                )
+            )
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to persist reflection profile/log: {e}")
+            await db.rollback()
+
+        try:
             from app.db.models import BehavioralInsight
-            
-            # Extract traits from user message
-            extracted_traits = await extract_traits(message_text)
+
             if not extracted_traits:
                 extracted_traits = derive_fallback_traits(message_text)
                 logger.info(f"🔁 Using fallback trait extraction: {len(extracted_traits)} traits")
-            else:
-                logger.info(f"🔍 Extracted {len(extracted_traits)} traits")
 
             # Persist one deterministic behavioral insight for Reflections tab.
             if extracted_traits:
@@ -1475,32 +955,25 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
                     )
                 )
                 await db.flush()
-            
-            # Update trait metrics in database
+
             await update_traits(db, user_id_uuid, extracted_traits)
-            
-            # Generate new snapshot
             await generate_persona_snapshot(db, user_id_uuid)
-            
-            # Invalidate cache since we have updated snapshot
-            invalidate_snapshot_cache(user_id_uuid)
-            
-            logger.info(f"✅ Persona updated and snapshot regenerated")
+            logger.info("✅ Persona updated from reflection message")
         except Exception as e:
             logger.error(f"⚠️ Failed to update persona: {e}")
-            # Continue - persona update failure shouldn't break chat
-    
+            await db.rollback()
+
     else:
         # MIRROR MODE: Always keep full assistant capability while preserving mirror style.
         explicit_task_type = resolve_mirror_task_type(message_text, history)
         inferred_task_type = classify_assistant_task(message_text.lower())
         assistant_task_type = explicit_task_type or inferred_task_type
 
-        # Detect emotional tone and resolve adaptive mirror archetype for this turn.
+        prior_user_messages = [turn["content"] for turn in prior_history if turn["role"] == "user"]
         active_mirror_style, detected_emotion = get_adaptive_mirror_style(
-            request.user_id,
             message_text,
             personality_profile,
+            prior_user_messages,
         )
 
         logger.info(
@@ -1517,50 +990,27 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         settings_record = settings_result.scalar_one_or_none()
         twin_policy = resolve_twin_settings(settings_record)
 
-        try:
-            # Mirror engine handles: snapshot retrieval, message style analysis,
-            # persona-based prompt building, variation buffer, and latency cap.
-            reply, metadata = await generate_mirror_response(
+        # The mirror reply and trait extraction run concurrently. Trait extraction
+        # does not touch the DB session, so sharing it with the mirror engine is safe.
+        mirror_result, traits_result = await asyncio.gather(
+            generate_mirror_response(
                 db,
                 user_id_uuid,
                 message_text,
-                recent_history=history,
+                recent_history=prior_history,
                 twin_policy=twin_policy,
                 task_type=assistant_task_type,
                 detected_emotion=detected_emotion,
                 active_mirror_style=active_mirror_style,
                 conversation_id=conversation_id_uuid,
-            )
+            ),
+            extract_traits(message_text),
+            return_exceptions=True,
+        )
+        extracted_traits = traits_result if isinstance(traits_result, list) else []
 
-            # Unpack observability metrics
-            inference_duration_ms = metadata.get("inference_duration_ms", 0)
-            realism_score = metadata.get("realism_score", 0.0)
-            retries_used = metadata.get("retries_used", 0)
-            fallback_triggered = metadata.get("fallback_triggered", False)
-            confidence_lower = float(metadata.get("confidence_lower", 0.0))
-            confidence_upper = float(metadata.get("confidence_upper", 0.0))
-            confidence_tier = str(metadata.get("confidence_tier", "very_low"))
-            style_strength = float(metadata.get("style_enforcement_strength", 0.0))
-            reaction_match_score = float(metadata.get("reaction_match_score", 0.0))
-            source_weights = metadata.get("source_weights", {})
-            reaction_source = str(metadata.get("stimulus_tag", "general"))
-            confidence_interval = {
-                "lower": confidence_lower,
-                "upper": confidence_upper,
-            }
-            mirror_runtime_active = not bool(
-                fallback_triggered and metadata.get("policy_mode") in {"disabled", "persona_mirroring_disabled"}
-            )
-
-            preview = (reply or "")[:50]
-            logger.info(
-                "✅ Mirror engine response: %s... | Realism: %s | Time: %sms",
-                preview,
-                realism_score,
-                inference_duration_ms,
-            )
-        except Exception as e:
-            logger.exception("⚠️ Mirror generation failed")
+        if isinstance(mirror_result, BaseException):
+            logger.error("⚠️ Mirror generation failed", exc_info=mirror_result)
             await db.rollback()
             if assistant_task_type:
                 reply = build_assistant_fallback_reply(message_text, assistant_task_type)
@@ -1579,6 +1029,29 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             source_weights = {}
             reaction_source = "general"
             confidence_interval = {"lower": 0.0, "upper": 0.0}
+        else:
+            reply, metadata = mirror_result
+            inference_duration_ms = metadata.get("inference_duration_ms", 0)
+            realism_score = metadata.get("realism_score", 0.0)
+            retries_used = metadata.get("retries_used", 0)
+            fallback_triggered = metadata.get("fallback_triggered", False)
+            confidence_lower = float(metadata.get("confidence_lower", 0.0))
+            confidence_upper = float(metadata.get("confidence_upper", 0.0))
+            confidence_tier = str(metadata.get("confidence_tier", "very_low"))
+            style_strength = float(metadata.get("style_enforcement_strength", 0.0))
+            reaction_match_score = float(metadata.get("reaction_match_score", 0.0))
+            source_weights = metadata.get("source_weights", {})
+            reaction_source = str(metadata.get("stimulus_tag", "general"))
+            confidence_interval = {"lower": confidence_lower, "upper": confidence_upper}
+            mirror_runtime_active = not bool(
+                fallback_triggered and metadata.get("policy_mode") in {"disabled", "persona_mirroring_disabled"}
+            )
+            logger.info(
+                "✅ Mirror engine response: %s... | Realism: %s | Time: %sms",
+                (reply or "")[:50],
+                realism_score,
+                inference_duration_ms,
+            )
 
         # Never overwrite a valid mirror reply due to recalibration failures.
         try:
@@ -1586,34 +1059,24 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         except Exception:
             logger.exception("⚠️ Drift recalibration failed; keeping generated mirror reply")
             await db.rollback()
-            
-        if reply is None:
+
+        if not reply:
             if assistant_task_type:
                 reply = build_assistant_fallback_reply(message_text, assistant_task_type)
             else:
                 reply = MIRROR_FALLBACK_REPLY
             fallback_triggered = True
 
-        # PERSONA SERVICE INTEGRATION: Mirror messages should also grow confidence.
-        logger.info("🔄 Updating persona from mirror message")
+        # Mirror messages also grow persona confidence.
         try:
-            from app.services.trait_extraction_service import extract_traits
-            from app.services.persona_update_service import update_traits
-            from app.services.snapshot_service import generate_persona_snapshot
-            from app.services.mirror_engine import invalidate_snapshot_cache
-
-            extracted_traits = await extract_traits(message_text)
             if not extracted_traits:
                 extracted_traits = derive_fallback_traits(message_text)
                 logger.info(f"🔁 Using fallback trait extraction (mirror): {len(extracted_traits)} traits")
-            else:
-                logger.info(f"🔍 Extracted {len(extracted_traits)} traits (mirror)")
 
             if extracted_traits:
                 await update_traits(db, user_id_uuid, extracted_traits)
                 await generate_persona_snapshot(db, user_id_uuid)
-                invalidate_snapshot_cache(user_id_uuid)
-                logger.info("✅ Persona updated from mirror message and snapshot regenerated")
+                logger.info("✅ Persona updated from mirror message")
         except Exception as e:
             logger.warning(f"⚠️ Failed to update persona from mirror message: {e}")
             await db.rollback()
@@ -1637,10 +1100,8 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
                 logger.warning("⚠️ Skipping external input persistence: %s", ext_err)
                 await db.rollback()
 
-    history.append({"role": "assistant", "content": reply})
-
-    # Store user message in database
-    logger.info(f"💾 Storing user message for conversation {conversation_id_uuid}")
+    # Store user message (with per-message analytics) in database
+    metrics = compute_message_metrics(message_text, extracted_traits)
     try:
         user_message = await crud.create_message(
             db=db,
@@ -1649,7 +1110,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             role="user",
             content=message_text,
             embedding=None,
-            token_count=None,
+            token_count=metrics["token_count"],
+            emotional_intensity=metrics["emotional_intensity"],
+            reflection_depth=metrics["reflection_depth"],
         )
         logger.info(f"✅ Stored user message {user_message.id}")
     except Exception as e:
@@ -1657,17 +1120,20 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         raise HTTPException(status_code=500, detail=f"Failed to store user message: {str(e)}")
 
     try:
-        from app.services.behavioral_memory_service import update_linguistic_fingerprint
+        from app.services.behavioral_memory_service import (
+            record_user_reaction,
+            update_linguistic_fingerprint,
+        )
 
         await update_linguistic_fingerprint(db, user_id_uuid, message_text)
+        await record_user_reaction(db, user_id_uuid, message_text)
         await db.commit()
     except Exception as fingerprint_err:
         # Behavioral memory persistence is optional and should not break main chat flow.
-        logger.warning("⚠️ Skipping linguistic fingerprint update: %s", fingerprint_err)
+        logger.warning("⚠️ Skipping behavioral memory update: %s", fingerprint_err)
         await db.rollback()
 
     # Store AI response in database
-    logger.info(f"💾 Storing assistant message for conversation {conversation_id_uuid}")
     try:
         assistant_message = await crud.create_message(
             db=db,
@@ -1676,7 +1142,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
             role="assistant",
             content=reply,
             embedding=None,
-            token_count=None,
+            token_count=len(reply.split()),
         )
         logger.info(f"✅ Stored assistant message {assistant_message.id}")
     except Exception as e:
@@ -1687,40 +1153,41 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
     if effective_mode == "mirror":
         try:
             from app.db.models import MirrorLog
-            from app.services.behavioral_memory_service import upsert_reaction_pattern
 
-            await upsert_reaction_pattern(
-                db=db,
-                user_id=user_id_uuid,
-                stimulus_tag=reaction_source or "general",
-                response_template=reply,
-                reaction_match_score=reaction_match_score,
+            db.add(
+                MirrorLog(
+                    user_id=user_id_uuid,
+                    conversation_id=conversation_id_uuid,
+                    message_id=assistant_message.id,
+                    inference_duration_ms=inference_duration_ms,
+                    realism_score=realism_score,
+                    retries_used=retries_used,
+                    fallback_triggered=fallback_triggered,
+                    confidence_lower=confidence_lower,
+                    confidence_upper=confidence_upper,
+                    confidence_tier=confidence_tier,
+                    style_enforcement_strength=style_strength,
+                    reaction_match_score=reaction_match_score,
+                    source_weights=source_weights,
+                )
             )
-
-            mirror_log = MirrorLog(
-                user_id=user_id_uuid,
-                conversation_id=conversation_id_uuid,
-                message_id=assistant_message.id,
-                inference_duration_ms=inference_duration_ms,
-                realism_score=realism_score,
-                retries_used=retries_used,
-                fallback_triggered=fallback_triggered,
-                confidence_lower=confidence_lower,
-                confidence_upper=confidence_upper,
-                confidence_tier=confidence_tier,
-                style_enforcement_strength=style_strength,
-                reaction_match_score=reaction_match_score,
-                source_weights=source_weights,
-            )
-            db.add(mirror_log)
             await db.commit()
             logger.info("📊 Saved Mirror Observability Log")
         except Exception as telemetry_err:
             logger.warning("⚠️ Skipping mirror telemetry persistence: %s", telemetry_err)
             await db.rollback()
 
+    # Apply the AI-generated title for new conversations.
+    if title_task is not None:
+        conversation_title = await title_task
+        try:
+            await crud.update_conversation_title(db, conversation_id_uuid, conversation_title)
+        except Exception as title_err:
+            logger.warning("⚠️ Failed to store conversation title: %s", title_err)
+            await db.rollback()
+
     logger.info(f"✅ Generated response and stored 2 messages for conversation {conversation_id_uuid}")
-    
+
     return ChatResponse(
         conversation_id=str(conversation_id_uuid),
         title=conversation_title,

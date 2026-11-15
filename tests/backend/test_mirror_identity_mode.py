@@ -73,7 +73,7 @@ class MirrorIdentityContractTests(unittest.TestCase):
         self.assertIn("Active Archetype: chaotic", prompt)
         self.assertIn("Communication Style (Concise", prompt)
         self.assertIn("Decision Framing (Hesitant", prompt)
-        self.assertIn("Continue the same thought thread", prompt)
+        self.assertIn("keep the same thought thread", prompt)
         self.assertIn("self-directed", prompt)
 
     def test_normalization_and_hash_are_stable(self):

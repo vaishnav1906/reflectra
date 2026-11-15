@@ -111,10 +111,24 @@ STABILITY_THRESHOLD_STABLE = 0.7
 
 # Gradual update parameters - designed for slow convergence
 MAX_STRENGTH_PER_MESSAGE = 0.2  # Maximum strength allowed per message (prevents dramatic shifts)
-CONFIDENCE_INCREASE_RATE = 0.03  # How much confidence increases when signal aligns
-CONFIDENCE_DECREASE_RATE = 0.02  # How much confidence decreases when signal conflicts
+
+# Score update: new = old + alpha * (signal - old), with
+#   alpha = strength * (1 - SCORE_INERTIA * confidence)
+# so one message moves a trait at most 20% of the way toward its signal, and
+# well-established traits (high confidence) move even less.
+SCORE_INERTIA = 0.8
+
+# Confidence update (saturating, so it approaches but never jumps to the bounds):
+#   aligned signal     -> confidence += CONFIDENCE_INCREASE_RATE * strength * (1 - confidence)
+#   conflicting signal -> confidence -= CONFIDENCE_DECREASE_RATE * strength * confidence
+# With typical strengths (~0.12-0.18) about 30 consistent messages take a trait
+# from the 0.1 default to ~0.6 ("developing" -> close to "stable").
+CONFIDENCE_INCREASE_RATE = 0.25
+CONFIDENCE_DECREASE_RATE = 0.30
+ALIGNMENT_DISTANCE = 0.2  # |signal - score| below this reinforces the current score
+CONFLICT_DISTANCE = 0.35  # |signal - score| above this counts as contradicting evidence
 MIN_CONFIDENCE = 0.05
-MAX_CONFIDENCE = 1.0
+MAX_CONFIDENCE = 0.98
 
 # Drift prevention - smoothing to prevent locking at extremes
 EVIDENCE_COUNT_FOR_DRIFT_CHECK = 10  # Check every 10 updates

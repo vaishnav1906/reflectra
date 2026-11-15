@@ -2,6 +2,7 @@
 
 import logging
 import statistics
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 from uuid import UUID
 
@@ -17,17 +18,28 @@ from app.constants import (
 
 logger = logging.getLogger(__name__)
 
+# One snapshot row per window: messages inside the window refresh the latest
+# snapshot in place instead of adding a row per message. This keeps the table
+# small and makes snapshot-to-snapshot comparisons (timeline trends, PDF trend
+# chart) span real time instead of the last few messages.
+SNAPSHOT_MIN_INTERVAL = timedelta(hours=6)
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
 
 async def generate_persona_snapshot(
-    db: AsyncSession, user_id: UUID
+    db: AsyncSession, user_id: UUID, force_new: bool = False
 ) -> PersonaSnapshot:
     """
-    Generate and store a persona snapshot.
-    
+    Generate (or refresh) the user's persona snapshot.
+
     Args:
         db: Database session
         user_id: User UUID
-        
+        force_new: Always insert a new row instead of refreshing a recent one.
+
     Returns:
         PersonaSnapshot object
     """
@@ -69,6 +81,23 @@ async def generate_persona_snapshot(
     # Generate summary text
     summary_text = generate_summary_text(metrics, stability_index)
     
+    latest = None if force_new else await PersonaRepository.get_latest_snapshot(db, user_id)
+    if (
+        latest is not None
+        and not latest.is_historical_anchor
+        and latest.created_at is not None
+        and datetime.now(timezone.utc) - _ensure_utc(latest.created_at) < SNAPSHOT_MIN_INTERVAL
+    ):
+        snapshot = await PersonaRepository.update_snapshot(
+            db=db,
+            snapshot=latest,
+            persona_vector=persona_vector,
+            stability_index=round(stability_index, 3),
+            summary_text=summary_text,
+        )
+        logger.info(f"✅ Snapshot refreshed: stability={stability_index:.3f}")
+        return snapshot
+
     # Create snapshot
     snapshot = await PersonaRepository.create_snapshot(
         db=db,

@@ -86,9 +86,9 @@ class MirrorModeBehaviorTests(unittest.TestCase):
         self.assertIn("Emotional Expressiveness (Reserved", prompt)
         self.assertIn("Decision Framing (Hesitant", prompt)
         self.assertIn("Reflection Depth (Surface", prompt)
-        self.assertIn("Keep mirror interpretation active even for task routes", prompt)
-        self.assertIn("Continue the same thought thread", prompt)
-        self.assertIn("Stay in first person", prompt)
+        self.assertIn("Mirror mode remains conversational and self-responsive", prompt)
+        self.assertIn("keep the same thought thread", prompt)
+        self.assertIn("Use first-person internal framing", prompt)
         self.assertIn("Allow light starters", prompt)
 
     def test_quality_filter_allows_concise_when_profile_is_concise(self):

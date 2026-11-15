@@ -9,10 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repository.persona_repository import PersonaRepository
 from app.constants import (
+    ALIGNMENT_DISTANCE,
+    CONFLICT_DISTANCE,
     CONFIDENCE_INCREASE_RATE,
     CONFIDENCE_DECREASE_RATE,
+    SCORE_INERTIA,
     MIN_CONFIDENCE,
     MAX_CONFIDENCE,
+    MAX_STRENGTH_PER_MESSAGE,
     EVIDENCE_COUNT_FOR_DRIFT_CHECK,
     MIN_EVIDENCE_FOR_RETENTION,
     LOW_CONFIDENCE_THRESHOLD,
@@ -24,16 +28,49 @@ from app.constants import (
 logger = logging.getLogger(__name__)
 
 
+def compute_trait_update(
+    old_score: float,
+    old_confidence: float,
+    signal: float,
+    strength: float,
+) -> tuple[float, float]:
+    """Pure trait-update rule. Returns (new_score, new_confidence).
+
+    Score: an exponential moving average whose step size is the nudge strength,
+    damped by existing confidence. A single message can move a trait at most
+    `strength` (<= 0.2) of the way toward its signal, never most of the way.
+
+    Confidence: grows when the signal agrees with the current score, shrinks
+    when it clearly contradicts it, and is unchanged for in-between evidence.
+    Both directions saturate, so confidence approaches its bounds smoothly.
+    """
+    strength = max(0.0, min(MAX_STRENGTH_PER_MESSAGE, float(strength)))
+    signal = max(0.0, min(1.0, float(signal)))
+    old_confidence = max(MIN_CONFIDENCE, min(MAX_CONFIDENCE, float(old_confidence)))
+
+    alpha = strength * (1.0 - SCORE_INERTIA * old_confidence)
+    new_score = max(0.0, min(1.0, old_score + alpha * (signal - old_score)))
+
+    distance = abs(signal - old_score)
+    if distance <= ALIGNMENT_DISTANCE:
+        new_confidence = old_confidence + CONFIDENCE_INCREASE_RATE * strength * (1.0 - old_confidence)
+    elif distance >= CONFLICT_DISTANCE:
+        new_confidence = old_confidence - CONFIDENCE_DECREASE_RATE * strength * old_confidence
+    else:
+        new_confidence = old_confidence
+
+    new_confidence = max(MIN_CONFIDENCE, min(MAX_CONFIDENCE, new_confidence))
+    return new_score, new_confidence
+
+
 async def update_traits(
     db: AsyncSession, user_id: UUID, extracted_traits: List[Dict]
 ) -> Dict[str, float]:
     """
-    Update user's personality traits using gradual weighted moving average.
-    
-    Implements the algorithm:
-    - new_score = (old_score * old_confidence + signal * strength) / (old_confidence + strength)
-    - Confidence increases if signal aligns with trend, decreases if conflicting
-    - Ensures slow convergence and no abrupt changes
+    Update user's personality traits gradually (see compute_trait_update).
+
+    - Each nudge moves a trait at most `strength` (<= 0.2) toward its signal.
+    - Confidence grows with consistent evidence and shrinks with contradictions.
     
     Args:
         db: Database session
@@ -49,6 +86,7 @@ async def update_traits(
     
     # Initialize missing traits first
     await PersonaRepository.initialize_missing_traits(db, user_id)
+    evidence_before = await PersonaRepository.get_total_evidence_count(db, user_id)
     
     traits_updated = 0
     
@@ -69,49 +107,8 @@ async def update_traits(
         
         old_score = metric.score
         old_confidence = metric.confidence
-        
-        # ============================================================
-        # GRADUAL WEIGHTED MOVING AVERAGE ALGORITHM
-        # ============================================================
-        # Formula: new_score = (old_score * old_confidence + signal * strength) / (old_confidence + strength)
-        # This ensures:
-        # - Higher confidence scores resist change more
-        # - Stronger signals have more influence
-        # - No single message can drastically shift the trait
-        # ============================================================
-        
-        numerator = (old_score * old_confidence) + (signal * strength)
-        denominator = old_confidence + strength
-        new_score = numerator / denominator if denominator > 0 else old_score
-        
-        # Clamp score to [0, 1]
-        new_score = max(0.0, min(1.0, new_score))
-        
-        # ============================================================
-        # DIRECTIONAL CONFIDENCE LOGIC
-        # ============================================================
-        # If signal direction aligns with current score:
-        #   → Increase confidence (reinforcing pattern)
-        # If signal direction conflicts with current score:
-        #   → Decrease confidence (uncertain/changing pattern)
-        # ============================================================
-        
-        # Check alignment: does signal push in same direction as current score?
-        signal_delta = signal - old_score
-        
-        if abs(signal_delta) < 0.05:
-            # Signal very close to current score - slight confidence boost
-            new_confidence = min(MAX_CONFIDENCE, old_confidence + CONFIDENCE_INCREASE_RATE * strength * 0.5)
-            logger.debug(f"📊 {trait_name}: Signal aligned (neutral)")
-        elif (signal > 0.5 and old_score > 0.5) or (signal < 0.5 and old_score < 0.5):
-            # Signal and score on same side of neutral - increase confidence
-            new_confidence = min(MAX_CONFIDENCE, old_confidence + CONFIDENCE_INCREASE_RATE * strength)
-            logger.debug(f"📈 {trait_name}: Signal aligned (same direction)")
-        else:
-            # Signal pulls in opposite direction - decrease confidence
-            new_confidence = max(MIN_CONFIDENCE, old_confidence - CONFIDENCE_DECREASE_RATE * strength)
-            logger.debug(f"📉 {trait_name}: Signal conflicting (different direction)")
-        
+        new_score, new_confidence = compute_trait_update(old_score, old_confidence, signal, strength)
+
         # Update metric
         await PersonaRepository.update_metric(
             db, metric, new_score, new_confidence, signal
@@ -137,7 +134,10 @@ async def update_traits(
     
     # Check if drift prevention is needed
     total_evidence = await PersonaRepository.get_total_evidence_count(db, user_id)
-    if total_evidence > 0 and total_evidence % EVIDENCE_COUNT_FOR_DRIFT_CHECK == 0:
+    # Evidence grows by 1-4 per message, so check whether a multiple of the
+    # interval was crossed rather than hit exactly (the old `% == 0` check
+    # silently skipped most drift checks).
+    if total_evidence // EVIDENCE_COUNT_FOR_DRIFT_CHECK > evidence_before // EVIDENCE_COUNT_FOR_DRIFT_CHECK:
         logger.info(f"🔄 Running drift prevention (evidence count: {total_evidence})")
         await apply_drift_prevention(db, user_id)
     

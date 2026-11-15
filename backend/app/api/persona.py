@@ -42,7 +42,7 @@ async def reset_persona(
     await db.commit()
     
     # Initialize fresh
-    await generate_persona_snapshot(db, user_uuid)
+    await generate_persona_snapshot(db, user_uuid, force_new=True)
     invalidate_snapshot_cache(user_uuid)
     
     return {"status": "persona_reset_success"}

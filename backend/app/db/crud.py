@@ -45,6 +45,8 @@ async def create_message(
     content: str,
     embedding: Optional[List[float]],
     token_count: Optional[int],
+    emotional_intensity: Optional[float] = None,
+    reflection_depth: Optional[float] = None,
 ) -> models.Message:
     """Create a new message in a conversation"""
     # Validate conversation exists and belongs to user
@@ -67,6 +69,8 @@ async def create_message(
         content=content,
         embedding=embedding,
         token_count=token_count,
+        emotional_intensity=emotional_intensity,
+        reflection_depth=reflection_depth,
     )
     db.add(message)
     try:

@@ -245,9 +245,10 @@ async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
     personality_profile = profile_result.scalar_one_or_none()
 
     snapshots_result = await db.execute(
-        select(PersonaSnapshot).where(PersonaSnapshot.user_id == user_id).order_by(PersonaSnapshot.created_at.asc()).limit(30)
+        select(PersonaSnapshot).where(PersonaSnapshot.user_id == user_id).order_by(PersonaSnapshot.created_at.desc()).limit(30)
     )
-    snapshots = snapshots_result.scalars().all()
+    # Newest 30 snapshots, in chronological order for the trend chart.
+    snapshots = list(reversed(snapshots_result.scalars().all()))
 
     metrics_result = await db.execute(
         select(UserPersonaMetric).where(UserPersonaMetric.user_id == user_id).order_by(desc(UserPersonaMetric.last_updated))
