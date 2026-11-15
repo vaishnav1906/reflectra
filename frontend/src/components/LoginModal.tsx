@@ -5,20 +5,32 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { X } from "lucide-react";
-
-const API_BASE = "/api";
+import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface LoginModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+type AuthMode = "signin" | "signup" | "forgot";
+
+const MODE_COPY: Record<AuthMode, { description: string; submit: string; busy: string }> = {
+  signin: { description: "Sign in to continue", submit: "Sign in", busy: "Signing in..." },
+  signup: { description: "Create your account", submit: "Create account", busy: "Creating account..." },
+  forgot: { description: "We'll email you a reset link", submit: "Send reset link", busy: "Sending..." },
+};
+
 export function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const navigate = useNavigate();
+  const { authError } = useAuth();
+  const [mode, setMode] = useState<AuthMode>("signin");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -43,49 +55,73 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
     return () => window.removeEventListener("keydown", handleEsc);
   }, [isOpen, onClose]);
 
+  // Surface backend refusals (e.g. unconfirmed email) when the modal opens.
+  useEffect(() => {
+    if (isOpen && authError) {
+      setError(authError);
+    }
+  }, [isOpen, authError]);
+
+  const switchMode = (next: AuthMode) => {
+    setMode(next);
+    setError("");
+    setNotice("");
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
+    setNotice("");
+
+    if (!isSupabaseConfigured) {
+      setError("Sign-in is not configured for this deployment.");
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
     setIsLoading(true);
-
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email,
-          display_name: displayName,
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Login failed");
+      if (mode === "forgot") {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+          redirectTo: `${window.location.origin}/reset-password`,
+        });
+        if (resetError) throw resetError;
+        setNotice("If an account exists for that email, a reset link is on its way.");
+        return;
       }
 
-      const data = await res.json();
-      
-      console.log("🔐 Login successful!");
-      console.log("👤 User ID:", data.id);
-      console.log("📧 Email:", data.email);
-      console.log("✨ Display Name:", data.display_name);
-      
-      // Save to localStorage
-      localStorage.setItem("user_id", data.id);
-      localStorage.setItem("display_name", data.display_name);
-      localStorage.setItem("email", data.email);
-      
-      console.log("💾 Saved to localStorage");
-      console.log("  - user_id:", localStorage.getItem("user_id"));
-      console.log("  - display_name:", localStorage.getItem("display_name"));
-      console.log("  - email:", localStorage.getItem("email"));
+      if (mode === "signup") {
+        if (password.length < 8) {
+          setError("Password must be at least 8 characters long.");
+          return;
+        }
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: {
+            data: { display_name: displayName.trim() },
+            emailRedirectTo: `${window.location.origin}/app/chat`,
+          },
+        });
+        if (signUpError) throw signUpError;
+        if (!data.session) {
+          // Email confirmation is required before the first sign-in.
+          setMode("signin");
+          setNotice("Check your email to confirm your account, then sign in.");
+          return;
+        }
+        navigate("/app/chat");
+        return;
+      }
 
-      // Navigate to main app
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (signInError) throw signInError;
       navigate("/app/chat");
     } catch (err) {
-      setError("Failed to login. Please try again.");
-      console.error("Login error:", err);
+      setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -93,16 +129,18 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
   if (!isOpen) return null;
 
+  const copy = MODE_COPY[mode];
+
   return (
-    <div 
+    <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
       onClick={onClose}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-background/80 backdrop-blur-md" />
-      
+
       {/* Modal Card */}
-      <Card 
+      <Card
         className="w-full max-w-md relative z-10 animate-in zoom-in-95 duration-200 shadow-2xl border-border/50"
         onClick={(e) => e.stopPropagation()}
       >
@@ -124,7 +162,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
             />
             <div>
               <CardTitle>Welcome to Reflectra</CardTitle>
-              <CardDescription>Enter your details to continue</CardDescription>
+              <CardDescription>{copy.description}</CardDescription>
             </div>
           </div>
         </CardHeader>
@@ -135,6 +173,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
               <Input
                 id="email"
                 type="email"
+                autoComplete="email"
                 placeholder="your@email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -142,25 +181,59 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
                 disabled={isLoading}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="displayName">Display Name</Label>
-              <Input
-                id="displayName"
-                type="text"
-                placeholder="Your Name"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                required
-                disabled={isLoading}
-              />
-            </div>
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
+            {mode === "signup" && (
+              <div className="space-y-2">
+                <Label htmlFor="displayName">Display Name</Label>
+                <Input
+                  id="displayName"
+                  type="text"
+                  autoComplete="nickname"
+                  placeholder="Your Name"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                  disabled={isLoading}
+                />
+              </div>
             )}
+            {mode !== "forgot" && (
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={mode === "signup" ? 8 : undefined}
+                  disabled={isLoading}
+                />
+              </div>
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {notice && <p className="text-sm text-muted-foreground">{notice}</p>}
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Logging in..." : "Continue"}
+              {isLoading ? copy.busy : copy.submit}
             </Button>
           </form>
+          <div className="mt-4 flex flex-col items-center gap-2 text-sm text-muted-foreground">
+            {mode === "signin" ? (
+              <>
+                <button type="button" className="hover:text-foreground hover:underline" onClick={() => switchMode("forgot")}>
+                  Forgot password?
+                </button>
+                <button type="button" className="hover:text-foreground hover:underline" onClick={() => switchMode("signup")}>
+                  New here? Create an account
+                </button>
+              </>
+            ) : (
+              <button type="button" className="hover:text-foreground hover:underline" onClick={() => switchMode("signin")}>
+                Back to sign in
+              </button>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>

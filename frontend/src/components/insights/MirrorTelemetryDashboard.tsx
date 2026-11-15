@@ -3,6 +3,7 @@ import { Zap, Clock, Target, Activity, RefreshCw } from "lucide-react";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { cn } from "@/lib/utils";
 
+import { apiFetch } from "@/lib/api";
 const API_BASE = "/api/db";
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -43,7 +44,7 @@ export function MirrorTelemetryDashboard({ userId }: MirrorTelemetryDashboardPro
         return;
       }
 
-      const res = await fetch(`${API_BASE}/mirror-telemetry/${encodeURIComponent(resolvedUserId)}`);
+      const res = await apiFetch(`${API_BASE}/mirror-telemetry/${encodeURIComponent(resolvedUserId)}`);
       if (!res.ok) {
         let detail = "Failed to fetch telemetry";
         try {

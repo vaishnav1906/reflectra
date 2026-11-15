@@ -1,5 +1,6 @@
 """API routes for mirror response system."""
 
+from typing import Optional
 import logging
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
 from app.db.models import UserSettings
 from app.services.mirror_engine import generate_mirror_response
@@ -24,7 +26,7 @@ router = APIRouter(prefix="/mirror", tags=["mirror"])
 
 
 class MirrorRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     message: str
 
 
@@ -41,6 +43,7 @@ _derive_fallback_traits = derive_fallback_traits
 @router.post("/chat", response_model=MirrorResponse)
 async def mirror_chat(
     request: MirrorRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -52,7 +55,7 @@ async def mirror_chat(
     3. Return mirrored response
     """
     try:
-        user_id = UUID(request.user_id)
+        user_id = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
     

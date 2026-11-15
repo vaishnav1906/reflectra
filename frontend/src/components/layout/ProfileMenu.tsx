@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Settings, LogOut } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -12,9 +13,10 @@ import {
 
 export function ProfileMenu() {
   const navigate = useNavigate();
-  
-  const displayName = localStorage.getItem("display_name") || "User";
-  const email = localStorage.getItem("email") || "";
+  const { user, signOut } = useAuth();
+
+  const displayName = user?.display_name || "User";
+  const email = user?.email || "";
 
   const getInitials = (name: string) => {
     return name
@@ -25,10 +27,8 @@ export function ProfileMenu() {
       .slice(0, 2);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("user_id");
-    localStorage.removeItem("display_name");
-    localStorage.removeItem("email");
+  const handleLogout = async () => {
+    await signOut();
     navigate("/");
   };
 

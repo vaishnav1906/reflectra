@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { useChatContext, isInteractionMode, type InteractionMode, type Message } from "@/contexts/ChatContext";
 import { triggerConversationRefresh } from "@/utils/conversationRefresh";
 
+import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
 
 export function ChatPage() {
@@ -77,7 +78,7 @@ export function ChatPage() {
   useEffect(() => {
     const checkBackend = async () => {
       try {
-        const res = await fetch(`${API_BASE}/health`);
+        const res = await apiFetch(`${API_BASE}/health`);
         setBackendStatus(res.ok ? "connected" : "disconnected");
       } catch {
         setBackendStatus("disconnected");
@@ -132,10 +133,9 @@ export function ChatPage() {
     setIsTyping(true);
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await apiFetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           user_id: userId,
           conversation_id: activeConversationId,
@@ -143,6 +143,13 @@ export function ChatPage() {
           mode,
           is_incognito: isIncognito,
           incognito_session_id: incognitoSessionId,
+          // Incognito chats are not stored server-side, so send recent context.
+          history: isIncognito
+            ? messages
+                .filter((m) => !m.content.startsWith("⚠️ Error"))
+                .slice(-16)
+                .map((m) => ({ role: m.role, content: m.content }))
+            : undefined,
         }),
       });
 

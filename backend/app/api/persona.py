@@ -1,5 +1,6 @@
 """API routes for personality reflection system."""
 
+from typing import Optional
 import logging
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
 from app.services.trait_extraction_service import extract_traits, extract_bootstrap_traits
 from app.services.persona_update_service import update_traits
@@ -20,15 +22,16 @@ router = APIRouter(prefix="/persona", tags=["persona"])
 
 
 class ResetPersonaRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
 
 @router.post("/reset")
 async def reset_persona(
     request: ResetPersonaRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        user_uuid = UUID(request.user_id)
+        user_uuid = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
@@ -49,7 +52,7 @@ async def reset_persona(
 
 
 class ReflectionRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     message: str
 
 
@@ -60,13 +63,14 @@ class ReflectionResponse(BaseModel):
 
 
 class BootstrapRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     summary_text: str
 
 
 @router.post("/bootstrap", response_model=ReflectionResponse)
 async def bootstrap_persona(
     request: BootstrapRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -74,7 +78,7 @@ async def bootstrap_persona(
     the confidences to a moderate "assist" level.
     """
     try:
-        user_id = UUID(request.user_id)
+        user_id = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
@@ -119,6 +123,7 @@ async def bootstrap_persona(
 @router.post("/reflection", response_model=ReflectionResponse)
 async def process_reflection(
     request: ReflectionRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -131,7 +136,7 @@ async def process_reflection(
     4. Return summary
     """
     try:
-        user_id = UUID(request.user_id)
+        user_id = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
     

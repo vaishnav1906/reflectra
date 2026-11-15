@@ -36,6 +36,8 @@ import {
   Upload
 } from "lucide-react";
 
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 const API_BASE = "/api";
 
 type SettingsState = {
@@ -56,6 +58,7 @@ const DEFAULT_SETTINGS: SettingsState = {
 
 export function SettingsPage() {
   const navigate = useNavigate();
+  const { signOut } = useAuth();
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
   const [isLoadingPersonaSettings, setIsLoadingPersonaSettings] = useState(true);
   const [isSavingPersonaSetting, setIsSavingPersonaSetting] = useState<PersonaSettingKey | null>(null);
@@ -91,7 +94,7 @@ export function SettingsPage() {
       setPersonaSettingsError(null);
 
       try {
-        const res = await fetch(`${API_BASE}/user/settings?user_id=${encodeURIComponent(userId)}`);
+        const res = await apiFetch(`${API_BASE}/user/settings?user_id=${encodeURIComponent(userId)}`);
 
         if (!res.ok) {
           const errText = await res.text();
@@ -146,7 +149,7 @@ export function SettingsPage() {
         throw new Error("Missing user session");
       }
 
-      const res = await fetch(`${API_BASE}/user/settings/update`, {
+      const res = await apiFetch(`${API_BASE}/user/settings/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -176,7 +179,7 @@ export function SettingsPage() {
       const userId = localStorage.getItem("user_id");
       if (!userId) return;
       
-      const res = await fetch(`${API_BASE}/persona/bootstrap`, {
+      const res = await apiFetch(`${API_BASE}/persona/bootstrap`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: userId, summary_text: bootstrapSummary }),
@@ -201,7 +204,7 @@ export function SettingsPage() {
       const userId = localStorage.getItem("user_id");
       if (!userId) return;
       
-      const res = await fetch(`${API_BASE}/user/clear-data`, {
+      const res = await apiFetch(`${API_BASE}/user/clear-data`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: userId }),
@@ -223,26 +226,26 @@ export function SettingsPage() {
     
     setIsDeletingAccount(true);
     try {
-      const userId = localStorage.getItem("user_id");
-      if (!userId) return;
-
-      // 2. Add Delay (Protection)
+      // Short delay as a last chance to cancel.
       await new Promise(r => setTimeout(r, 2000));
 
-      const res = await fetch(`${API_BASE}/user/delete-account`, {
+      const res = await apiFetch(`${API_BASE}/user/delete-account`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId }),
+        body: JSON.stringify({}),
       });
-      
-      if (res.ok) {
-        localStorage.clear();
-        setIsDeleteAccountModalOpen(false);
-        navigate("/");
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
+
+      await signOut();
+      localStorage.clear();
+      setIsDeleteAccountModalOpen(false);
+      navigate("/");
     } catch (err) {
       console.error("Failed to delete user account:", err);
-      setIsDeletingAccount(false); // Only reset if failed. If success it unmounts anyway.
+      setIsDeletingAccount(false);
     }
   };
 
@@ -256,7 +259,7 @@ export function SettingsPage() {
     setIsExportingReport(true);
 
     try {
-      const res = await fetch(`${API_BASE}/user/export-persona-report?user_id=${encodeURIComponent(userId)}`);
+      const res = await apiFetch(`${API_BASE}/user/export-persona-report?user_id=${encodeURIComponent(userId)}`);
 
       if (!res.ok) {
         const errorText = await res.text();

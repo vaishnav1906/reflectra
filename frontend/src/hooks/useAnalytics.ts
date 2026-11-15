@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 
+import { apiFetch } from "@/lib/api";
 export interface BehavioralMetric {
   timestamp: string;
   message_count: number;
@@ -89,7 +90,7 @@ export function useBehavioralMetrics(userId: string, view: 'day' | 'week' | 'mon
   return useQuery({
     queryKey: ['analytics', 'metrics', userId, view],
     queryFn: async (): Promise<BehavioralMetricsResponse> => {
-      const response = await fetch(`/api/analytics/metrics/${userId}?view=${view}`);
+      const response = await apiFetch(`/api/analytics/metrics/${userId}?view=${view}`);
       if (!response.ok) throw new Error('Failed to fetch metrics');
       return response.json();
     },
@@ -102,7 +103,7 @@ export function useActivityHeatmap(userId: string, days: number = 30) {
   return useQuery({
     queryKey: ['analytics', 'heatmap', userId, days],
     queryFn: async (): Promise<HeatmapResponse> => {
-      const response = await fetch(`/api/analytics/heatmap/${userId}?days=${days}`);
+      const response = await apiFetch(`/api/analytics/heatmap/${userId}?days=${days}`);
       if (!response.ok) throw new Error('Failed to fetch heatmap');
       return response.json();
     },
@@ -115,7 +116,7 @@ export function useReflections(userId: string, range: '1d' | '2d' | '3d' | '7d' 
   return useQuery({
     queryKey: ['analytics', 'reflections', userId, range],
     queryFn: async (): Promise<BehavioralInsight[]> => {
-      const response = await fetch(`/api/analytics/reflections/${userId}?range=${range}`);
+      const response = await apiFetch(`/api/analytics/reflections/${userId}?range=${range}`);
       if (!response.ok) throw new Error('Failed to fetch reflections');
       return response.json();
     },
@@ -128,7 +129,7 @@ export function useTimelineEvents(userId: string, range: TimelineRange = '7d') {
   return useQuery({
     queryKey: ['analytics', 'timeline', userId, range],
     queryFn: async (): Promise<TimelineResponse> => {
-      const response = await fetch(`/api/analytics/timeline/${userId}?range=${range}`);
+      const response = await apiFetch(`/api/analytics/timeline/${userId}?range=${range}`);
       if (!response.ok) throw new Error('Failed to fetch timeline events');
       return response.json();
     },
@@ -150,7 +151,7 @@ export function useConfidenceExplainability(userId: string, message?: string) {
         ? `/api/analytics/confidence-explainability/${userId}?${query}`
         : `/api/analytics/confidence-explainability/${userId}`;
 
-      const response = await fetch(endpoint);
+      const response = await apiFetch(endpoint);
       if (!response.ok) throw new Error('Failed to fetch confidence explainability');
       return response.json();
     },

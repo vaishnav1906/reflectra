@@ -14,6 +14,7 @@ import { CapsuleBarChart } from "@/components/ui/CapsuleBarChart";
 import { useBehavioralMetrics } from "@/hooks/useAnalytics";
 import { TimetableSection } from "@/components/timetable/TimetableSection";
 
+import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
 
 interface PersonaTrait {
@@ -118,7 +119,7 @@ export function PersonalityPage() {
           throw new Error("No user ID found. Please log in.");
         }
 
-        const response = await fetch(`${API_BASE}/persona/profile/${targetId}`);
+        const response = await apiFetch(`${API_BASE}/persona/profile/${targetId}`);
         if (!response.ok) {
           if (response.status === 404) {
             throw new Error("Building personality model... Start reflecting to build your profile!");

@@ -245,6 +245,7 @@ async def generate_mirror_response(
     detected_emotion: Optional[str] = None,
     active_mirror_style: Optional[str] = None,
     conversation_id: Optional[UUID] = None,
+    persist: bool = True,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Generate a mirror response based on user's personality profile.
@@ -596,8 +597,8 @@ async def generate_mirror_response(
     
     logger.info(f"✅ Mirror response finalized: {final_reply[:50]}...")
     
-    # Update variation buffer
-    if final_reply:
+    # Update variation buffer and response memory (skipped for incognito: persist=False)
+    if final_reply and persist:
         _variation_buffer[user_str].append(final_reply)
         if len(_variation_buffer[user_str]) > 5:
             _variation_buffer[user_str].pop(0)

@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { formatDistanceToNow } from "date-fns";
 
+import { apiFetch } from "@/lib/api";
 interface ConversationItem {
   id: string;
   title: string | null;
@@ -50,7 +51,7 @@ export function usePastConversations(): UsePastConversationsReturn {
           mode,
         });
 
-        const res = await fetch(url);
+        const res = await apiFetch(url);
 
         if (!res.ok) {
           const errorText = await res.text();
@@ -71,7 +72,7 @@ export function usePastConversations(): UsePastConversationsReturn {
         conversationsList = await Promise.all(
           conversationsList.map(async (conv) => {
             try {
-              const msgRes = await fetch(
+              const msgRes = await apiFetch(
                 `${API_BASE}/conversations/${conv.id}/messages?user_id=${userId}`
               );
               if (msgRes.ok) {

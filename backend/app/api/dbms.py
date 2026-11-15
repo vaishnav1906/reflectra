@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db import crud
 from app.db.database import get_db
 from app.schemas.db import (
@@ -21,10 +22,15 @@ router = APIRouter(prefix="/db", tags=["db"])
 
 
 @router.post("/conversations", response_model=ConversationOut)
-async def create_conversation(payload: ConversationCreate, db: AsyncSession = Depends(get_db)) -> ConversationOut:
+async def create_conversation(
+    payload: ConversationCreate,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ConversationOut:
+    ensure_self(payload.user_id, current_user)
     conversation = await crud.create_conversation(
         db,
-        user_id=payload.user_id,
+        user_id=current_user.id,
         title=payload.title,
         mode=payload.mode,
         metadata=payload.metadata,
@@ -33,11 +39,16 @@ async def create_conversation(payload: ConversationCreate, db: AsyncSession = De
 
 
 @router.post("/messages", response_model=MessageOut)
-async def save_message(payload: MessageCreate, db: AsyncSession = Depends(get_db)) -> MessageOut:
+async def save_message(
+    payload: MessageCreate,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> MessageOut:
+    ensure_self(payload.user_id, current_user)
     try:
         message = await crud.create_message(
             db,
-            user_id=payload.user_id,
+            user_id=current_user.id,
             conversation_id=payload.conversation_id,
             role=payload.role,
             content=payload.content,

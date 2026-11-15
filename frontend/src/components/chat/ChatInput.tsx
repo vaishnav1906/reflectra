@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2, Mic, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+import { apiFetch } from "@/lib/api";
 interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading?: boolean;
@@ -119,10 +120,9 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
       const formData = new FormData();
       formData.append("file", audioBlob, "recording.webm");
 
-      const response = await fetch(`${API_BASE}/transcribe`, {
+      const response = await apiFetch(`${API_BASE}/transcribe`, {
         method: "POST",
         body: formData,
-        credentials: "include",
       });
 
       const payload = await response.json().catch(() => null);

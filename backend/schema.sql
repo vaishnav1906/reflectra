@@ -7,6 +7,7 @@ create table if not exists users (
     id uuid primary key default gen_random_uuid(),
     email varchar(320) not null unique,
     display_name text,
+    auth_user_id uuid unique,
     created_at timestamptz not null default now()
 );
 

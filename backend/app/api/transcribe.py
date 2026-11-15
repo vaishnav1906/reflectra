@@ -3,8 +3,6 @@ import os
 import tempfile
 from pathlib import Path
 
-import ffmpeg
-import whisper
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
@@ -34,6 +32,8 @@ def get_whisper_model():
     if whisper_model is None:
         try:
             logger.info("Loading Whisper model: %s. This might take a moment on the first run...", WHISPER_MODEL_NAME)
+            import whisper  # heavy optional dependency (openai-whisper + torch)
+
             whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
             logger.info("Whisper model loaded: %s", WHISPER_MODEL_NAME)
         except Exception:
@@ -42,6 +42,8 @@ def get_whisper_model():
     return whisper_model
 
 def _convert_to_wav(input_path: str, output_path: str) -> None:
+    import ffmpeg
+
     ffmpeg.input(input_path).output(
         output_path,
         format="wav",
@@ -49,6 +51,10 @@ def _convert_to_wav(input_path: str, output_path: str) -> None:
         ac=1,
         ar="16000",
     ).overwrite_output().run(capture_stdout=True, capture_stderr=True)
+
+
+def _is_ffmpeg_error(exc: Exception) -> bool:
+    return type(exc).__name__ == "Error" and type(exc).__module__.split(".")[0] == "ffmpeg"
 
 
 def _transcribe_audio(wav_path: str) -> dict:
@@ -104,16 +110,19 @@ async def transcribe(file: UploadFile = File(...)):
         return {"text": text}
     except HTTPException:
         raise
-    except ffmpeg.Error as exc:
-        stderr_output = (exc.stderr or b"").decode("utf-8", errors="ignore")
-        logger.warning("Audio conversion failed: %s", stderr_output)
-        raise HTTPException(status_code=400, detail="Corrupt or unsupported audio format")
+    except ImportError as exc:
+        logger.error("Transcription dependencies missing: %s", exc)
+        raise HTTPException(status_code=503, detail="Transcription is not available on this server")
     except RuntimeError as exc:
         logger.error("Transcription unavailable: %s", exc)
         raise HTTPException(status_code=503, detail="Transcription model is not available")
     except Exception as exc:
+        if _is_ffmpeg_error(exc):
+            stderr_output = (getattr(exc, "stderr", None) or b"").decode("utf-8", errors="ignore")
+            logger.warning("Audio conversion failed: %s", stderr_output)
+            raise HTTPException(status_code=400, detail="Corrupt or unsupported audio format")
         logger.exception("Unexpected transcription error")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(exc)}")
+        raise HTTPException(status_code=500, detail="Transcription failed")
     finally:
         await file.close()
 

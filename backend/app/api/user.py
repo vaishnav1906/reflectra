@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
 from app.db.models import (
     User,
@@ -20,7 +21,7 @@ from app.db.models import (
     ScheduleContext,
     UserSettings,
 )
-from app.services.persona_report_service import build_persona_report_pdf
+from app.services.auth_service import delete_supabase_auth_user
 from app.services.twin_policy import (
     DEFAULT_TWIN_SETTINGS,
     resolve_twin_settings,
@@ -38,11 +39,11 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 class UserRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
 
 
 class UserSettingsUpdateRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     persona_mirroring: bool
     pattern_tracking: bool
     daily_reflections: bool
@@ -106,10 +107,11 @@ async def get_user_settings(
 @router.post("/settings/update")
 async def update_user_settings(
     request: UserSettingsUpdateRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        user_uuid = UUID(request.user_id)
+        user_uuid = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
@@ -183,6 +185,12 @@ async def export_persona_report(
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
     await _assert_user_exists(db, user_uuid)
+
+    try:
+        # Imported lazily: matplotlib/WeasyPrint are heavy and need system libraries.
+        from app.services.persona_report_service import build_persona_report_pdf
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"PDF export is not available on this server ({exc.name})")
 
     try:
         pdf_bytes = await build_persona_report_pdf(db, user_uuid)
@@ -260,12 +268,12 @@ async def get_system_state(
     }
 
 @router.post("/clear-data")
-async def clear_user_data(request: UserRequest, db: AsyncSession = Depends(get_db)):
+async def clear_user_data(request: UserRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
     """Soft Reset: Clears all user data except the user account itself."""
     
     try:
         try:
-            user_uuid = UUID(request.user_id)
+            user_uuid = ensure_self(request.user_id, current_user)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user_id format")
 
@@ -298,23 +306,34 @@ async def clear_user_data(request: UserRequest, db: AsyncSession = Depends(get_d
         
         await db.commit()
         return {"status": "success", "message": "All user data cleared."}
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/delete-account")
-async def delete_user_account(request: UserRequest, db: AsyncSession = Depends(get_db)):
+async def delete_user_account(request: UserRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
     """Hard Reset: Deletes the user entirely and cascades."""
     try:
         try:
-            user_uuid = UUID(request.user_id)
+            user_uuid = ensure_self(request.user_id, current_user)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+        auth_user_id = current_user.auth_user_id
 
         # Delete user - ON DELETE CASCADE will handle the rest automatically
         await db.execute(delete(User).where(User.id == user_uuid))
         await db.commit()
-        return {"status": "success", "message": "User account and all data completely deleted."}
+        auth_deleted = await delete_supabase_auth_user(auth_user_id)
+        return {
+            "status": "success",
+            "message": "User account and all data completely deleted.",
+            "auth_account_deleted": auth_deleted,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

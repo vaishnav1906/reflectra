@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
 from app.db import crud
 from app.db.models import Message, PersonalityProfile, ReflectionLog, UserSettings
@@ -39,13 +40,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class ChatRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     conversation_id: Optional[str] = None
     message: Optional[str] = None
     text: Optional[str] = Field(default=None, description="Deprecated alias for message")
     mode: str  # "reflection" or "mirror" ("assistant" accepted as deprecated alias)
     external_input_text: Optional[str] = None
     external_input_source: Optional[str] = "pasted_prompt"
+    # Incognito: nothing is stored server-side. The client keeps the transcript
+    # and sends recent turns as `history` so replies keep their context.
+    is_incognito: bool = False
+    incognito_session_id: Optional[str] = None
+    history: Optional[List["HistoryTurn"]] = Field(default=None, max_length=40)
 
     @model_validator(mode="after")
     def validate_message_field(self):
@@ -55,6 +61,14 @@ class ChatRequest(BaseModel):
             raise ValueError("message is required")
         self.message = payload.strip()
         return self
+
+
+class HistoryTurn(BaseModel):
+    role: str
+    content: str = Field(max_length=8000)
+
+
+ChatRequest.model_rebuild()
 
 class ChatResponse(BaseModel):
     conversation_id: str
@@ -791,8 +805,123 @@ async def generate_conversation_title(user_message: str) -> str:
 
     return _fallback_title(user_message)
 
+
+INCOGNITO_HISTORY_LIMIT = 16
+
+
+def _sanitize_client_history(turns: Optional[List["HistoryTurn"]]) -> List[Dict[str, str]]:
+    cleaned = [
+        {"role": turn.role, "content": turn.content.strip()}
+        for turn in (turns or [])
+        if turn.role in {"user", "assistant"} and turn.content and turn.content.strip()
+    ]
+    return cleaned[-INCOGNITO_HISTORY_LIMIT:]
+
+
+async def _incognito_chat(
+    request: ChatRequest,
+    effective_mode: str,
+    user_id: UUID,
+    db: AsyncSession,
+) -> ChatResponse:
+    """Answer without writing anything: no conversation, messages, traits, insights,
+    logs, fingerprint or telemetry. The persona is read (so replies stay personal)
+    but never updated from incognito messages."""
+    message_text = request.message or ""
+    prior_history = _sanitize_client_history(request.history)
+    history = prior_history + [{"role": "user", "content": message_text}]
+    personality_profile = await load_personality_profile(db, user_id)
+    session_id = request.incognito_session_id or "incognito"
+
+    if effective_mode == "reflection":
+        from app.db.models import ScheduleContext
+
+        schedule_context = (
+            await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id))
+        ).scalar_one_or_none()
+        reply = await generate_llm_response(
+            build_reflection_system_prompt(personality_profile, schedule_context),
+            MODEL_PARAMS["reflection"],
+            history,
+        )
+        if not reply or is_echo_reply(reply, message_text):
+            sanitized = re.sub(r"[?]+", "", message_text).strip()
+            reply = random.choice(REFLECTION_TEMPLATES).format(text=sanitized)
+        reply = validate_reflection_response(reply, personality_profile, message_text)
+        await db.rollback()  # nothing should be pending, but never commit in incognito
+        return ChatResponse(
+            conversation_id=session_id,
+            reply=reply,
+            mirror_active=False,
+            confidence_level="medium",
+            mode=effective_mode,
+        )
+
+    from app.services.mirror_engine import generate_mirror_response
+
+    assistant_task_type = resolve_mirror_task_type(message_text, history) or classify_assistant_task(message_text.lower())
+    prior_user_messages = [turn["content"] for turn in prior_history if turn["role"] == "user"]
+    active_mirror_style, detected_emotion = get_adaptive_mirror_style(
+        message_text, personality_profile, prior_user_messages
+    )
+    settings_record = (
+        await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))
+    ).scalar_one_or_none()
+    twin_policy = resolve_twin_settings(settings_record)
+
+    try:
+        reply, metadata = await generate_mirror_response(
+            db,
+            user_id,
+            message_text,
+            recent_history=prior_history,
+            twin_policy=twin_policy,
+            task_type=assistant_task_type,
+            detected_emotion=detected_emotion,
+            active_mirror_style=active_mirror_style,
+            persist=False,
+        )
+    except Exception:
+        logger.exception("⚠️ Incognito mirror generation failed")
+        reply, metadata = None, {}
+    finally:
+        await db.rollback()
+
+    if not reply:
+        reply = (
+            build_assistant_fallback_reply(message_text, assistant_task_type)
+            if assistant_task_type
+            else MIRROR_FALLBACK_REPLY
+        )
+
+    return ChatResponse(
+        conversation_id=session_id,
+        reply=reply,
+        mirror_active=bool(metadata) and not metadata.get("fallback_triggered", False),
+        confidence_level=str(metadata.get("confidence_tier", "very_low")),
+        mode=effective_mode,
+        assistant_task_type=assistant_task_type,
+        active_mirror_style=active_mirror_style,
+        detected_emotion=detected_emotion,
+        twin_policy=twin_policy,
+        confidence_interval={
+            "lower": float(metadata.get("confidence_lower", 0.0)),
+            "upper": float(metadata.get("confidence_upper", 0.0)),
+        },
+        style_strength=float(metadata.get("style_enforcement_strength", 0.0)),
+        reaction_source=str(metadata.get("stimulus_tag", "general")),
+    )
+
+
+@router.delete("/chat/incognito-history/{session_id}", status_code=204)
+async def clear_incognito_history(session_id: str) -> None:
+    """Incognito chats are never stored server-side, so there is nothing to delete.
+    Kept so the frontend's cleanup call succeeds."""
+    return None
+
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
+async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)) -> ChatResponse:
     """
     Process chat message and return AI response.
     Creates new conversation if conversation_id is None.
@@ -819,10 +948,13 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         raise HTTPException(status_code=400, detail="Invalid mode. Use 'reflection' or 'mirror'.")
 
     try:
-        user_id_uuid = UUID(request.user_id)
+        user_id_uuid = ensure_self(request.user_id, current_user)
         conversation_id_uuid = UUID(request.conversation_id) if request.conversation_id else None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid UUID in request: {str(e)}")
+
+    if request.is_incognito:
+        return await _incognito_chat(request, effective_mode, user_id_uuid, db)
 
     message_text = request.message or ""
     conversation_title = None

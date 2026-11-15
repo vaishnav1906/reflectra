@@ -4,7 +4,9 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT / "backend"
@@ -45,7 +47,8 @@ class MirrorConfidenceUpdateTests(unittest.IsolatedAsyncioTestCase):
              patch("app.api.mirror.generate_persona_snapshot", new=AsyncMock()) as snapshot_mock, \
              patch("app.api.mirror.invalidate_snapshot_cache", new=MagicMock()) as invalidate_mock, \
              patch("app.repository.persona_repository.PersonaRepository.get_latest_snapshot", new=AsyncMock(return_value=object())):
-            response = await mirror_chat(request, db)
+            current_user = SimpleNamespace(id=UUID(request.user_id))
+            response = await mirror_chat(request, current_user, db)
 
         self.assertTrue(response.success)
         self.assertEqual(response.response, "reply")

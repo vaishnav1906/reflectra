@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { toast } from "@/components/ui/sonner";
 
+import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
 
 interface SystemState {
@@ -53,7 +54,7 @@ export function ModelStatePanel() {
       }
       
       try {
-        const response = await fetch(`${API_BASE}/user/system-state?user_id=${userId}`);
+        const response = await apiFetch(`${API_BASE}/user/system-state?user_id=${userId}`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }

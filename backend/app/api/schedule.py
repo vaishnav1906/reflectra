@@ -1,5 +1,6 @@
 """API routes for schedule context system."""
 
+from typing import Optional
 import logging
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
 from app.db.models import ScheduleContext
 
@@ -17,7 +19,7 @@ router = APIRouter(prefix="/schedule-context", tags=["schedule_context"])
 
 
 class ScheduleContextUpdateRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # ignored: identity comes from the access token
     classes_per_day: int
     study_hours: int
     has_deadlines: bool
@@ -54,10 +56,11 @@ def calculate_derived_context(classes: int, study: int, deadlines: bool, exams: 
 @router.post("/update", response_model=ScheduleContextResponse)
 async def update_schedule_context(
     request: ScheduleContextUpdateRequest,
+    current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        user_uuid = UUID(request.user_id)
+        user_uuid = ensure_self(request.user_id, current_user)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 

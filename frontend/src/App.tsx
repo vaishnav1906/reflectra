@@ -7,6 +7,7 @@ import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AuthProvider } from "@/contexts/AuthContext";
 import { ChatProvider } from "@/contexts/ChatContext";
 import { LandingPage } from "./pages/LandingPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -15,6 +16,7 @@ import { MemoryPage } from "./pages/MemoryPage";
 import { ReflectionsPage } from "./pages/ReflectionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ArchitecturePage } from "./pages/ArchitecturePage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import NotFound from "./pages/NotFound";
 
 const App = () => {
@@ -40,10 +42,12 @@ const App = () => {
           <Toaster />
           <Sonner />
           <BrowserRouter>
+            <AuthProvider>
             <ChatProvider>
               <Routes>
                 {/* Landing Page */}
                 <Route path="/" element={<LandingPage />} />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
                 
                 {/* Main App Routes - Protected */}
                 <Route path="/app" element={<ProtectedRoute><AppLayout><Navigate to="/app/chat" replace /></AppLayout></ProtectedRoute>} />
@@ -58,6 +62,7 @@ const App = () => {
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </ChatProvider>
+            </AuthProvider>
           </BrowserRouter>
         </TooltipProvider>
       </QueryClientProvider>

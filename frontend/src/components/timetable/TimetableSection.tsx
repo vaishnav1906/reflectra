@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
 
 interface TimetableData {
@@ -44,7 +45,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
         const userId = localStorage.getItem("user_id");
         if (!userId) return;
 
-        const res = await fetch(`${API_BASE}/schedule-context/${userId}`);
+        const res = await apiFetch(`${API_BASE}/schedule-context/${userId}`);
         if (res.ok) {
           const json = await res.json();
           const loadedData = {
@@ -82,7 +83,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
       const userId = localStorage.getItem("user_id");
       if (!userId) return;
 
-      const res = await fetch(`${API_BASE}/schedule-context/update`, {
+      const res = await apiFetch(`${API_BASE}/schedule-context/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

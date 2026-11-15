@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 export type InteractionMode = "reflection" | "mirror";
 
 export function isInteractionMode(mode: string | null): mode is InteractionMode {
@@ -68,8 +70,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setDetectedEmotion(null);
   };
 
+  // Drop all in-memory chat state when the signed-in user changes (logout,
+  // account deletion, or switching accounts) so nothing leaks between users.
+  const { user: authUser } = useAuth();
+  const authUserId = authUser?.id ?? null;
+  const previousAuthUserId = useRef<string | null>(authUserId);
+  useEffect(() => {
+    if (previousAuthUserId.current !== authUserId) {
+      previousAuthUserId.current = authUserId;
+      clearConversationState();
+      setIsIncognito(false);
+      setIncognitoSessionId(null);
+    }
+  }, [authUserId]);
+
   const clearIncognitoSessionHistory = (sessionId: string) => {
-    void fetch(`/api/chat/incognito-history/${sessionId}`, {
+    void apiFetch(`/api/chat/incognito-history/${sessionId}`, {
       method: "DELETE",
     }).catch((error) => {
       console.warn("Failed to clear incognito session history:", error);
@@ -137,7 +153,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         console.log("📥 ChatContext: Fetching messages for conversation:", activeConversationId);
 
-        const res = await fetch(url, { signal: controller.signal });
+        const res = await apiFetch(url, { signal: controller.signal });
         if (!res.ok) {
           throw new Error(`Failed to load conversation: ${res.status}`);
         }

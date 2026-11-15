@@ -25,6 +25,8 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     email = Column(String(320), unique=True, nullable=False, index=True)
     display_name = Column(Text)
+    # Supabase Auth user id (auth.users.id); set on first authenticated sign-in.
+    auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
