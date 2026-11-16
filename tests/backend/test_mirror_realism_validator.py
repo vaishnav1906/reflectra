@@ -82,7 +82,7 @@ class MirrorRealismValidatorTests(unittest.TestCase):
 
         self.assertLess(score, 0.5)
 
-    def test_external_second_person_is_penalized_more_than_self_flow(self):
+    def test_assistant_offers_score_below_natural_replies(self):
         profile = {
             "communication_style": 0.5,
             "emotional_expressiveness": 0.5,
@@ -91,30 +91,23 @@ class MirrorRealismValidatorTests(unittest.TestCase):
             "reasoning_visibility": "low",
             "structure_preference": "loose",
         }
+        source = "I keep delaying the same decision."
 
-        monologue_score = score_mirror_candidate(
-            candidate="I can see the pattern now and the move is clear.",
+        natural = score_mirror_candidate(
+            candidate="you've been delaying this decision for weeks, just pick one and live with it",
             sampled_profile=profile,
             recent_outputs=[],
-            source_message="I keep delaying the same decision.",
+            source_message=source,
         )
-        question_score = score_mirror_candidate(
-            candidate="Should you just do it now?",
+        assistant = score_mirror_candidate(
+            candidate="Would you like a few options? Alternatively, here are some ways to approach the decision.",
             sampled_profile=profile,
             recent_outputs=[],
-            source_message="I keep delaying the same decision.",
+            source_message=source,
         )
 
-        self_flow_score = score_mirror_candidate(
-            candidate="I'm still circling this, but the direction is finally getting clearer.",
-            sampled_profile=profile,
-            recent_outputs=[],
-            source_message="I keep delaying the same decision.",
-        )
-
-        self.assertLess(question_score, monologue_score)
-        self.assertGreater(self_flow_score, question_score)
-
+        self.assertGreater(natural, assistant)
+        self.assertGreaterEqual(natural, 0.8)
 
 if __name__ == "__main__":
     unittest.main()

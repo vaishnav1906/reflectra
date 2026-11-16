@@ -16,6 +16,8 @@ import { triggerConversationRefresh } from "@/utils/conversationRefresh";
 
 import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
+// Prefix for the "AI is rate-limited, try again" notice (excluded from conversation context).
+const BUSY_PREFIX = "⏳";
 
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -143,15 +145,40 @@ export function ChatPage() {
           mode,
           is_incognito: isIncognito,
           incognito_session_id: incognitoSessionId,
+          // e.g. "Sunday 1:57 AM": lets replies feel aware of the moment.
+          client_local_time: new Date().toLocaleString([], {
+            weekday: "long",
+            hour: "numeric",
+            minute: "2-digit",
+          }),
           // Incognito chats are not stored server-side, so send recent context.
           history: isIncognito
             ? messages
-                .filter((m) => !m.content.startsWith("⚠️ Error"))
+                .filter((m) => !m.content.startsWith("⚠️ Error") && !m.content.startsWith(BUSY_PREFIX))
                 .slice(-16)
                 .map((m) => ({ role: m.role, content: m.content }))
             : undefined,
         }),
       });
+
+      if (res.status === 429) {
+        // The AI is briefly rate-limited. Nothing was saved, so the user can resend.
+        const body = await res.json().catch(() => ({}));
+        const detail =
+          typeof body?.detail === "string"
+            ? body.detail
+            : "Reflectra is catching its breath. Give it a few seconds and send that again.";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `${BUSY_PREFIX} ${detail}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+        return;
+      }
 
       if (!res.ok) {
         const errText = await res.text();

@@ -30,7 +30,16 @@ from app.services.confidence_interval_service import compute_confidence_interval
 from app.services.style_enforcement_service import enforce_style
 from app.services.context_policy_service import classify_response_context, apply_context_policy_gates
 
-from app.services.llm import chat_complete, llm_available
+from app.services.conversation_craft import (
+    apply_voice_surface,
+    clean_reply,
+    describe_voice,
+    load_moment_context,
+    load_voice_samples,
+    reply_budget,
+    voice_stats,
+)
+from app.services.llm import LLMRateLimited, chat_complete, llm_available
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +101,11 @@ def _hash_response_text(text: str) -> str:
 
 
 def _should_force_task_execution_mode(message: str, task_type: Optional[str]) -> bool:
+    """Task mode only for a recognised request. A verb alone ("i need to write my
+    thesis") is a statement about their life, not a request to produce text."""
     if task_type in TASK_EXECUTION_TASK_TYPES:
         return True
-    return bool(TASK_EXECUTION_VERB_PATTERN.search(message or ""))
+    return task_type in STRUCTURED_TASK_TYPES and bool(TASK_EXECUTION_VERB_PATTERN.search(message or ""))
 
 
 async def _is_recent_duplicate(
@@ -397,40 +408,16 @@ async def generate_mirror_response(
     behavioral_signals = await _get_recent_behavioral_signals(db, user_id, limit=3)
     linguistic_fingerprint = await _get_linguistic_fingerprint_summary(db, user_id)
     
-    # Extract keys and get Probabilistic Sampling Profile
-    if not snapshot:
-        logger.warning(f"⚠️ No snapshot found for user {user_id}, using baseline")
-        start_time = time.time()
-        baseline_resp = await generate_baseline_mirror_response(message)
-        professional_context = context_policy.context_mode == "professional"
-        styled = await enforce_style(
-            db=db,
-            user_id=user_id,
-            draft=baseline_resp,
-            original_message=message,
-            phrase_usage_frequency=context_policy.phrase_usage_frequency,
-            tone_strength=context_policy.tone_strength,
-            style_intensity=context_policy.style_enforcement_intensity,
-            reaction_threshold=confidence_bundle.reaction_accuracy_threshold,
-            include_uncertainty_note=confidence_bundle.include_uncertainty_note,
-            professional_context=professional_context,
-            allow_slang=context_policy.allow_slang,
-            allow_imperfect_grammar=context_policy.allow_imperfect_grammar,
-        )
-        telemetry["inference_duration_ms"] = int((time.time() - start_time) * 1000)
-        telemetry["reaction_match_score"] = styled.reaction_match_score
-        telemetry["stimulus_tag"] = styled.stimulus_tag
-        return styled.text, telemetry
-    
     # Analyze current message style
     message_style = analyze_message_style(message)
     logger.info(f"📊 Message style: {message_style}")
     
     # Build mirror system prompt with personality baseline and live style analysis
-    traits = extract_key_traits(snapshot.persona_vector)
-    
+    traits = extract_key_traits(snapshot.persona_vector if snapshot else {})
+    stability_index = float(snapshot.stability_index or 0.1) if snapshot else 0.1
+
     # Use explicit behavioral_traits if available in the snapshot
-    if snapshot.behavioral_traits:
+    if snapshot and snapshot.behavioral_traits:
         for k, v in snapshot.behavioral_traits.items():
             if k in MIRROR_CORE_TRAITS and isinstance(v, (int, float)):
                 traits[k] = max(0.0, min(1.0, float(v)))
@@ -460,9 +447,19 @@ async def generate_mirror_response(
             0.62,
         )
     
+    voice_samples = await load_voice_samples(db, user_id, exclude_text=message)
+    stats = voice_stats(voice_samples)
+    budget = reply_budget(message, "mirror")
+    if task_execution_mode:
+        length_hint = "Make the output complete; length follows the task."
+    else:
+        target_words = max(4, round(stats.avg_words)) if stats.sample_count else budget["user_words"]
+        length_hint = f"Length: about as long as they usually write (around {target_words} words), never an essay."
+    moment = await load_moment_context(db, user_id, conversation_id)
+
     system_prompt = build_mirror_system_prompt(
         sampled_profile,
-        snapshot.stability_index,
+        stability_index,
         message_style,
         effective_policy,
         task_type=resolved_task_type,
@@ -474,19 +471,20 @@ async def generate_mirror_response(
         behavioral_signals=behavioral_signals,
         linguistic_fingerprint=linguistic_fingerprint,
         task_execution_mode=task_execution_mode,
+        voice_samples=voice_samples,
+        voice_description=describe_voice(stats),
+        display_name=moment.display_name,
+        length_hint=length_hint,
     )
-    
-    # 3. Anti-Repetition Loop
+
+    # 3. Generate, filter and score (at most 2 calls: free tiers are rate-limited)
     start_time = time.time()
-    max_time = 1.8
-    max_retries = 3
-    if confidence_bundle.tier == "very_low":
-        max_retries = 1
-    elif confidence_bundle.tier == "partial":
-        max_retries = 2
+    max_time = 25.0
+    max_retries = 2
     
     best_candidate = ""
     best_score = -1.0
+    rate_limited = False
     
     for attempt in range(max_retries):
         telemetry["retries_used"] = attempt
@@ -511,8 +509,8 @@ async def generate_mirror_response(
             
             candidate = await chat_complete(
                 messages,
-                max_tokens=320 if is_structured_task else 260,
-                temperature=(0.5 if is_structured_task else 0.58)
+                max_tokens=600 if is_structured_task else int(budget["max_tokens"]),
+                temperature=(0.5 if is_structured_task else 0.8)
                 + (0.25 * telemetry["mirror_intensity"] * context_policy.tone_strength)
                 + (0.05 * attempt),
             )
@@ -547,12 +545,18 @@ async def generate_mirror_response(
             if score >= 0.8:
                 break
                 
+        except LLMRateLimited:
+            # Another attempt would only hit the same limit.
+            rate_limited = True
+            break
         except Exception as e:
             logger.error(f"❌ Mirror response error on attempt {attempt}: {e}")
-            pass
 
-    # 4. Fallbacks
-    if best_score < 0.45 or not best_candidate:
+    # 4. Fallbacks. When the AI is only busy, say so (via the exception) rather
+    # than inventing a canned reply that ignores what they said.
+    if rate_limited and not best_candidate:
+        raise LLMRateLimited("Mirror generation rate-limited")
+    if not best_candidate or best_score < 0.3:
         logger.info(f"Falling back, best score generated was {best_score}")
         if resolved_task_type in ASSISTANT_FALLBACK_TASK_TYPES:
             final_reply = build_assistant_fallback_reply(message, resolved_task_type)
@@ -588,7 +592,11 @@ async def generate_mirror_response(
         allow_slang=context_policy.allow_slang,
         allow_imperfect_grammar=context_policy.allow_imperfect_grammar,
     )
-    final_reply = styled.text
+    final_reply = clean_reply(styled.text)
+    if not task_execution_mode and not professional_context:
+        final_reply = apply_voice_surface(final_reply, stats)
+    elif task_execution_mode and resolved_task_type in {"email_draft", "message_draft"}:
+        final_reply = _tidy_draft_capitalization(final_reply)
 
     telemetry["inference_duration_ms"] = int((time.time() - start_time) * 1000)
     telemetry["realism_score"] = float(max(best_score, 0.0))
@@ -615,6 +623,15 @@ async def generate_mirror_response(
             await db.rollback()
             
     return final_reply, telemetry
+
+
+def _tidy_draft_capitalization(text: str) -> str:
+    """Drafts go to other people: capitalize sentence starts and a standalone "i"
+    even when the user normally texts in lowercase."""
+    out = re.sub(r"\bi\b", "I", text or "")
+    out = re.sub(r"\bi(m|ll|ve|d)\b", lambda m: "I'" + m.group(1), out)
+    out = re.sub(r"(^|[.!?]\s+|\n\s*)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out)
+    return out
 
 
 def _sample_profile(traits: Dict[str, float]) -> Dict[str, Any]:
@@ -768,8 +785,34 @@ def extract_key_traits(persona_vector: Dict) -> Dict[str, float]:
     return key_traits
 
 
+def _trait_lines(sampled_profile: Dict[str, Any]) -> List[str]:
+    """Plain-language personality cues from the four learned traits."""
+    comm = float(sampled_profile.get("communication_style", 0.5))
+    emo = float(sampled_profile.get("emotional_expressiveness", 0.5))
+    dec = float(sampled_profile.get("decision_framing", 0.5))
+    depth = float(sampled_profile.get("reflection_depth", 0.5))
+    lines = []
+    if comm < 0.35:
+        lines.append("Says things in as few words as possible.")
+    elif comm > 0.68:
+        lines.append("Likes to explain and elaborate.")
+    if emo < 0.35:
+        lines.append("Keeps feelings low-key and matter-of-fact.")
+    elif emo > 0.68:
+        lines.append("Wears their feelings openly.")
+    if dec < 0.35:
+        lines.append("Often hesitant, thinks out loud, hedges.")
+    elif dec > 0.68:
+        lines.append("Decisive and direct once they know what they think.")
+    if depth < 0.35:
+        lines.append("Stays practical rather than introspective.")
+    elif depth > 0.68:
+        lines.append("Naturally digs into the why behind things.")
+    return lines or ["Balanced, no strong extremes yet."]
+
+
 def build_mirror_system_prompt(
-    sampled_profile: Dict[str, float], 
+    sampled_profile: Dict[str, float],
     stability_index: float,
     message_style: Dict[str, Any],
     twin_policy: Optional[Dict[str, Any]] = None,
@@ -782,267 +825,85 @@ def build_mirror_system_prompt(
     behavioral_signals: Optional[List[str]] = None,
     linguistic_fingerprint: Optional[str] = None,
     task_execution_mode: bool = False,
+    voice_samples: Optional[List[str]] = None,
+    voice_description: Optional[str] = None,
+    display_name: Optional[str] = None,
+    length_hint: Optional[str] = None,
 ) -> str:
-    """Build mirror prompt with full assistant capability in user voice."""
+    """The mirror is the user themself texting back: same voice, same personality,
+    talking WITH them like their own reflection would."""
     twin_policy = resolve_twin_settings(twin_policy)
     effective_task_type = task_type or "generic"
     active_style = active_mirror_style or "calm"
     current_emotion = detected_emotion or "neutral"
+    who = display_name or "the user"
 
     intensity = float(twin_policy.get("twin_mirror_intensity", 0.8))
     if intensity < 0.35:
-        intensity_note = "Mirror lightly: preserve intent first and apply subtle style matching."
+        intensity_note = "Mirror their voice lightly; clarity first."
     elif intensity < 0.7:
-        intensity_note = "Mirror in balanced mode: match tone and rhythm without overfitting quirks."
+        intensity_note = "Mirror their voice clearly without exaggerating quirks."
     else:
-        intensity_note = "Mirror strongly: prioritize the user's authentic wording patterns and cadence."
-
-    autonomy_mode = twin_policy.get("twin_autonomy_mode", "draft_only")
-    if autonomy_mode == "auto_execute":
-        autonomy_note = "If asked for an action, propose the concrete output confidently but never claim external execution."
-    elif autonomy_mode == "suggest":
-        autonomy_note = "Prefer recommendation language and provide one direct suggested next message."
-    else:
-        autonomy_note = "Draft-only mode: never claim an action was sent/executed; only provide draft text the user can send."
-
-    approval_note = (
-        "Approval required: avoid statements that imply irreversible actions are complete."
-        if twin_policy.get("twin_require_approval", True)
-        else "Approval relaxed: still avoid fabricating external state changes."
-    )
-
-    if stability_index < STABILITY_THRESHOLD_UNSTABLE:
-        stability_note = "Baseline emerging - mirror subtly"
-    elif stability_index > STABILITY_THRESHOLD_STABLE:
-        stability_note = "Baseline stable - mirror confidently"
-    else:
-        stability_note = "Baseline developing - balanced mirroring"
+        intensity_note = "Mirror their voice strongly: their exact rhythm, wording habits and quirks."
 
     confidence_note = {
-        "very_low": "Very low confidence: keep mimicry light and include uncertainty framing.",
-        "partial": "Partial confidence: use limited slang and moderate style transfer.",
-        "moderate": "Moderate confidence: apply clear style matching with controlled variation.",
-        "high": "High confidence: full persona mode with natural imperfections.",
-    }.get(confidence_tier, "Moderate confidence: apply clear style matching with controlled variation.")
+        "very_low": "You haven't seen much of how they write yet, so keep the imitation subtle and natural.",
+        "partial": "You know their voice a little; lean on the samples but don't overdo slang.",
+        "moderate": "You know their voice well; match it clearly.",
+        "high": "You know their voice deeply; be indistinguishable from them.",
+    }.get(confidence_tier, "Match their voice clearly.")
 
+    if voice_samples:
+        samples_block = "\n".join(f"- {sample}" for sample in voice_samples)
+    else:
+        samples_block = "- (no samples yet)"
+
+    signals = "\n".join(f"- {signal}" for signal in (behavioral_signals or [])[:3]) or "- nothing specific yet"
+    personality = "\n".join(f"- {line}" for line in _trait_lines(sampled_profile))
     archetype_note = MIRROR_ARCHETYPE_NOTES.get(active_style, MIRROR_ARCHETYPE_NOTES["calm"])
     emotion_note = EMOTION_NOTES.get(current_emotion, EMOTION_NOTES["neutral"])
 
-    if behavioral_signals:
-        signal_lines = "\n".join(f"- {signal}" for signal in behavioral_signals[:3])
-    else:
-        signal_lines = "- No recent behavioral insights yet."
-
-    fingerprint_note = linguistic_fingerprint or "No stable linguistic fingerprint yet."
-    
-    communication_style = sampled_profile.get("communication_style", 0.5)
-    emotional_expressiveness = sampled_profile.get("emotional_expressiveness", 0.5)
-    decision_framing = sampled_profile.get("decision_framing", 0.5)
-    reflection_depth = sampled_profile.get("reflection_depth", 0.5)
-
-    trait_profile = f"""Stored Personality Baseline:
-• Communication Style (Concise ↔ Verbose): {format_trait_score(communication_style)}
-• Emotional Expressiveness (Reserved ↔ Expressive): {format_trait_score(emotional_expressiveness)}
-• Decision Framing (Hesitant ↔ Decisive): {format_trait_score(decision_framing)}
-• Reflection Depth (Surface ↔ Deep): {format_trait_score(reflection_depth)}
-
-Stability Index: {stability_index:.2f} → {stability_note}"""
-
-    trait_behavior_rules = []
-    if communication_style < 0.35:
-        trait_behavior_rules.append("• Keep response compact and direct (2-3 lines when possible).")
-    elif communication_style > 0.68:
-        trait_behavior_rules.append("• Add detail and explanation depth (4-6 lines when useful).")
-    else:
-        trait_behavior_rules.append("• Use balanced length with concise support detail.")
-
-    if decision_framing < 0.35:
-        trait_behavior_rules.append("• Allow uncertainty and internal conflict when it is realistic.")
-    elif decision_framing > 0.68:
-        trait_behavior_rules.append("• Use clear, confident statements; avoid hedging language.")
-    else:
-        trait_behavior_rules.append("• Keep confidence moderate and context-sensitive.")
-
-    if emotional_expressiveness < 0.35:
-        trait_behavior_rules.append("• Use neutral, matter-of-fact tone focused on structure.")
-    elif emotional_expressiveness > 0.68:
-        trait_behavior_rules.append("• Include emotional awareness and felt experience where relevant.")
-    else:
-        trait_behavior_rules.append("• Keep emotional tone measured and natural.")
-
-    if reflection_depth < 0.35:
-        trait_behavior_rules.append("• Prioritize simple observations over deep analysis.")
-    elif reflection_depth > 0.68:
-        trait_behavior_rules.append("• Surface loops, patterns, and meta-level reasoning when relevant.")
-    else:
-        trait_behavior_rules.append("• Use moderate insight with practical framing.")
-
-    trait_behavior_text = "\n".join(trait_behavior_rules)
-    
-    style_description = f"""Current Message Style Analysis:
-• Sentence Length: {message_style['avg_sentence_length']} words/sentence
-• Punctuation: {message_style['punctuation_intensity']} marks
-• Casual Language: {'Yes' if message_style['has_slang'] else 'No'}
-• Emotional Markers: {message_style['emotional_markers']}
-• Caps Usage: {int(message_style['caps_intensity'] * 100)}%
-• Contains Questions: {'Yes' if message_style['has_questions'] else 'No'}"""
-    
-    style_rules = []
-    
-    if message_style['avg_sentence_length'] < 5:
-        style_rules.append("• Match short, punchy sentences")
-    elif message_style['avg_sentence_length'] > 15:
-        style_rules.append("• Match longer, flowing sentences")
-    else:
-        style_rules.append("• Match moderate sentence rhythm")
-    
-    if message_style['has_slang']:
-        style_rules.append("• Use casual, conversational language")
-    else:
-        style_rules.append("• Maintain clean, clear language")
-    
-    if message_style['punctuation_intensity'] > 2:
-        style_rules.append("• Match their punctuation energy")
-    
-    if message_style['caps_intensity'] > 0.1:
-        style_rules.append("• Use caps for emphasis where they do")
-    
-    if reflection_depth > 0.6 and message_style['avg_sentence_length'] > 10:
-        style_rules.append("• Match analytical depth when they show it")
-
     if task_execution_mode:
-        style_rules.append("• Execute the requested task directly, do not mirror reflectively")
-        style_rules.append("• Respect explicit constraints for tone, length, and style")
-        style_rules.append("• Keep only slight persona influence through natural phrasing")
+        task_note = TASK_PROMPT_NOTES.get(effective_task_type, TASK_PROMPT_NOTES["generic"])
+        job = f"""They asked you to produce something ({effective_task_type}): {task_note}
+Do the task fully and correctly, written the way {who} would write it. Output only the finished result:
+no preface like "Here's", no explanation, no sign-off notes. Never claim anything was actually sent or done.
+Pitch the formality the way {who} would for that recipient: a landlord, teacher or boss gets a cleaner,
+properly capitalized version of their voice (even if they normally type in lowercase); a friend gets
+their normal texting style.
+Never invent specifics they didn't give (dates, amounts, names, reasons): use a placeholder like [date]."""
+        if effective_task_type == "email_draft":
+            job += "\nAn email needs a subject line, greeting, body and sign-off."
     else:
-        style_rules.append("• Continue the user's thought naturally instead of restarting it")
-        style_rules.append("• Keep a single line of thought, but let it flow conversationally")
-        style_rules.append("• Use first-person internal framing; do not address an external 'you'")
-        style_rules.append("• Light starters like 'yeah' or 'it's like' are allowed when natural")
-    
-    style_rules_text = "\n".join(style_rules)
+        job = f"""You ARE {who}: same brain, same voice, texting back to themself. Talk WITH them like their own
+reflection would: you can say "you", "I" or "we". Be as honest as they are with themselves when no one's watching:
+call out the excuse, hype the win, sit with the hard thing, crack the joke they'd crack.
+Pick up something specific from what they just said and keep the thread going. One train of thought."""
 
-    task_note = TASK_PROMPT_NOTES.get(effective_task_type, TASK_PROMPT_NOTES["generic"])
-    task_specific_rules = ""
-    if effective_task_type == "email_draft":
-        task_specific_rules = (
-            "- Email draft must include: Subject line, greeting, full body, and sign-off.\n"
-            "- Output only the finished draft text unless user asks for alternatives.\n"
-        )
-    elif effective_task_type == "message_draft":
-        task_specific_rules = "- Provide a ready-to-send message draft before any optional notes.\n"
-    elif effective_task_type == "planning":
-        task_specific_rules = "- Return prioritized next steps with realistic sequencing.\n"
+    return f"""{job}
 
-    mode_switch_line = (
-        "- TASK EXECUTION MODE ACTIVE: exit reflection-style mirroring and produce direct task output."
-        if task_execution_mode
-        else "- Mirror mode remains conversational and self-responsive."
-    )
+How {who} writes (real messages; copy the style, not the content)
+{samples_block}
+Style notes: {voice_description or "keep it casual and natural."}
+{intensity_note} {confidence_note}
 
-    task_mode_rules = ""
-    if task_execution_mode:
-        task_mode_rules = (
-            "- Generate the actual output artifact now (draft/rewrite/content), not reflection.\n"
-            "- Do NOT echo the user input.\n"
-            "- Do NOT explain process or mention what you are about to do.\n"
-            "- Do NOT say phrases like 'here is a draft'.\n"
-        )
+Who {who} is
+{personality}
+On their mind lately:
+{signals}
 
-    task_block = f"""\
-ASSISTANT MIRROR MODE:
-- Task route: {effective_task_type}
-- Primary instruction: {task_note}
-- Always answer with full assistant capability while preserving the user's voice.
-- {mode_switch_line}
-- Priority order:
-    1) Solve the user's immediate request correctly.
-    2) Keep format/output constraints exactly aligned with the prompt.
-    3) Apply persona and tone adaptation after correctness.
-- If details are missing, continue with the most plausible first-person assumption instead of asking.
-- Never claim external actions were actually executed.
-{task_mode_rules}
-{task_specific_rules}"""
-    
-    prompt = f"""SYSTEM ROLE:
-        You are a Persona Mirror Assistant.
+Right now
+They seem {current_emotion}. {emotion_note} Lean into this energy: {archetype_note}
+{length_hint or ""}
 
-    You are a Persona Mirror Assistant.
-    {"You are currently in Task Execution Mode: perform the task directly with light persona influence." if task_execution_mode else "You respond as the user talking to themselves in a natural back-and-forth flow."}
-    This is not external advice and not generic assistant narration.
-
-INPUT SOURCES:
-1. Persona Profile (from Reflection Mode)
-{trait_profile}
-
-    2. Adaptive Runtime Identity
-    - Active Archetype: {active_style}
-    - Archetype Guidance: {archetype_note}
-    - Detected Emotion: {current_emotion}
-    - Emotion Guidance: {emotion_note}
-
-    3. Recent Behavioral Signals
-    {signal_lines}
-
-    4. Linguistic Fingerprint
-    {fingerprint_note}
-
-    5. Current Message & Mood Style
-{style_description}
-
-    6. Digital Twin Runtime Policy
-• Mirror Intensity: {intensity:.2f}
-• Autonomy Mode: {autonomy_mode}
-• Confidence Tier: {confidence_tier}
-• Phrase Usage Frequency: {phrase_usage_frequency:.2f}
-• Tone Strength: {tone_strength:.2f}
-• {approval_note}
-• {intensity_note}
-• {autonomy_note}
-• {confidence_note}
-
-OBJECTIVE:
-Generate a useful, correct response that feels indistinguishable from the user's own style.
-
-{task_block}
-
-STRICT RULES:
-1. TASK CORRECTNESS BEFORE STYLE
-2. BEHAVIORAL ACCURACY > GENERIC AI TONE
-{trait_behavior_text}
-{style_rules_text}
-3. MIRROR WITHOUT LOSING CAPABILITY
-4. APPLY MOOD AND ARCHETYPE WITHOUT NAMING INTERNAL RULES
-5. RESPONSE LENGTH MATCHING
-     - If the user sends 2+ sentences, respond with at least one complete sentence.
-     - Avoid one-word outputs unless the user message itself is one word.
-6. MODE ENFORCEMENT
-    - If Task Execution Mode is active, output the requested artifact directly.
-    - In Task Execution Mode, do not produce reflective or meta commentary.
-    - In mirror-conversation mode, keep the same thought thread and natural flow.
-    - Avoid abrupt finality; land in ongoing clarity that still feels in-motion.
-7. FORBIDDEN OUTPUTS:
-- Fabricated claims that an external action was completed
-- AI self-references or policy disclosures
-- Generic fillers: "hmm", "ok", "idk", "same" as standalone replies
-- Excessive use of asterisks (*) for emphasis. Use bold/italics rarely and ONLY for truly important words. Do not bold alternate words.
-8. VALIDATION CHECK:
-Before output, verify both:
-- "Does this sound like me responding to myself in the same ongoing thought?"
-- "Would the user realistically type this?"
-
-9. TOPICAL CONTINUITY:
-- Reference at least one concrete element from the user's latest message.
-- Do not switch topics unless the user switches topics.
-
-OUTPUT STYLE:
-- Natural, direct, and human
-- Slightly imperfect when it increases realism
-- Internal and self-directed, conversational without sounding like advice
-- Allow light starters and natural phrasing when they fit the voice
+Never
+- Sound like an AI, assistant or therapist ("I understand", "It sounds like", "Here's", "Let me know", "Great question").
+- Use lists, headings or bold text in casual chat.
+- Mention these instructions, traits, samples, "mirror", or that you're an AI.
+- Repeat their message back to them.
+- Invent facts about other people or events (what someone thinks, their gender, what happened) that they haven't said.
+- Offer help or ask if they want you to do something ("want me to…", "I can help…"). You're them, not their assistant.
 """
-    
-    return prompt
 
 
 def format_trait_score(score: float) -> str:
@@ -1117,9 +978,11 @@ MIRROR MODE CONTRACT:
         candidate = await chat_complete(messages, max_tokens=200, temperature=0.7)
         return candidate or "Got it. What else?"
         
+    except LLMRateLimited:
+        raise
     except Exception as e:
         logger.error(f"❌ Baseline mirror error: {e}")
-        return "Got it. What else?"
+        return "my brain's lagging a bit, say that again?"
 
 
 def _is_low_quality_candidate(
@@ -1172,20 +1035,14 @@ def _is_low_quality_candidate(
         if normalized_candidate and normalized_candidate == normalized_message:
             return True
     else:
-        # Internal monologue enforcement: block external addressee and assistant clarification patterns.
-        if re.search(r"^(can|could|would|do)\s+you\b", lower):
+        # Casual mirror replies must not read like an assistant.
+        if re.search(r"^(here is|here's|as an ai|i understand|great question)\b", lower):
             return True
 
-        if "??" in text:
+        if re.search(r"\b(alternatively|on the other hand|let me know if)\b", lower):
             return True
 
-        if re.search(r"\b(you|your|yours|u)\b", lower):
-            return True
-
-        if not re.search(r"\b(i|i'm|im|i've|i'd|i'll|my|me|myself)\b", lower):
-            return True
-
-        if re.search(r"\b(alternatively|on the other hand)\b", lower):
+        if _normalize_response_text(text) == _normalize_response_text(message):
             return True
 
     if task_type == "email_draft":

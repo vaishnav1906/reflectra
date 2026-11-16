@@ -82,14 +82,28 @@ class MirrorModeBehaviorTests(unittest.TestCase):
             active_mirror_style="calm",
         )
 
-        self.assertIn("Communication Style (Concise", prompt)
-        self.assertIn("Emotional Expressiveness (Reserved", prompt)
-        self.assertIn("Decision Framing (Hesitant", prompt)
-        self.assertIn("Reflection Depth (Surface", prompt)
-        self.assertIn("Mirror mode remains conversational and self-responsive", prompt)
-        self.assertIn("keep the same thought thread", prompt)
-        self.assertIn("Use first-person internal framing", prompt)
-        self.assertIn("Allow light starters", prompt)
+        # All four traits show up as plain-language personality cues.
+        self.assertIn("Likes to explain and elaborate.", prompt)
+        self.assertIn("Keeps feelings low-key and matter-of-fact.", prompt)
+        self.assertIn("Decisive and direct once they know what they think.", prompt)
+        self.assertIn("Naturally digs into the why behind things.", prompt)
+        self.assertIn("keep the thread going", prompt)
+
+    def test_prompt_includes_real_voice_samples(self):
+        prompt = build_mirror_system_prompt(
+            sampled_profile={"communication_style": 0.3},
+            stability_index=0.5,
+            message_style={},
+            voice_samples=["ngl today was a lot", "ok but why does this keep happening"],
+            voice_description="writes almost entirely in lowercase.",
+            display_name="Vaishnav",
+            length_hint="Length: about 8 words.",
+        )
+
+        self.assertIn("- ngl today was a lot", prompt)
+        self.assertIn("writes almost entirely in lowercase", prompt)
+        self.assertIn("You ARE Vaishnav", prompt)
+        self.assertIn("about 8 words", prompt)
 
     def test_quality_filter_allows_concise_when_profile_is_concise(self):
         is_low_quality = _is_low_quality_candidate(
@@ -113,35 +127,40 @@ class MirrorModeBehaviorTests(unittest.TestCase):
 
         self.assertTrue(is_low_quality)
 
-    def test_quality_filter_rejects_external_second_person_prompts(self):
-        question_candidate = _is_low_quality_candidate(
-            candidate="Should you do this now?",
-            message="I need to settle this today.",
-            recent_outputs=[],
-            task_type="generic",
-            sampled_profile={"response_detail_target": "balanced"},
-        )
+    def test_quality_filter_allows_talking_with_the_user(self):
+        # Talking WITH the user ("you", questions) is natural for the mirror now.
+        for candidate in [
+            "Should you do this now? honestly yeah, today.",
+            "You already know the answer, you're just stalling.",
+            "I'm still circling this, but why does this same pattern keep repeating?",
+        ]:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(
+                    _is_low_quality_candidate(
+                        candidate=candidate,
+                        message="I need to settle this today.",
+                        recent_outputs=[],
+                        task_type="generic",
+                        sampled_profile={"response_detail_target": "balanced"},
+                    )
+                )
 
-        second_person_candidate = _is_low_quality_candidate(
-            candidate="You should move now.",
-            message="I need to settle this today.",
-            recent_outputs=[],
-            task_type="generic",
-            sampled_profile={"response_detail_target": "balanced"},
-        )
-
-        self_question_candidate = _is_low_quality_candidate(
-            candidate="I'm still circling this, but why does this same pattern keep repeating?",
-            message="I keep repeating this loop.",
-            recent_outputs=[],
-            task_type="generic",
-            sampled_profile={"response_detail_target": "balanced"},
-        )
-
-        self.assertTrue(question_candidate)
-        self.assertTrue(second_person_candidate)
-        self.assertFalse(self_question_candidate)
-
+    def test_quality_filter_rejects_assistant_voice(self):
+        for candidate in [
+            "Here's what I think you should do about the meeting.",
+            "As an AI, I can't decide for you, but let me know if you want options.",
+            "I need to settle this today.",  # verbatim echo
+        ]:
+            with self.subTest(candidate=candidate):
+                self.assertTrue(
+                    _is_low_quality_candidate(
+                        candidate=candidate,
+                        message="I need to settle this today.",
+                        recent_outputs=[],
+                        task_type="generic",
+                        sampled_profile={"response_detail_target": "balanced"},
+                    )
+                )
 
 if __name__ == "__main__":
     unittest.main()

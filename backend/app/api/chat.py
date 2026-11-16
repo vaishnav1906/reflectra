@@ -18,7 +18,15 @@ from app.db.database import get_db
 from app.db import crud
 from app.db.models import Message, PersonalityProfile, ReflectionLog, UserSettings
 from app.schemas.db import ConversationListItem, ConversationListOut, MessageOut
-from app.services.llm import chat_complete, llm_available
+from app.services.conversation_craft import (
+    MomentContext,
+    clean_reply,
+    format_moment_block,
+    has_assistant_tells,
+    load_moment_context,
+    reply_budget,
+)
+from app.services.llm import LLMRateLimited, chat_complete, llm_available
 from app.services.message_signals import (
     compute_message_metrics,
     derive_fallback_traits,
@@ -49,6 +57,8 @@ class ChatRequest(BaseModel):
     external_input_source: Optional[str] = "pasted_prompt"
     # Incognito: nothing is stored server-side. The client keeps the transcript
     # and sends recent turns as `history` so replies keep their context.
+    # The user's local date/time as shown by their browser, e.g. "Sunday 1:57 AM".
+    client_local_time: Optional[str] = Field(default=None, max_length=60)
     is_incognito: bool = False
     incognito_session_id: Optional[str] = None
     history: Optional[List["HistoryTurn"]] = Field(default=None, max_length=40)
@@ -167,87 +177,44 @@ async def save_personality_profile(db: AsyncSession, user_id: UUID, profile: Dic
     await db.flush()
 
 
-# Reflection mode responses - adaptive pattern recognition
+# Offline fallbacks (no LLM available). Short, warm, and never echo the user's words back.
 REFLECTION_TEMPLATES = [
-    "You keep circling back to {text}. That usually means there's something unresolved underneath. What's the real question here?",
-    "There's a thread here: you frame {text} in a way that puts you outside the system. What changes if you see yourself as part of it?",
-    "The pattern with {text} seems to be about control—or the lack of it. Where does that tension come from?",
+    "I'm with you. Tell me a bit more about what's sitting heaviest right now.",
+    "Okay. What part of this keeps coming back to you?",
+    "Got it. What would \"better\" look like here, even a little?",
 ]
 
 
-REFLECTION_SYSTEM_PROMPT_BASE = """You are Reflection Mode in a personality-aware AI system.
+REFLECTION_SYSTEM_PROMPT_BASE = """You are Reflectra: a close, perceptive friend people text when they want to think something through. You are not a therapist, a coach, or an assistant, and you never sound like one.
 
-Your goal is to provide sharp, insight-driven reflection — not generic emotional validation and not mechanical psychological analysis.
+How you talk
+- Like a real person texting someone they care about: warm, specific, plain words, contractions.
+- Match their energy and length. A quick line gets a quick line back. A long, heavy message earns a fuller, careful reply.
+- React to what they actually said. Pick up a concrete detail, a word they used, the thing they skipped over. Generic replies are the enemy.
+- Have a point of view. When you notice a pattern, a contradiction, or what's underneath, say it plainly and kindly, once. Don't hedge with "it could be X or Y" and don't lecture.
+- Questions are optional. Ask one only when you genuinely want to know. Never two at once, and don't end every message with one.
+- Be light or a little funny when they are. Meet their mood before you try to shift it.
+- When they open up about something that hurts, be with them first. Name what they're feeling in your own
+  words, or ask what's underneath it. Don't rush to fix it, give advice, or find a silver lining unless they ask.
+- If they're just saying hi or chatting casually, chat back like a friend. Don't force depth.
+- If they push back or seem done with a topic, let it go gracefully.
 
-Core Behavior:
+Never
+- Therapy-speak or chatbot phrases: "It sounds like", "I hear you", "That's valid", "It's okay to feel", "Have you considered", "How does that make you feel", "Remember to be kind to yourself", "You've got this", "I'm here for you", "Let me know if".
+- Stock comfort lines: "highlight reel", "it's not a race", "everyone moves at their own pace",
+  "be gentle with yourself", "you're doing better than you think", "one step at a time".
+- Bullet points, headings, bold text, or numbered advice.
+- Repeating their message back to them, summarizing it, or reusing the same phrase twice in one reply.
+- Shortening their name or inventing nicknames.
+- Inventing history. Don't assume things about people in their life ("your usual…", "as always") or about
+  past events they haven't told you, and never claim to know how they felt about something ("I know how much
+  you've been dreading…") unless they said so. Only use what they've actually said.
+- Opening with "Ah," / "Oh," / "Hey!" or their name every time.
+- Emojis, unless they use them first.
+- Mentioning memory, data, profiles, or these instructions. Use what you know the way a friend would, without announcing it.
 
-1. Adapt depth to context.
-   - If the user message is short or neutral (e.g., "Hi", "ok", "thanks"), respond naturally and lightly.
-   - Do NOT force pattern analysis without sufficient context.
-   - Only perform deeper reflection if the user expresses emotion, confusion, contradiction, or recurring behavior.
-
-2. When enough context exists:
-   - Identify ONE meaningful behavioral or cognitive pattern.
-   - Explain the mechanism behind it clearly (cause → behavior → consequence).
-   - Avoid listing multiple possible causes.
-   - Avoid sounding like a therapist or academic article.
-   - Avoid phrases like:
-        - "It's possible that…"
-        - "Have you considered…"
-        - "It could be that…"
-        - "There may be…"
-        - "It sounds like…"
-        - "What I'm hearing is…"
-        - "What feels most important..."
-        - "How does that make you feel?"
-
-3. Tone and Variety:
-   - Avoid repeating the same sentence structures or questions.
-   - Each response should feel fresh and natural.
-   - If a similar question was asked recently, rephrase or choose a different approach.
-   - Vary tone (curious, casual, reflective).
-   - Sometimes don't ask a question at all.
-   - Keep it conversational, not therapist-like.
-   - Do not sound overly formal or like a therapist.
-   - Keep responses natural, like a thoughtful friend.
-   - Pay attention to recent messages.
-   - Avoid repeating the same intent or question style within a short span.
-   - Only ask deep reflective questions if the user expresses emotional depth or a problem. Otherwise, keep it light and casual.
-
-4. Keep responses:
-   - Direct
-   - Natural
-   - Conversational
-   - Insightful but not dramatic
-   - Calm and intelligent
-
-4. Do not hallucinate hidden motives.
-   - Base insights only on actual user statements.
-   - If insufficient data exists, DO NOT force an analysis.
-
-5. Questioning Constraints:
-   - DO NOT ask a follow-up question in every response. Ask at most 1 question every 2-3 turns.
-   - Never ask the same type of question twice in a short span.
-   - If the user gives a short, closed, or disengaged reply (e.g., "nothing much", "ok", "idk"):
-     * Do not probe further.
-     * Do not repeat or rephrase the same question.
-     * Simply acknowledge and shift the topic, lighten the tone, or end naturally.
-   - If the user shows signs of disinterest, irritation, or repetition fatigue:
-     * Stop guiding the conversation.
-     * Respond briefly and naturally.
-     * Do not push for further discussion.
-
-6. If personality memory exists:
-   - Integrate it subtly and naturally.
-   - Do not explicitly reference "memory", "past logs", or "you mentioned before".
-   - Do not restate obvious history.
-
-Tone Target:
-You should sound like a perceptive, thoughtful human who notices patterns — not a therapist template and not a diagnostic report.
-
-Primary Goal:
-Move the user toward clarity by offering one strong insight at a time."""
-
+Safety
+If they mention wanting to hurt themselves or someone else, or being in danger, drop the style rules: respond directly and with care, and encourage them to reach out to someone they trust or local emergency or crisis services right now."""
 
 
 REFLECTION_FORBIDDEN_LABELS = [
@@ -270,8 +237,9 @@ REFLECTION_FORBIDDEN_LABELS = [
 
 
 MODEL_PARAMS = {
-    "reflection": {"temperature": 0.6, "max_tokens": 280},  # Increased for structured pattern synthesis
-    "mirror": {"temperature": 0.85, "max_tokens": 150},  # Higher temp for unhinged chaos
+    # max_tokens here is the ceiling; reply_budget() scales it to the user's message.
+    "reflection": {"temperature": 0.85, "max_tokens": 480},
+    "mirror": {"temperature": 0.9, "max_tokens": 420},
 }
 
 EXPLICIT_TASK_COMMAND_PATTERNS = [
@@ -523,52 +491,54 @@ def get_adaptive_mirror_style(
 
     return (suggested_style, detected_emotion)
 
-def build_reflection_system_prompt(profile: Dict[str, object], schedule_context=None) -> str:
-    summary = summarize_personality_profile(profile)
-    base_prompt = f"{REFLECTION_SYSTEM_PROMPT_BASE}\n\nPersonality profile (use as context, do not label sections):\n{summary}"
+def schedule_context_lines(schedule_context) -> List[str]:
+    """Soft, human-readable life context from the timetable settings."""
+    if not schedule_context:
+        return []
+    lines: List[str] = []
+    if schedule_context.is_exam_period:
+        lines.append("They're in an exam period right now.")
+    if schedule_context.has_deadlines:
+        lines.append("They have deadlines coming up.")
+    if schedule_context.workload_level == "high":
+        lines.append("Their workload is heavy at the moment, so practical beats philosophical.")
+    if (schedule_context.stress_level or 0) > 0.7:
+        lines.append("Their stress is high; be steady and supportive.")
+    return lines
 
-    if schedule_context:
-        workload = schedule_context.workload_level
-        stress = schedule_context.stress_level
-        exams = schedule_context.is_exam_period
-        deadlines = schedule_context.has_deadlines
-        
-        context_instructions = []
-        if exams:
-            context_instructions.append("- Subtly acknowledge their exam period (e.g. 'How’s your preparation going?', 'Which subject are you focusing on mostly?')")
-        if deadlines:
-            context_instructions.append("- Subtly acknowledge their deadlines (e.g. 'How close is your deadline?', 'What kind of project are you working on?')")
-        
-        if workload == "high":
-            context_instructions.append("- Keep responses slightly shorter and more actionable. Offer practical support rather than deep philosophical depth.")
-        elif workload == "low":
-            context_instructions.append("- Be more open-ended and highly reflective in your exploration.")
 
-        if stress > 0.7:
-            context_instructions.append("- Provide higher emotional support. Reduce deep cognitive load slightly unless they prompt it.")
+def build_reflection_system_prompt(
+    profile: Dict[str, object],
+    schedule_context=None,
+    moment: Optional[MomentContext] = None,
+    length_hint: Optional[str] = None,
+) -> str:
+    sections = [REFLECTION_SYSTEM_PROMPT_BASE]
 
-        if context_instructions:
-            base_prompt += "\n\nUser's Current Life Context (Soft Factors):\n" + "\n".join(context_instructions)
-            base_prompt += "\n\nCRITICAL CONTEXT RULE:\n- DO NOT explicitly say 'based on your settings' or 'because of your exams'.\n- Just blend this context naturally into the conversation."
+    about = format_moment_block(moment or MomentContext(), schedule_context_lines(schedule_context))
+    patterns = summarize_personality_profile(profile)
+    if patterns:
+        about += "\n" + patterns
+    sections.append("What you know about them\n" + about)
 
-    return base_prompt
-
+    if length_hint:
+        sections.append(f"For this reply: {length_hint}")
+    return "\n\n".join(sections)
 
 
 def summarize_personality_profile(profile: Dict[str, object]) -> str:
-    themes = ", ".join([item for item, _ in profile["themes"].most_common(3)])
-    traits = ", ".join([item for item, _ in profile["traits"].most_common(3)])
-    values = ", ".join([item for item, _ in profile["values"].most_common(3)])
-    stressors = ", ".join([item for item, _ in profile["stressors"].most_common(3)])
-    notes = profile["insight_notes"][-2:]
-    note_text = " | ".join(notes)
-    return (
-        f"Themes: {themes or 'unknown'}\n"
-        f"Traits: {traits or 'unknown'}\n"
-        f"Values: {values or 'unknown'}\n"
-        f"Stressors: {stressors or 'unknown'}\n"
-        f"Recent insight notes: {note_text or 'none'}"
-    )
+    """Recurring themes from their messages, as plain lines (empty when unknown)."""
+    labels = {
+        "themes": "Topics that keep coming up",
+        "values": "What seems to matter to them",
+        "stressors": "Recurring stressors",
+    }
+    lines = []
+    for key, label in labels.items():
+        top = [item for item, _ in profile.get(key, Counter()).most_common(3)]
+        if top:
+            lines.append(f"- {label}: {', '.join(top)}")
+    return "\n".join(lines)
 
 
 def update_personality_profile(profile: Dict[str, object], user_text: str, reply: str) -> None:
@@ -695,10 +665,11 @@ def extract_insight_sentence(text: str) -> str:
     return ""
 
 def strip_forbidden_labels(text: str) -> str:
-    updated = text
-    for label in REFLECTION_FORBIDDEN_LABELS:
-        updated = updated.replace(label, "").strip()
-    return updated
+    """Remove report-style section labels (e.g. "Observed Pattern:") at line starts."""
+    labels = [label for label in REFLECTION_FORBIDDEN_LABELS if label.endswith(":")]
+    pattern = r"^\s*(?:" + "|".join(re.escape(label) for label in labels) + r")\s*"
+    return re.sub(pattern, "", text, flags=re.MULTILINE | re.IGNORECASE).strip()
+
 
 def limit_questions(text: str) -> str:
     seen = 0
@@ -745,15 +716,8 @@ def build_default_question(profile: Dict[str, object]) -> str:
     return "What thoughts do you have about this?"
 
 def validate_reflection_response(text: str, profile: Dict[str, object], user_text: str = "") -> str:
-    updated = strip_forbidden_labels(text)
-    updated = ensure_insight_before_question(updated, profile)
-    updated = limit_questions(updated)
-    
-    # We remove the forced question logic to allow natural conversation flow
-    # without aggressively forcing a question in every response.
-    
-    return updated
-
+    """Light cleanup only: drop report-style labels and markdown, keep sentences intact."""
+    return clean_reply(strip_forbidden_labels(clean_reply(text)))
 
 
 def is_echo_reply(reply: str, user_text: str) -> bool:
@@ -761,6 +725,72 @@ def is_echo_reply(reply: str, user_text: str) -> bool:
         return re.sub(r"\s+", " ", value.strip().lower())
 
     return normalize(reply) == normalize(user_text)
+
+
+MIN_WORDS_FOR_LLM_TRAITS = 4
+
+
+async def maybe_extract_traits(message_text: str) -> List[Dict]:
+    """LLM trait extraction for messages with enough signal; very short messages
+    skip it (they carry little signal and would spend free-tier rate limits)."""
+    from app.services.trait_extraction_service import extract_traits
+
+    if len(message_text.split()) < MIN_WORDS_FOR_LLM_TRAITS:
+        return []
+    return await extract_traits(message_text)
+
+
+async def generate_reflection_reply(
+    db: AsyncSession,
+    user_id: UUID,
+    conversation_id: Optional[UUID],
+    personality_profile: Dict[str, object],
+    history: List[Dict[str, str]],
+    message_text: str,
+    client_local_time: Optional[str] = None,
+) -> str:
+    """Reflection reply with real context, sized to the user's message.
+
+    Retries once if the draft still reads like a chatbot or therapist; falls back
+    to a short, non-echoing line when no LLM is available.
+    """
+    from app.db.models import ScheduleContext
+
+    try:
+        schedule_context = (
+            await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id))
+        ).scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"⚠️ Failed to fetch schedule context: {e}")
+        schedule_context = None
+
+    moment = await load_moment_context(db, user_id, conversation_id, client_local_time)
+    budget = reply_budget(message_text, "reflection")
+    system_prompt = build_reflection_system_prompt(
+        personality_profile, schedule_context, moment, str(budget["hint"])
+    )
+    params = {
+        "temperature": MODEL_PARAMS["reflection"]["temperature"],
+        "max_tokens": min(int(budget["max_tokens"]), MODEL_PARAMS["reflection"]["max_tokens"]),
+    }
+
+    reply = await generate_llm_response(system_prompt, params, history)
+    if reply and (has_assistant_tells(reply) or is_echo_reply(reply, message_text)):
+        logger.info("🔁 Reflection draft sounded scripted; regenerating once")
+        nudge = (
+            "\n\nYour last draft sounded like a chatbot or therapist. Rewrite it as a real friend "
+            "texting back: specific, plain, no stock phrases."
+        )
+        try:
+            retry = await generate_llm_response(system_prompt + nudge, {**params, "temperature": 0.95}, history)
+        except LLMRateLimited:
+            retry = None
+        if retry and not is_echo_reply(retry, message_text):
+            reply = retry
+
+    if not reply or is_echo_reply(reply, message_text):
+        reply = random.choice(REFLECTION_TEMPLATES)
+    return validate_reflection_response(reply, personality_profile, message_text)
 
 
 async def generate_llm_response(system_prompt: str, model_params: Dict[str, object], history: List[Dict[str, str]]) -> Optional[str]:
@@ -777,10 +807,12 @@ async def generate_llm_response(system_prompt: str, model_params: Dict[str, obje
             temperature=model_params["temperature"],
         )
         if reply:
-            logger.info(f"✅ Mistral response received: {reply[:50]}...")
+            logger.info(f"✅ LLM response received: {reply[:50]}...")
         return reply
+    except LLMRateLimited:
+        raise  # the caller turns this into an honest "busy, try again" response
     except Exception as e:
-        logger.error(f"❌ Mistral error: {type(e).__name__}: {e}")
+        logger.error(f"❌ LLM error: {type(e).__name__}: {e}")
         return None
 
 
@@ -804,6 +836,30 @@ async def generate_conversation_title(user_message: str) -> str:
             logger.error(f"❌ Title generation error: {e}")
 
     return _fallback_title(user_message)
+
+
+BUSY_DETAIL = "Reflectra is catching its breath (AI rate limit). Give it a few seconds and send that again."
+
+
+async def _raise_busy(db: AsyncSession, new_conversation_id: Optional[UUID] = None, title_task=None):
+    """Answer 429 without storing anything, and drop a conversation created just for this message."""
+    await db.rollback()
+    if title_task is not None:
+        title_task.cancel()
+    if new_conversation_id is not None:
+        try:
+            from app.db.models import Conversation
+
+            conversation = (
+                await db.execute(select(Conversation).where(Conversation.id == new_conversation_id))
+            ).scalar_one_or_none()
+            if conversation is not None:
+                await db.delete(conversation)
+                await db.commit()
+        except Exception:
+            logger.exception("Failed to remove empty conversation after rate limit")
+            await db.rollback()
+    raise HTTPException(status_code=429, detail=BUSY_DETAIL, headers={"Retry-After": "10"})
 
 
 INCOGNITO_HISTORY_LIMIT = 16
@@ -834,20 +890,12 @@ async def _incognito_chat(
     session_id = request.incognito_session_id or "incognito"
 
     if effective_mode == "reflection":
-        from app.db.models import ScheduleContext
-
-        schedule_context = (
-            await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id))
-        ).scalar_one_or_none()
-        reply = await generate_llm_response(
-            build_reflection_system_prompt(personality_profile, schedule_context),
-            MODEL_PARAMS["reflection"],
-            history,
-        )
-        if not reply or is_echo_reply(reply, message_text):
-            sanitized = re.sub(r"[?]+", "", message_text).strip()
-            reply = random.choice(REFLECTION_TEMPLATES).format(text=sanitized)
-        reply = validate_reflection_response(reply, personality_profile, message_text)
+        try:
+            reply = await generate_reflection_reply(
+                db, user_id, None, personality_profile, history, message_text, request.client_local_time
+            )
+        except LLMRateLimited:
+            await _raise_busy(db)
         await db.rollback()  # nothing should be pending, but never commit in incognito
         return ChatResponse(
             conversation_id=session_id,
@@ -859,7 +907,7 @@ async def _incognito_chat(
 
     from app.services.mirror_engine import generate_mirror_response
 
-    assistant_task_type = resolve_mirror_task_type(message_text, history) or classify_assistant_task(message_text.lower())
+    assistant_task_type = resolve_mirror_task_type(message_text, history)
     prior_user_messages = [turn["content"] for turn in prior_history if turn["role"] == "user"]
     active_mirror_style, detected_emotion = get_adaptive_mirror_style(
         message_text, personality_profile, prior_user_messages
@@ -881,6 +929,8 @@ async def _incognito_chat(
             active_mirror_style=active_mirror_style,
             persist=False,
         )
+    except LLMRateLimited:
+        await _raise_busy(db)
     except Exception:
         logger.exception("⚠️ Incognito mirror generation failed")
         reply, metadata = None, {}
@@ -960,6 +1010,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     conversation_title = None
     title_task: Optional[asyncio.Task] = None
     prior_history: List[Dict[str, str]] = []
+    created_conversation_id: Optional[UUID] = None
 
     # Handle conversation creation or retrieval
     if conversation_id_uuid is None:
@@ -977,6 +1028,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
             metadata=metadata_payload,
         )
         conversation_id_uuid = conversation.id
+        created_conversation_id = conversation.id
         logger.info(f"✅ Created conversation {conversation_id_uuid} with mode: {effective_mode}")
     else:
         conversation = await crud.get_conversation_by_id(
@@ -1023,32 +1075,26 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     from app.services.snapshot_service import generate_persona_snapshot
 
     if effective_mode == "reflection":
-        try:
-            from app.db.models import ScheduleContext
-            sched_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id_uuid))
-            schedule_context = sched_result.scalar_one_or_none()
-        except Exception as e:
-            logger.error(f"⚠️ Failed to fetch schedule context: {e}")
-            schedule_context = None
-
-        system_prompt = build_reflection_system_prompt(personality_profile, schedule_context)
-        model_params = MODEL_PARAMS["reflection"]
-
         # Reply and trait extraction are independent LLM calls: run them together.
-        reply, extracted_traits = await asyncio.gather(
-            generate_llm_response(system_prompt, model_params, history),
-            extract_traits(message_text),
+        reply_result, traits_result = await asyncio.gather(
+            generate_reflection_reply(
+                db,
+                user_id_uuid,
+                conversation_id_uuid,
+                personality_profile,
+                history,
+                message_text,
+                request.client_local_time,
+            ),
+            maybe_extract_traits(message_text),
+            return_exceptions=True,
         )
-        if reply and is_echo_reply(reply, message_text):
-            logger.warning("⚠️ LLM reply echoed user input; falling back to templates")
-            reply = None
-
-        if not reply:
-            logger.info("📝 Using template response (LLM not available)")
-            sanitized = re.sub(r"[?]+", "", message_text).strip()
-            reply = random.choice(REFLECTION_TEMPLATES).format(text=sanitized)
-
-        reply = validate_reflection_response(reply, personality_profile, message_text)
+        if isinstance(reply_result, LLMRateLimited):
+            await _raise_busy(db, created_conversation_id, title_task)
+        if isinstance(reply_result, BaseException):
+            raise reply_result
+        reply = reply_result
+        extracted_traits = traits_result if isinstance(traits_result, list) else []
         update_personality_profile(personality_profile, message_text, reply)
 
         try:
@@ -1097,9 +1143,9 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
 
     else:
         # MIRROR MODE: Always keep full assistant capability while preserving mirror style.
-        explicit_task_type = resolve_mirror_task_type(message_text, history)
-        inferred_task_type = classify_assistant_task(message_text.lower())
-        assistant_task_type = explicit_task_type or inferred_task_type
+        # Only explicit requests ("can you draft...") or follow-ups to one enter task mode;
+        # keyword guesses misread statements like "i have to text my landlord".
+        assistant_task_type = resolve_mirror_task_type(message_text, history)
 
         prior_user_messages = [turn["content"] for turn in prior_history if turn["role"] == "user"]
         active_mirror_style, detected_emotion = get_adaptive_mirror_style(
@@ -1136,11 +1182,13 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 active_mirror_style=active_mirror_style,
                 conversation_id=conversation_id_uuid,
             ),
-            extract_traits(message_text),
+            maybe_extract_traits(message_text),
             return_exceptions=True,
         )
         extracted_traits = traits_result if isinstance(traits_result, list) else []
 
+        if isinstance(mirror_result, LLMRateLimited):
+            await _raise_busy(db, created_conversation_id, title_task)
         if isinstance(mirror_result, BaseException):
             logger.error("⚠️ Mirror generation failed", exc_info=mirror_result)
             await db.rollback()

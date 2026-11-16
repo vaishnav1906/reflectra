@@ -155,22 +155,15 @@ def score_mirror_candidate(
         if source_message and re.sub(r"\s+", " ", source_message.strip().lower()) == re.sub(r"\s+", " ", candidate.strip().lower()):
             score -= 0.4
     else:
-        source_has_question = "?" in (source_message or "")
-        if "??" in candidate:
-            score -= 0.25
-        elif "?" in candidate and not source_has_question:
-            score -= 0.08
+        # The mirror talks WITH the user, so "you"/"I"/questions are natural.
+        # Penalize what makes it sound like an assistant instead.
+        if candidate.count("?") >= 3:
+            score -= 0.2
 
-        if re.search(r"^(can|could|would|do)\s+you\b", lower_candidate):
+        if re.search(r"^(would you like|do you want me to|can i help|how can i)\b", lower_candidate):
             score -= 0.3
 
-        if re.search(r"\b(you|your|yours|u)\b", lower_candidate):
-            score -= 0.25
-
-        if not re.search(r"\b(i|i'm|im|i've|i'd|i'll|my|me|myself)\b", lower_candidate):
-            score -= 0.18
-
-        if re.search(r"\b(option|alternatively|on the other hand|either|or maybe|could also)\b", lower_candidate):
+        if re.search(r"\b(alternatively|on the other hand|here are some|a few options)\b", lower_candidate):
             score -= 0.14
 
     # 8. Topical continuity check

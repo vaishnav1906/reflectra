@@ -69,12 +69,15 @@ class MirrorIdentityContractTests(unittest.TestCase):
             linguistic_fingerprint="Characteristic phrases: lowkey this, real talk.",
         )
 
-        self.assertIn("Always answer with full assistant capability", prompt)
-        self.assertIn("Active Archetype: chaotic", prompt)
-        self.assertIn("Communication Style (Concise", prompt)
-        self.assertIn("Decision Framing (Hesitant", prompt)
-        self.assertIn("keep the same thought thread", prompt)
-        self.assertIn("self-directed", prompt)
+        # The mirror is the user talking back in their own voice, carrying the
+        # detected mood/archetype and recent signals, and never sounding like an AI.
+        self.assertIn("You ARE the user", prompt)
+        self.assertIn("They seem playful", prompt)
+        self.assertIn("Match playful, high-energy momentum", prompt)
+        self.assertIn("User asks for concise drafts under stress", prompt)
+        self.assertIn("Likes to explain and elaborate.", prompt)
+        self.assertIn("Never", prompt)
+        self.assertIn("Sound like an AI, assistant or therapist", prompt)
 
     def test_normalization_and_hash_are_stable(self):
         left = "  Same   Reply  Text "
