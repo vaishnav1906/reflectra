@@ -16,16 +16,18 @@ Everything here is read-only against the database.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Message, User
+from app.db.models import ExternalInput, Message, User
 
 EMOJI_REGEX = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
 
@@ -49,7 +51,10 @@ class MomentContext:
     display_name: Optional[str] = None
     local_time: Optional[str] = None
     gap_note: Optional[str] = None
-    earlier_shares: List[str] = field(default_factory=list)
+    earlier_shares: List[str] = field(default_factory=list)   # most recent things they said
+    related_memories: List[str] = field(default_factory=list)  # past exchanges relevant to now
+    background_notes: List[str] = field(default_factory=list)  # facts from an imported description
+    follow_ups: List[str] = field(default_factory=list)       # things they said they'd do, now due
 
 
 @dataclass
@@ -86,39 +91,306 @@ def _gap_note(last_seen: Optional[datetime]) -> Optional[str]:
     return f"It's been a while ({days} days) since you last talked."
 
 
+MEMORY_STOPWORDS = frozenset(
+    """a about after again all also am an and any are aren as at be because been before being but by can cant could did
+    didn do does doesn doing don dont down for from get got had has have having he her here hers him his how i id if ill im
+    in into is isn it its ive just know like ll me more most my myself no nor not now of off on once only or other our out
+    over own re really s same she should so some such t than that thats the their them then there these they thing things
+    think this those through to too u under until up ur ve very was wasn we were what when where which while who why will
+    with would y yeah you your yours yourself gonna wanna kinda lol idk tbh ngl bro man okay ok yes nah feel feeling today
+    actually still much even make makes made want need going something anything everything one two time way
+    hello hey hi sup whats tonight tomorrow yesterday good bad tell give new first right well thanks thank please help
+    let lets say said see look come came back lot bit maybe sure fine cool nice great
+    keep kept get gets getting sit stay start try put take took whenever always never every ever
+    around while already yet soon later away
+    lowkey highkey fr frfr bruh bro gang wassup yo ion ima imma finna tryna deadass lmao lmfao ong istg
+    rn tn tmrw tmr ukwim iykyk shii shi shit fuck fucking damn dude bestie fam aight bet ight allat""".split()
+)
+
+
+def _memory_tokens(text: str) -> List[str]:
+    """Content words, lightly stemmed, for lexical recall."""
+    tokens = []
+    for word in re.findall(r"[a-z0-9']+", (text or "").lower()):
+        word = word.strip("'").split("'")[0]  # what's -> what, don't -> don
+        if len(word) < 3 or word in MEMORY_STOPWORDS:
+            continue
+        for suffix in ("ing", "ed", "es", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+                word = word[: -len(suffix)]
+                if len(word) > 3 and word[-1] == word[-2] and word[-1] not in "aeiousl":
+                    word = word[:-1]  # stopping -> stop, planned -> plan
+                break
+        if word not in MEMORY_STOPWORDS:  # thinking -> think, which is a stopword
+            tokens.append(word)
+    return tokens
+
+
+RECENT_SHARE_WINDOW = timedelta(days=3)
+
+
+def _aware(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _when(created_at: Optional[datetime]) -> str:
+    if created_at is None:
+        return "earlier"
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    days = (datetime.now(timezone.utc) - created_at).days
+    if days <= 0:
+        return "earlier today"
+    if days == 1:
+        return "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        return f"{days // 7} weeks ago"
+    return f"{days // 30} months ago"
+
+
+# A past exchange counts as related in meaning only if it is both close to the query
+# and stands out from this person's own baseline (everyone's messages resemble each
+# other a little). Measured on real history with gemini-embedding-001: true matches
+# sat at similarity 0.65-0.75 and 2.8-7.7 deviations above the person's average;
+# scripts/backend/memory_eval.py re-measures it.
+SEMANTIC_MIN_SIMILARITY = 0.62
+SEMANTIC_MIN_STANDOUT = 2.5
+# A keyword match whose meaning is no closer than the person's average is a coincidence
+# of filler words ("what's up" matching "what's good fuel"), and is dropped.
+LEXICAL_MIN_STANDOUT = 0.5
+RANK_FUSION_K = 10.0  # reciprocal-rank fusion: score = sum of 1 / (K + rank in each list)
+
+
+def lexical_ranking(query_text: str, exchanges: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Past exchanges sharing words with the query, best first.
+
+    Rare shared words count for more (IDF), long exchanges are not favoured for
+    their length, and an exchange must share at least one distinctive word or three
+    ordinary ones.
+    """
+    query = set(_memory_tokens(query_text))
+    if len(query) < 3 or not exchanges:
+        return []  # greetings and one-liners don't call for recall
+
+    doc_tokens = [set(_memory_tokens(f"{e.get('user', '')} {e.get('assistant', '')}")) for e in exchanges]
+    total = len(exchanges)
+    doc_freq: Dict[str, int] = {}
+    for tokens in doc_tokens:
+        for token in tokens:
+            doc_freq[token] = doc_freq.get(token, 0) + 1
+
+    scored = []
+    for exchange, tokens in zip(exchanges, doc_tokens):
+        shared = query & tokens
+        if not shared:
+            continue
+        idf = {t: math.log(1 + total / doc_freq[t]) for t in shared}
+        distinctive = sum(1 for t in shared if doc_freq[t] <= max(2, total * 0.03))
+        if distinctive == 0 and len(shared) < 3:
+            continue  # a couple of everyday words in common is coincidence
+        # Squared so one rare shared word ("instagram") outweighs several common ones.
+        score = sum(value * value for value in idf.values()) / math.sqrt(8 + len(tokens))
+        scored.append((score, exchange))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [exchange for _, exchange in scored]
+
+
+def semantic_ranking(
+    query_text: str,
+    exchanges: List[Dict[str, object]],
+    similarities: Optional[Dict[object, Dict[str, float]]],
+) -> List[Dict[str, object]]:
+    """Past exchanges close in meaning to the query, best first, whatever words they used."""
+    if not similarities or len(_memory_tokens(query_text)) < 2:
+        return []
+    close = []
+    for exchange in exchanges:
+        match = similarities.get(exchange.get("id"))
+        if match and match["similarity"] >= SEMANTIC_MIN_SIMILARITY and match["standout"] >= SEMANTIC_MIN_STANDOUT:
+            close.append((match["similarity"], exchange))
+    close.sort(key=lambda pair: pair[0], reverse=True)
+    return [exchange for _, exchange in close]
+
+
+def _keyword_match_holds_up(exchange: Dict[str, object], similarities: Optional[Dict[object, Dict[str, float]]]) -> bool:
+    """With meaning available, a keyword match must also be closer than average in meaning."""
+    if not similarities or not exchange.get("embedded"):
+        return True  # nothing to check it against
+    match = similarities.get(exchange.get("id"))
+    return bool(match) and match["standout"] >= LEXICAL_MIN_STANDOUT
+
+
+def rank_memories(
+    query_text: str,
+    exchanges: List[Dict[str, object]],
+    limit: int = 4,
+    similarities: Optional[Dict[object, Dict[str, float]]] = None,
+) -> List[Dict[str, object]]:
+    """Pick the past exchanges most related to what the user is saying now.
+
+    Two rankings are fused: shared words (always available) and closeness in
+    meaning (when embeddings are). An exchange found by both rises to the top; one
+    found by either still qualifies, so "exam stress" recalls "finals are killing me".
+    """
+    by_words = [e for e in lexical_ranking(query_text, exchanges) if _keyword_match_holds_up(e, similarities)]
+    rankings = [by_words, semantic_ranking(query_text, exchanges, similarities)]
+    fused: Dict[int, float] = {}
+    by_key: Dict[int, Dict[str, object]] = {}
+    for ranking in rankings:
+        for rank, exchange in enumerate(ranking):
+            key = id(exchange)
+            by_key[key] = exchange
+            fused[key] = fused.get(key, 0.0) + 1.0 / (RANK_FUSION_K + rank)
+
+    picked: List[Dict[str, object]] = []
+    seen_conversations: Dict[object, int] = {}
+    for key in sorted(fused, key=lambda k: fused[k], reverse=True):
+        exchange = by_key[key]
+        # At most two memories per past conversation, so recall spans their history.
+        conversation = exchange.get("conversation_id")
+        if seen_conversations.get(conversation, 0) >= 2:
+            continue
+        seen_conversations[conversation] = seen_conversations.get(conversation, 0) + 1
+        picked.append(exchange)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _format_memory(exchange: Dict[str, object]) -> str:
+    said = " ".join(str(exchange.get("user") or "").split())[:240]
+    line = f'{_when(exchange.get("created_at"))}, they said: "{said}"'
+    reply = " ".join(str(exchange.get("assistant") or "").split())
+    if reply:
+        line += f' You replied: "{reply[:200]}"'
+    return line
+
+
+async def load_background_notes(db: AsyncSession, user_id: UUID) -> List[str]:
+    """Facts about the user taken from their latest Persona Bootstrap import, if any."""
+    try:
+        markers = (
+            await db.execute(
+                select(ExternalInput.extracted_markers)
+                .where(ExternalInput.user_id == user_id, ExternalInput.source == "persona_bootstrap")
+                .order_by(ExternalInput.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    except Exception:
+        await db.rollback()
+        return []
+    notes = (markers or {}).get("notes") if isinstance(markers, dict) else None
+    return [str(note)[:200] for note in (notes or []) if note][:6]
+
+
 async def load_moment_context(
     db: AsyncSession,
     user_id: UUID,
     current_conversation_id: Optional[UUID],
     client_local_time: Optional[str] = None,
-    share_limit: int = 8,
+    query_text: str = "",
+    share_limit: int = 4,
+    history_window: int = 1200,
+    message_text: str = "",
+    use_meaning: bool = True,
+    follow_up_tz: Optional[int] = None,
 ) -> MomentContext:
+    """Who they are right now, plus memory of earlier conversations.
+
+    Memory has two parts: the last few substantial things they said (recency)
+    and past exchanges related to `query_text` (relevance), drawn from up to
+    `history_window` earlier messages across all their conversations. Relevance
+    uses shared words and, when embeddings are available, closeness in meaning.
+
+    `follow_up_tz` (the user's UTC offset in minutes) is passed only for the first
+    message of a conversation: that is when due follow-ups are raised, and marked asked.
+    """
+    from app.services import embedding_service
+
+    # The embedding request runs while the database is read, so it costs little extra time.
+    embed_task = None
+    if use_meaning and query_text.strip() and embedding_service.embeddings_available():
+        await embedding_service.ensure_dimensions(db)  # one tiny query, first time only
+        embed_task = asyncio.create_task(embedding_service.embed_for_recall(query_text))
+
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
 
-    last_seen_stmt = select(Message.created_at).where(Message.user_id == user_id, Message.role == "user")
+    stmt = select(
+        Message.role,
+        Message.content,
+        Message.created_at,
+        Message.conversation_id,
+        Message.id,
+        Message.embedding.is_not(None).label("embedded"),
+    ).where(Message.user_id == user_id)
     if current_conversation_id is not None:
-        last_seen_stmt = last_seen_stmt.where(Message.conversation_id != current_conversation_id)
-    last_seen = (await db.execute(last_seen_stmt.order_by(Message.created_at.desc()).limit(1))).scalar_one_or_none()
+        stmt = stmt.where(Message.conversation_id != current_conversation_id)
+    rows = (await db.execute(stmt.order_by(Message.created_at.desc()).limit(history_window))).all()
+    rows = list(reversed(rows))  # oldest first
 
-    shares_stmt = select(Message.content).where(Message.user_id == user_id, Message.role == "user")
-    if current_conversation_id is not None:
-        shares_stmt = shares_stmt.where(Message.conversation_id != current_conversation_id)
-    recent = (await db.execute(shares_stmt.order_by(Message.created_at.desc()).limit(40))).scalars().all()
+    # Pair each user message with the reply that followed it in the same conversation.
+    exchanges: List[Dict[str, object]] = []
+    for index, (role, content, created_at, conversation_id, message_id, embedded) in enumerate(rows):
+        if role != "user":
+            continue
+        cleaned = " ".join((content or "").split())
+        if len(cleaned.split()) < 5:
+            continue  # greetings and one-liners carry no memory
+        reply = ""
+        for next_role, next_content, _, next_conversation, _, _ in rows[index + 1 : index + 3]:
+            if next_conversation == conversation_id and next_role == "assistant":
+                reply = next_content or ""
+                break
+        exchanges.append(
+            {
+                "id": message_id,
+                "embedded": bool(embedded),
+                "user": cleaned,
+                "assistant": reply,
+                "created_at": created_at,
+                "conversation_id": conversation_id,
+            }
+        )
 
-    # Keep messages with some substance; skip greetings and one-word replies.
-    earlier_shares: List[str] = []
-    for text in recent:
-        cleaned = " ".join((text or "").split())
-        if len(cleaned.split()) >= 6:
-            earlier_shares.append(cleaned[:220])
-        if len(earlier_shares) >= share_limit:
-            break
+    last_seen = next((created_at for role, _, created_at, _, _, _ in reversed(rows) if role == "user"), None)
+    background_notes = await load_background_notes(db, user_id)
+    # "Recent" means the last few days: a months-old message is a memory, not something on their mind.
+    recent_since = datetime.now(timezone.utc) - RECENT_SHARE_WINDOW
+    recent = [e for e in exchanges if _aware(e["created_at"]) >= recent_since][-share_limit:]
+
+    similarities: Dict[object, Dict[str, float]] = {}
+    if embed_task is not None:
+        try:
+            query_vector = await embed_task
+        except Exception:
+            query_vector = None
+        if query_vector:
+            similarities = await embedding_service.semantic_matches(db, user_id, query_vector, current_conversation_id)
+    related = [e for e in rank_memories(query_text, exchanges, similarities=similarities) if e not in recent]
+
+    follow_ups: List[str] = []
+    if follow_up_tz is not None:
+        from app.services import followup_service
+
+        try:
+            follow_ups = await followup_service.due_for_asking(db, user_id, follow_up_tz)
+        except Exception:
+            await db.rollback()
 
     return MomentContext(
         display_name=_first_name(user.display_name if user else None),
         local_time=(client_local_time or "").strip()[:60] or None,
         gap_note=_gap_note(last_seen),
-        earlier_shares=list(reversed(earlier_shares)),
+        earlier_shares=[f'{_when(e["created_at"])}: "{str(e["user"])[:220]}"' for e in recent],
+        related_memories=[_format_memory(e) for e in related],
+        background_notes=background_notes,
+        follow_ups=follow_ups,
     )
 
 
@@ -168,9 +440,25 @@ def format_moment_block(ctx: MomentContext, schedule_lines: Optional[List[str]] 
         lines.append(f"- {ctx.gap_note}")
     for line in schedule_lines or []:
         lines.append(f"- {line}")
+    if ctx.background_notes:
+        lines.append("- Background they've shared about themselves:")
+        lines.extend(f"    {note}" for note in ctx.background_notes)
+    if ctx.related_memories:
+        lines.append("- From earlier conversations, related to what they're saying now:")
+        lines.extend(f"    {memory}" for memory in ctx.related_memories)
     if ctx.earlier_shares:
-        lines.append("- Things they told you in earlier chats (oldest first):")
-        lines.extend(f'    "{share}"' for share in ctx.earlier_shares)
+        lines.append(
+            "- Background only, what they talked about most recently (usually unrelated to now; "
+            "don't bring any of it up unless they do or it plainly connects):"
+        )
+        lines.extend(f"    {share}" for share in ctx.earlier_shares)
+    if ctx.follow_ups:
+        lines.append(
+            "- Something to follow up on. Unless they've come with something heavy, ask how ONE of these went, "
+            "once, in passing, the way a friend who remembered would. No lecture if they didn't do it, "
+            "and if they brush it off, drop it for good:"
+        )
+        lines.extend(f"    {item}" for item in ctx.follow_ups)
     return "\n".join(lines) if lines else "- Nothing yet; this is a fresh start."
 
 
@@ -184,7 +472,12 @@ async def load_voice_samples(
     exclude_text: Optional[str] = None,
     limit: int = 12,
 ) -> List[str]:
-    """Pick real user messages that show how they write, varied in length."""
+    """Pick real messages the user wrote that show how they write, varied in length.
+
+    Mostly from their conversations here; if they imported their own texts from
+    elsewhere, a share of the samples comes from those (most of them while there is
+    little written here yet).
+    """
     rows = (
         await db.execute(
             select(Message.content)
@@ -206,7 +499,23 @@ async def load_voice_samples(
         seen.add(key)
         candidates.append(cleaned)
 
-    # Spread across short / medium / long so the model sees their whole range.
+    from app.services import voice_import_service
+
+    imported = [
+        text
+        for text in reversed(await voice_import_service.load_imported_samples(db, user_id))  # newest first
+        if text.lower() not in seen and text != (exclude_text or "").strip()
+    ]
+    from_import = min(len(imported), voice_import_service.imported_share(len(candidates), limit)) if imported else 0
+    own = _spread_by_length(candidates, limit - from_import)
+    borrowed = _spread_by_length(imported[:80], limit - len(own))  # also fills in when own messages run short
+    return own + borrowed
+
+
+def _spread_by_length(candidates: List[str], limit: int) -> List[str]:
+    """Take from short / medium / long in turn so the model sees their whole range."""
+    if limit <= 0:
+        return []
     short = [c for c in candidates if len(c.split()) <= 6]
     medium = [c for c in candidates if 6 < len(c.split()) <= 20]
     long = [c for c in candidates if len(c.split()) > 20]

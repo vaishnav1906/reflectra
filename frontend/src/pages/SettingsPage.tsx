@@ -1,18 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { ArrowRight, Check, Copy, EyeOff, Loader2, Lock, Trash2, Upload } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,625 +17,449 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { 
-  Shield, 
-  Database, 
-  Trash2, 
-  Users,
-  RefreshCw,
-  FileText,
-  AlertTriangle,
-  Check,
-  Loader2,
-  Upload
-} from "lucide-react";
-
+import { PageShell, Panel } from "@/components/portrait/PageShell";
+import { ExportPortraitButton } from "@/components/transitions/PortraitPrint";
+import { VoiceImportRow } from "@/components/settings/VoiceImport";
+import { TRAIT_COLOR, TRAIT_LABEL, TraitKey } from "@/hooks/useReflectra";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
-const API_BASE = "/api";
+import { cn } from "@/lib/utils";
 
-type SettingsState = {
-  personaMirroring: boolean;
-  patternTracking: boolean;
-  dailyReflections: boolean;
-  shareAnonymousData: boolean;
+/**
+ * Settings. Every control here changes real behaviour on the server:
+ *   Mirror my voice ....... Mirror mode on/off (persona_mirroring)
+ *   Keep learning ......... trait updates, writing-style learning and reflections (pattern_tracking)
+ *   Mirror strength ....... how strongly Mirror imitates you (twin_mirror_intensity)
+ */
+
+type ServerSettings = {
+  persona_mirroring: boolean;
+  pattern_tracking: boolean;
+  daily_reflections: boolean;
+  twin_mirror_intensity: number;
 };
 
-type PersonaSettingKey = "personaMirroring" | "patternTracking" | "dailyReflections";
+const DEFAULTS: ServerSettings = { persona_mirroring: true, pattern_tracking: true, daily_reflections: true, twin_mirror_intensity: 0.8 };
 
-const DEFAULT_SETTINGS: SettingsState = {
-  personaMirroring: true,
-  patternTracking: true,
-  dailyReflections: true,
-  shareAnonymousData: false,
+const STRENGTHS = [
+  { value: 0.3, label: "Light", hint: "Mostly clear and neutral, a hint of you." },
+  { value: 0.6, label: "Balanced", hint: "Your tone and rhythm, without the quirks." },
+  { value: 0.9, label: "Strong", hint: "Your exact wording habits and cadence." },
+];
+
+const BOOTSTRAP_PROMPT =
+  "Based on everything you know about me from our conversations, describe me as a person in about 250 words, in the third person. " +
+  "Cover four things, each with a concrete example or something I actually said: (1) how I communicate: short and direct, or long and detailed; " +
+  "(2) how openly I express emotions; (3) how I make decisions: hesitant or decisive; (4) how much I reflect on myself. " +
+  "Then add a few facts about my life that matter: what I do, what I'm working on, what I care about, what I struggle with. " +
+  "Be honest rather than flattering, and if you don't know something, say so instead of guessing.";
+
+type TraitChange = {
+  trait: TraitKey;
+  applied: boolean;
+  strength: string;
+  evidence: string;
+  previous_score: number;
+  new_score: number;
+  previous_confidence: number;
+  new_confidence: number;
 };
+
+type BootstrapResult = { saved: boolean; traits: TraitChange[]; notes: string[]; recognised: number; total_traits: number };
+
+async function readError(res: Response, fallback: string): Promise<string> {
+  const body = await res.json().catch(() => ({}));
+  return typeof body?.detail === "string" ? body.detail : fallback;
+}
+
+function Row({ title, body, control }: { title: string; body: string; control: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6 border-b border-white/5 py-5 first:pt-0 last:border-0 last:pb-0">
+      <div className="min-w-0">
+        <p className="font-medium text-foreground">{title}</p>
+        <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted-foreground">{body}</p>
+      </div>
+      <div className="shrink-0 pt-0.5">{control}</div>
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const navigate = useNavigate();
-  const { signOut } = useAuth();
-  const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
-  const [isLoadingPersonaSettings, setIsLoadingPersonaSettings] = useState(true);
-  const [isSavingPersonaSetting, setIsSavingPersonaSetting] = useState<PersonaSettingKey | null>(null);
-  const [personaSettingsError, setPersonaSettingsError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { user, signOut } = useAuth();
+  const userId = user?.id ?? "";
 
-  const [isClearDataModalOpen, setIsClearDataModalOpen] = useState(false);
-  const [isClearingData, setIsClearingData] = useState(false);
-  const [clearDataConfirmation, setClearDataConfirmation] = useState("");
+  const [settings, setSettings] = useState<ServerSettings>(DEFAULTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
-  const [isDeleteAccountModalOpen, setIsDeleteAccountModalOpen] = useState(false);
-  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
-  const [deleteAccountConfirmation, setDeleteAccountConfirmation] = useState("");
 
-  const [isBootstrapModalOpen, setIsBootstrapModalOpen] = useState(false);
-  const [bootstrapSummary, setBootstrapSummary] = useState("");
-  const [isBootstrapping, setIsBootstrapping] = useState(false);
-  const [isExportingReport, setIsExportingReport] = useState(false);
-  const [exportReportError, setExportReportError] = useState<string | null>(null);
+  const [bootstrapOpen, setBootstrapOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [analysing, setAnalysing] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [preview, setPreview] = useState<BootstrapResult | null>(null);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const [confirm, setConfirm] = useState<"clear" | "delete" | null>(null);
+  const [confirmText, setConfirmText] = useState("");
+  const [working, setWorking] = useState(false);
+  const [dangerError, setDangerError] = useState<string | null>(null);
 
   useEffect(() => {
-    let isCancelled = false;
-
-    const loadPersonaSettings = async () => {
-      const userId = localStorage.getItem("user_id");
-      if (!userId) {
-        if (!isCancelled) {
-          setIsLoadingPersonaSettings(false);
-        }
-        return;
-      }
-
-      setIsLoadingPersonaSettings(true);
-      setPersonaSettingsError(null);
-
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
       try {
-        const res = await apiFetch(`${API_BASE}/user/settings?user_id=${encodeURIComponent(userId)}`);
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(errText || `HTTP ${res.status}`);
-        }
-
+        const res = await apiFetch(`/api/user/settings?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) throw new Error(await readError(res, "Couldn't load your settings."));
         const data = await res.json();
-        const incoming = data?.settings ?? {};
-
-        if (!isCancelled) {
-          setSettings((prev) => ({
-            ...prev,
-            personaMirroring: incoming.persona_mirroring ?? prev.personaMirroring,
-            patternTracking: incoming.pattern_tracking ?? prev.patternTracking,
-            dailyReflections: incoming.daily_reflections ?? prev.dailyReflections,
-          }));
-        }
+        if (!cancelled) setSettings({ ...DEFAULTS, ...(data?.settings ?? {}) });
       } catch (err) {
-        if (!isCancelled) {
-          const msg = err instanceof Error ? err.message : "Failed to load settings";
-          setPersonaSettingsError(msg);
-        }
+        if (!cancelled) setSettingsError(err instanceof Error ? err.message : "Couldn't load your settings.");
       } finally {
-        if (!isCancelled) {
-          setIsLoadingPersonaSettings(false);
-        }
+        if (!cancelled) setLoading(false);
       }
-    };
-
-    void loadPersonaSettings();
-
+    })();
     return () => {
-      isCancelled = true;
+      cancelled = true;
     };
-  }, []);
+  }, [userId]);
 
-  const handlePersonaToggle = async (key: PersonaSettingKey, checked: boolean) => {
-    if (isLoadingPersonaSettings || isSavingPersonaSetting) {
-      return;
-    }
-
+  const save = async (patch: Partial<ServerSettings>) => {
+    if (loading || saving) return;
     const previous = settings;
-    const next = { ...settings, [key]: checked };
-
+    const next = { ...settings, ...patch };
     setSettings(next);
-    setPersonaSettingsError(null);
-    setIsSavingPersonaSetting(key);
-
+    setSettingsError(null);
+    setSaving(true);
     try {
-      const userId = localStorage.getItem("user_id");
-      if (!userId) {
-        throw new Error("Missing user session");
-      }
-
-      const res = await apiFetch(`${API_BASE}/user/settings/update`, {
+      const res = await apiFetch("/api/user/settings/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: userId,
-          persona_mirroring: next.personaMirroring,
-          pattern_tracking: next.patternTracking,
-          daily_reflections: next.dailyReflections,
-        }),
+        body: JSON.stringify(next),
       });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(await readError(res, "Couldn't save that."));
+      void queryClient.invalidateQueries({ queryKey: ["reflections"] });
     } catch (err) {
       setSettings(previous);
-      setPersonaSettingsError(err instanceof Error ? err.message : "Unable to save settings");
+      setSettingsError(err instanceof Error ? err.message : "Couldn't save that.");
     } finally {
-      setIsSavingPersonaSetting(null);
+      setSaving(false);
     }
   };
 
-  const handleBootstrap = async () => {
-    if (!bootstrapSummary.trim()) return;
-    setIsBootstrapping(true);
+  const runBootstrap = async (dryRun: boolean) => {
+    setBootstrapError(null);
+    if (dryRun) setAnalysing(true);
+    else setApplying(true);
     try {
-      const userId = localStorage.getItem("user_id");
-      if (!userId) return;
-      
-      const res = await apiFetch(`${API_BASE}/persona/bootstrap`, {
+      const res = await apiFetch("/api/persona/bootstrap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, summary_text: bootstrapSummary }),
+        body: JSON.stringify({ summary_text: summary, dry_run: dryRun }),
       });
-      if (res.ok) {
-        setIsBootstrapModalOpen(false);
-        setBootstrapSummary("");
+      if (!res.ok) throw new Error(await readError(res, "Couldn't read that right now."));
+      const result = (await res.json()) as BootstrapResult;
+      if (dryRun) {
+        setPreview(result);
+      } else {
+        toast.success(`Imported. ${result.recognised} of ${result.total_traits} traits updated.`);
+        void queryClient.invalidateQueries();
+        closeBootstrap();
         navigate("/app/personality");
       }
     } catch (err) {
-      console.error("Failed to bootstrap persona:", err);
+      setBootstrapError(err instanceof Error ? err.message : "Couldn't read that right now.");
     } finally {
-      setIsBootstrapping(false);
+      setAnalysing(false);
+      setApplying(false);
     }
   };
 
-  const handleClearData = async () => {
-    if (clearDataConfirmation !== "CLEAR") return;
+  const closeBootstrap = () => {
+    setBootstrapOpen(false);
+    setSummary("");
+    setPreview(null);
+    setBootstrapError(null);
+  };
 
-    setIsClearingData(true);
+  const runDanger = async () => {
+    if (!confirm || working) return;
+    setWorking(true);
+    setDangerError(null);
     try {
-      const userId = localStorage.getItem("user_id");
-      if (!userId) return;
-      
-      const res = await apiFetch(`${API_BASE}/user/clear-data`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId }),
-      });
-      if (res.ok) {
-        setIsClearDataModalOpen(false);
-        // Refresh UI or show toast
-        window.location.reload(); // Simple refresh to fetch fresh persona data
+      const res =
+        confirm === "clear"
+          ? await apiFetch("/api/user/clear-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+          : await apiFetch("/api/user/delete-account", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      if (!res.ok) throw new Error(await readError(res, "That didn't go through. Nothing was changed."));
+      if (confirm === "clear") {
+        queryClient.clear();
+        setConfirm(null);
+        toast.success("Your conversations and everything learned from them were erased.");
+        navigate("/app/chat");
+      } else {
+        await signOut();
+        localStorage.clear();
+        navigate("/");
       }
     } catch (err) {
-      console.error("Failed to clear user data:", err);
+      setDangerError(err instanceof Error ? err.message : "That didn't go through. Nothing was changed.");
     } finally {
-      setIsClearingData(false);
+      setWorking(false);
     }
   };
 
-  const handleDeleteAccount = async () => {
-    if (deleteAccountConfirmation !== "DELETE") return;
-    
-    setIsDeletingAccount(true);
-    try {
-      // Short delay as a last chance to cancel.
-      await new Promise(r => setTimeout(r, 2000));
-
-      const res = await apiFetch(`${API_BASE}/user/delete-account`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-
-      await signOut();
-      localStorage.clear();
-      setIsDeleteAccountModalOpen(false);
-      navigate("/");
-    } catch (err) {
-      console.error("Failed to delete user account:", err);
-      setIsDeletingAccount(false);
-    }
-  };
-
-  const handleExportReport = async () => {
-    const userId = localStorage.getItem("user_id");
-    if (!userId || isExportingReport) {
-      return;
-    }
-
-    setExportReportError(null);
-    setIsExportingReport(true);
-
-    try {
-      const res = await apiFetch(`${API_BASE}/user/export-persona-report?user_id=${encodeURIComponent(userId)}`);
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(errorText || `HTTP ${res.status}`);
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "persona-summary-report.pdf";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to export report";
-      setExportReportError(message);
-    } finally {
-      setIsExportingReport(false);
-    }
-  };
+  const confirmWord = confirm === "clear" ? "CLEAR" : "DELETE";
+  const wordCount = summary.trim() ? summary.trim().split(/\s+/).length : 0;
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <header className="px-8 py-6 border-b border-border">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">Settings</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage your persona data and preferences
-          </p>
-        </div>
-      </header>
-
-      <ScrollArea className="flex-1">
-        <div className="p-8">
-          <div className="max-w-2xl mx-auto space-y-8">
-            {/* Persona Controls */}
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <Users className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-foreground">Persona Settings</h2>
-              </div>
-
-              <div className="bg-card border border-border rounded-xl divide-y divide-border">
-                <div className="p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Persona Mirroring</p>
-                      <p className="text-sm text-muted-foreground">
-                        Allow Reflectra to reflect your communication style
-                      </p>
-                    </div>
-                    <Switch
-                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
-                      checked={settings.personaMirroring}
-                      onCheckedChange={(checked) => void handlePersonaToggle("personaMirroring", checked)}
-                    />
-                  </div>
-                </div>
-
-                <div className="p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Pattern Tracking</p>
-                      <p className="text-sm text-muted-foreground">
-                        Track communication patterns over time
-                      </p>
-                    </div>
-                    <Switch
-                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
-                      checked={settings.patternTracking}
-                      onCheckedChange={(checked) => void handlePersonaToggle("patternTracking", checked)}
-                    />
-                  </div>
-                </div>
-
-                <div className="p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Daily Reflections</p>
-                      <p className="text-sm text-muted-foreground">
-                        Show daily reflection input in chat
-                      </p>
-                    </div>
-                    <Switch
-                      disabled={isLoadingPersonaSettings || !!isSavingPersonaSetting}
-                      checked={settings.dailyReflections}
-                      onCheckedChange={(checked) => void handlePersonaToggle("dailyReflections", checked)}
-                    />
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Privacy Section */}
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <Shield className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-foreground">Privacy</h2>
-              </div>
-
-              <div className="bg-card border border-border rounded-xl divide-y divide-border">
-                <div className="p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Data Encryption</p>
-                      <p className="text-sm text-muted-foreground">
-                        All data encrypted at rest and in transit
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 text-green-500">
-                      <Check className="w-4 h-4" />
-                      <span className="text-sm font-medium">Active</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Anonymous Usage Data</p>
-                      <p className="text-sm text-muted-foreground">
-                        Help improve Reflectra with anonymized metrics
-                      </p>
-                    </div>
-                    <Switch
-                      checked={settings.shareAnonymousData}
-                      onCheckedChange={(checked) => 
-                        setSettings({ ...settings, shareAnonymousData: checked })
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Data Management Section */}
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <Database className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-foreground">Data Management</h2>
-              </div>
-
-              <div className="space-y-4">
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Import Persona Bootstrap</p>
-                      <p className="text-sm text-muted-foreground">
-                        Jumpstart your persona profile using a summary from an external AI
-                      </p>
-                    </div>
-                    <Button variant="outline" className="gap-2" onClick={() => setIsBootstrapModalOpen(true)}>
-                      <Upload className="w-4 h-4" />
-                      Import
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Export Persona Summary</p>
-                      <p className="text-sm text-muted-foreground">
-                        Download your premium Persona Summary Report as PDF
-                      </p>
-                    </div>
-                    <Button
-                      variant="outline"
-                      className="gap-2"
-                      onClick={() => void handleExportReport()}
-                      disabled={isExportingReport}
-                    >
-                      {isExportingReport ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <FileText className="w-4 h-4" />
-                      )}
-                      {isExportingReport ? "Generating..." : "Export"}
-                    </Button>
-                  </div>
-                  {exportReportError && (
-                    <p className="mt-3 text-xs text-destructive">{exportReportError}</p>
+    <PageShell eyebrow="Settings" title="Make it" accent="yours." subtitle="Each switch here changes what Reflectra actually does on the server, not just what this page shows.">
+      <Panel title="How Reflectra behaves" hint={saving ? "saving…" : loading ? "loading…" : undefined}>
+        <Row
+          title="Mirror my voice"
+          body="Lets Mirror mode reply as you, in your own style. Turn it off and Mirror mode stops answering until you turn it back on."
+          control={<Switch checked={settings.persona_mirroring} disabled={loading || saving} onCheckedChange={(checked) => void save({ persona_mirroring: checked })} aria-label="Mirror my voice" />}
+        />
+        <Row
+          title="Keep learning about me"
+          body="Updates your traits and writing style from each message and allows new reflections. Turn it off and Reflectra still talks, but freezes what it knows."
+          control={<Switch checked={settings.pattern_tracking} disabled={loading || saving} onCheckedChange={(checked) => void save({ pattern_tracking: checked })} aria-label="Keep learning about me" />}
+        />
+        <div className="pt-5">
+          <p className="font-medium text-foreground">Mirror strength</p>
+          <p className="mt-1 text-sm text-muted-foreground">How closely Mirror mode imitates the way you write.</p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Mirror strength">
+            {STRENGTHS.map((option) => {
+              const active = Math.abs(settings.twin_mirror_intensity - option.value) < 0.16;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={loading || saving || !settings.persona_mirroring}
+                  onClick={() => void save({ twin_mirror_intensity: option.value })}
+                  className={cn(
+                    "rounded-2xl border p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                    active ? "iris-border border-transparent bg-white/[0.06]" : "border-white/10 bg-white/[0.02] hover:bg-white/[0.05]",
                   )}
-                </div>
-
-                <div className="bg-card border border-border rounded-xl p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-foreground">Clear All Data</p>
-                      <p className="text-sm text-muted-foreground">
-                        Delete conversations and persona, keeping your account
-                      </p>
-                    </div>
-                    <Button variant="outline" className="gap-2" onClick={() => setIsClearDataModalOpen(true)}>
-                      <RefreshCw className="w-4 h-4" />
-                      Clear Data
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="bg-card border border-destructive/30 rounded-xl p-5">
-                  <div className="flex items-start gap-4">
-                    <div className="w-10 h-10 rounded-lg bg-destructive/10 flex items-center justify-center flex-shrink-0">
-                      <AlertTriangle className="w-5 h-5 text-destructive" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-medium text-foreground mb-1">Delete Account</p>
-                      <p className="text-sm text-muted-foreground mb-4">
-                        Permanently delete your account and all associated data. This action is permanent and cannot be undone.
-                      </p>
-                      <Button variant="destructive" size="sm" className="gap-2" onClick={() => setIsDeleteAccountModalOpen(true)}>
-                        <Trash2 className="w-4 h-4" />
-                        Delete Account
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Version Info */}
-            <div className="text-center py-6 border-t border-border">
-              <p className="text-xs text-muted-foreground">
-                Reflectra v1.0 • Your data stays with you
-              </p>
-            </div>
+                >
+                  <span className="text-sm font-medium text-foreground">{option.label}</span>
+                  <span className="mt-1 block text-xs leading-snug text-muted-foreground">{option.hint}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
-      </ScrollArea>
+        {settingsError ? <p className="mt-4 text-sm text-destructive">{settingsError}</p> : null}
+      </Panel>
 
-      {/* Clear Data Modal */}
-      <AlertDialog open={isClearDataModalOpen} onOpenChange={(open) => {
-        if (!isClearingData) {
-          setIsClearDataModalOpen(open);
-          setClearDataConfirmation("");
-        }
-      }}>
-        <AlertDialogContent className="sm:max-w-[425px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground">Clear All Data</AlertDialogTitle>
-            <AlertDialogDescription className="space-y-4">
-              <p>
-                This will remove all your chats and data. Your account will remain.
-              </p>
-              <div className="bg-muted border border-border p-3 rounded-md text-muted-foreground text-sm">
-                To confirm, please type <strong className="font-bold text-foreground">CLEAR</strong> exactly as shown in the box below:
-              </div>
-              <Input
-                value={clearDataConfirmation}
-                onChange={(e) => setClearDataConfirmation(e.target.value)}
-                placeholder="CLEAR"
-                autoFocus
-                disabled={isClearingData}
-              />
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={isClearingData}
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                handleClearData();
-              }}
-              disabled={clearDataConfirmation !== "CLEAR" || isClearingData}
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
-            >
-              {isClearingData ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Clearing...
-                </>
-              ) : (
-                "Clear Data"
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <Panel title="Privacy">
+        <div className="grid gap-5 md:grid-cols-2">
+          <div className="flex gap-3">
+            <EyeOff className="mt-0.5 h-4 w-4 shrink-0 text-iris-cyan" />
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              <span className="text-foreground">Incognito</span>{" "}is a switch at the top of the chat. While it&apos;s on, nothing you say is saved or learned from.
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-iris-cyan" />
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              Your conversations are tied to your login. The database refuses every request for them that isn&apos;t yours.
+            </p>
+          </div>
+        </div>
+      </Panel>
 
-      {/* Delete Account Modal */}
-      <AlertDialog open={isDeleteAccountModalOpen} onOpenChange={(open) => {
-        if (!isDeletingAccount) {
-          setIsDeleteAccountModalOpen(open);
-          setDeleteAccountConfirmation("");
-        }
-      }}>
-        <AlertDialogContent className="sm:max-w-[425px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-destructive">Delete Account</AlertDialogTitle>
-            <AlertDialogDescription className="space-y-4">
-              <p>
-                Are you sure? This action is <strong>permanent and cannot be undone.</strong> 
-                It will completely wipe your user account, chat history, metadata, context snapshots, and personalized AI models from our databases immediately.
-              </p>
-              <div className="bg-destructive/10 border border-destructive/20 p-3 rounded-md text-destructive text-sm">
-                To confirm permanent deletion, please type <strong className="font-bold">DELETE</strong> exactly as shown in the box below:
-              </div>
-              <Input
-                value={deleteAccountConfirmation}
-                onChange={(e) => setDeleteAccountConfirmation(e.target.value)}
-                placeholder="DELETE"
-                autoFocus
-                disabled={isDeletingAccount}
-              />
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={isDeletingAccount}
+      <Panel title="Your data">
+        <Row
+          title="Give Reflectra a head start"
+          body="Paste a description of yourself, for example one another AI assistant wrote about you. Reflectra shows you exactly what it took from it before anything is saved."
+          control={
+            <button type="button" className="btn-ghost-glass !px-4 !py-2" onClick={() => setBootstrapOpen(true)} aria-label="Import a description of you">
+              <Upload className="h-4 w-4" /> Import
+            </button>
+          }
+        />
+        <VoiceImportRow Row={Row} />
+        <Row
+          title="Download your portrait"
+          body="A PDF of everything on your Persona page: your traits, the patterns in your own words, how you've changed and how you write."
+          control={
+            <ExportPortraitButton />
+          }
+        />
+        <Row
+          title="Erase what Reflectra knows"
+          body="Deletes your conversations, traits, writing style, reflections and imports. Your account stays, and Reflectra starts over with you."
+          control={
+            <button type="button" className="btn-ghost-glass !px-4 !py-2" onClick={() => { setConfirm("clear"); setConfirmText(""); setDangerError(null); }}>
+              Erase
+            </button>
+          }
+        />
+        <Row
+          title="Delete my account"
+          body="Removes your account and everything in it, permanently."
+          control={
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-full border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10"
+              onClick={() => { setConfirm("delete"); setConfirmText(""); setDangerError(null); }}
             >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                handleDeleteAccount();
-              }}
-              disabled={deleteAccountConfirmation !== "DELETE" || isDeletingAccount}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeletingAccount ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Deleting...
-                </>
-              ) : (
-                "Delete Account"
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              <Trash2 className="h-4 w-4" /> Delete
+            </button>
+          }
+        />
+      </Panel>
 
-      {/* Bootstrap Persona Modal */}
-      <Dialog open={isBootstrapModalOpen} onOpenChange={(open) => {
-        if (!isBootstrapping) {
-          setIsBootstrapModalOpen(open);
-          setBootstrapSummary("");
-        }
-      }}>
-        <DialogContent className="sm:max-w-[500px]">
+      {/* Import a description */}
+      <Dialog open={bootstrapOpen} onOpenChange={(open) => (!open && !analysing && !applying ? closeBootstrap() : undefined)}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-popover sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Import Persona Summary</DialogTitle>
+            <DialogTitle className="font-display text-3xl font-normal">{preview ? "Here's what I took from it" : "Give Reflectra a head start"}</DialogTitle>
             <DialogDescription>
-              Paste a behavioral profile generated by an external AI (like ChatGPT or Claude) to jumpstart your persona.
+              {preview
+                ? "Nothing is saved yet. Each reading is backed by a line from your text; anything without one was ignored."
+                : "Paste a description of you. It counts like a dozen of your own messages at most, so the more you've talked here, the less it changes."}
             </DialogDescription>
           </DialogHeader>
-          <div className="my-4">
-            <Textarea 
-              placeholder="e.g., 'You're hyper-practical. You don't come here to chat...'"
-              value={bootstrapSummary}
-              onChange={(e) => setBootstrapSummary(e.target.value)}
-              className="min-h-[150px] resize-y"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsBootstrapModalOpen(false)} disabled={isBootstrapping}>
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleBootstrap} 
-              disabled={!bootstrapSummary.trim() || isBootstrapping}
-            >
-              {isBootstrapping ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Importing...
-                </>
-              ) : (
-                "Import Summary"
-              )}
-            </Button>
-          </DialogFooter>
+
+          {!preview ? (
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-foreground">Don&apos;t have one? Ask an AI that knows you.</p>
+                  <button
+                    type="button"
+                    className="inline-flex shrink-0 items-center gap-1.5 text-xs text-primary hover:underline"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(BOOTSTRAP_PROMPT);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} {copied ? "Copied" : "Copy the question"}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{BOOTSTRAP_PROMPT}</p>
+              </div>
+              <Textarea
+                value={summary}
+                onChange={(event) => setSummary(event.target.value)}
+                placeholder="Paste the description here…"
+                className="min-h-[200px] border-white/10 bg-white/[0.03]"
+                disabled={analysing}
+                aria-label="Description of you"
+              />
+              <div className="flex items-center justify-between gap-4">
+                <p className={cn("font-mono text-[11px] uppercase tracking-widest", wordCount < 40 ? "text-muted-foreground" : "text-iris-cyan")}>
+                  {wordCount} words {wordCount < 40 ? "· needs at least 40" : ""}
+                </p>
+                <button type="button" className="btn-mirror disabled:cursor-not-allowed disabled:opacity-50" disabled={wordCount < 40 || analysing} onClick={() => void runBootstrap(true)}>
+                  {analysing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {analysing ? "Reading…" : "Read it"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {preview.traits.map((change) => {
+                const label = TRAIT_LABEL[change.trait];
+                const color = TRAIT_COLOR[change.trait];
+                return (
+                  <div key={change.trait} className={cn("rounded-2xl border border-white/10 p-4", !change.applied && "opacity-60")}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+                        {label?.name ?? change.trait}
+                      </p>
+                      {change.applied ? (
+                        <p className="flex items-center gap-2 font-mono text-sm">
+                          <span className="text-muted-foreground">{Math.round(change.previous_score * 100)}</span>
+                          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span style={{ color }}>{Math.round(change.new_score * 100)}</span>
+                          <span className="text-xs text-muted-foreground">· {change.strength} evidence</span>
+                        </p>
+                      ) : (
+                        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">not mentioned · left alone</p>
+                      )}
+                    </div>
+                    {change.applied ? <p className="mt-2 border-l border-iris-peach/60 pl-3 text-sm italic text-muted-foreground">“{change.evidence}”</p> : null}
+                  </div>
+                );
+              })}
+              {preview.notes.length ? (
+                <div className="rounded-2xl border border-white/10 p-4">
+                  <p className="text-sm font-medium text-foreground">Things it will remember about you</p>
+                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                    {preview.notes.map((note) => (
+                      <li key={note}>· {note}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {preview.recognised === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Nothing in that text describes how you communicate, feel, decide or reflect, so there is nothing to import. Try the question above.
+                </p>
+              ) : null}
+              <div className="flex items-center justify-between gap-3">
+                <button type="button" className="btn-ghost-glass" onClick={() => setPreview(null)} disabled={applying}>
+                  Back
+                </button>
+                <button type="button" className="btn-mirror disabled:cursor-not-allowed disabled:opacity-50" disabled={preview.recognised === 0 || applying} onClick={() => void runBootstrap(false)}>
+                  {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {applying ? "Saving…" : `Save ${preview.recognised} ${preview.recognised === 1 ? "reading" : "readings"}`}
+                </button>
+              </div>
+            </div>
+          )}
+          {bootstrapError ? <p className="text-sm text-destructive">{bootstrapError}</p> : null}
         </DialogContent>
       </Dialog>
-    </div>
+
+      {/* Erase / delete confirmation */}
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => (!open && !working ? setConfirm(null) : undefined)}>
+        <AlertDialogContent className="border-white/10 bg-popover sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display text-3xl font-normal">{confirm === "clear" ? "Erase what Reflectra knows?" : "Delete your account?"}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-4">
+                <p>
+                  {confirm === "clear"
+                    ? "Your conversations, traits, writing style, reflections and imports will be deleted. Your account stays. This can't be undone."
+                    : "Your account and everything in it will be deleted. This can't be undone."}
+                </p>
+                <p className="text-sm">
+                  Type <span className="font-mono text-foreground">{confirmWord}</span> to confirm.
+                </p>
+                <Input value={confirmText} onChange={(event) => setConfirmText(event.target.value)} autoFocus disabled={working} aria-label={`Type ${confirmWord} to confirm`} />
+                {dangerError ? <p className="text-sm text-destructive">{dangerError}</p> : null}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={working}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={confirmText !== confirmWord || working}
+              onClick={(event) => {
+                event.preventDefault();
+                void runDanger();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {working ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {confirm === "clear" ? "Erase" : "Delete account"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </PageShell>
   );
 }

@@ -1,0 +1,59 @@
+{
+ "range_days": 30,
+ "summary": {
+  "first_date": "2026-11-16",
+  "last_date": "2026-11-16",
+  "active_days": 1,
+  "user_messages": 3,
+  "conversations": 1,
+  "longest_streak": 1,
+  "busiest_day": {
+   "date": "2026-11-16",
+   "user_messages": 3
+  },
+  "avg_messages_per_active_day": 3.0,
+  "conversations_by_mode": {
+   "reflection": 1
+  }
+ },
+ "days": [
+  {
+   "date": "2026-11-16",
+   "user_messages": 3,
+   "mood": null,
+   "depth": 0.2,
+   "highlight": "and i notice it every single time but still",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000000b",
+     "title": "late anyway then feel ba",
+     "mode": "reflection",
+     "user_messages": 3
+    }
+   ]
+  }
+ ],
+ "trait_series": [
+  {
+   "date": "2026-11-16",
+   "stability": 0.621,
+   "communication_style": 0.371,
+   "emotional_expressiveness": 0.736,
+   "decision_framing": 0.429,
+   "reflection_depth": 0.718
+  }
+ ],
+ "milestones": [
+  {
+   "date": "2026-11-16",
+   "kind": "start",
+   "text": "about it the plan keeps slipping and i"
+  },
+  {
+   "date": "2026-11-16",
+   "kind": "reflection",
+   "text": "it every single time but still start late"
+  }
+ ],
+ "range": "30d"
+}

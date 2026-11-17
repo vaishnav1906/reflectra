@@ -124,29 +124,29 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
 
   if (isFetching) {
     return (
-      <div className="bg-card border border-border rounded-xl p-6 flex flex-col items-center justify-center space-y-3 min-h-[300px]">
+      <div className="glass-panel rounded-3xl p-6 flex flex-col items-center justify-center space-y-3 min-h-[300px]">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <span className="text-sm text-muted-foreground">Loading context profile...</span>
+        <span className="text-sm text-muted-foreground">Loading…</span>
       </div>
     );
   }
 
   return (
     <div className={cn(
-      "bg-card border border-border rounded-xl p-6 relative transition-all duration-300",
+      "glass-panel rounded-3xl p-6 relative transition-all duration-300",
       isLoading && "opacity-80 pointer-events-none"
     )}>
       {isLoading && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/60 rounded-xl backdrop-blur-[2px]">
           <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
-          <p className="text-sm font-medium text-foreground">Extracting Context Profile...</p>
+          <p className="text-sm font-medium text-foreground">Saving…</p>
         </div>
       )}
 
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-primary" />
-          <h3 className="font-medium text-foreground">Schedule Context</h3>
+          <h3 className="font-medium text-foreground">What your week looks like</h3>
           <TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -156,7 +156,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs bg-card border border-border">
                 <p className="text-xs text-muted-foreground">
-                  Used by the AI to naturally adapt to your stress levels and workload.
+                  Reflectra reads this before every reply, so it knows when you're stretched thin.
                 </p>
               </TooltipContent>
             </Tooltip>
@@ -260,7 +260,7 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
             onClick={handleSave}
             className="text-sm flex items-center gap-1.5 px-4 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md transition-colors font-medium shadow-sm"
           >
-            <Check className="w-4 h-4" /> Save Context
+            <Check className="w-4 h-4" /> Save
           </button>
         </div>
       )}
@@ -270,8 +270,8 @@ export function TimetableSection({ onUpdate }: TimetableSectionProps) {
         <div className="mt-6 pt-4 border-t border-border">
           <p className="text-xs text-muted-foreground/70 italic">
             {data.isExamPeriod
-              ? "AI context adjusted for exam stress level. Focusing on shorter, actionable outputs."
-              : "AI context applied for high-deadline urgency. Priority tracking active."}
+              ? "Reflectra knows you're in exam season and will go easier on you."
+              : "Reflectra knows you have deadlines coming up and will keep things practical."}
           </p>
         </div>
       )}

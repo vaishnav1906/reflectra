@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
-import { Brain, User, Users } from "lucide-react";
+import { Users } from "lucide-react";
+import { MirrorMark } from "@/components/MirrorMark";
 
 export interface ChatMessageProps {
   role: "user" | "assistant";
@@ -12,10 +13,15 @@ export interface ChatMessageProps {
     mirrorMode?: boolean;
   };
   className?: string;
+  /** Still being written: shows a blinking caret. */
+  streaming?: boolean;
+  /** Skip the entrance animation (the reply was already on screen while streaming). */
+  noFade?: boolean;
 }
 
-export function ChatMessage({ role, content, timestamp, indicators, className }: ChatMessageProps) {
+export function ChatMessage({ role, content, timestamp, indicators, className, streaming = false, noFade = false }: ChatMessageProps) {
   const isAI = role === "assistant";
+  const isNotice = isAI && (content.startsWith("⏳") || content.startsWith("⚠️"));
 
   const parseMarkdown = (text: string) => {
     return text.split('\n').map((line, lineIndex, arr) => {
@@ -38,37 +44,37 @@ export function ChatMessage({ role, content, timestamp, indicators, className }:
     });
   };
 
-  return (
-    <div className={cn("flex gap-4 fade-in", isAI ? "flex-row" : "flex-row-reverse", className)}>
-      {/* Avatar */}
-      <div
-        className={cn(
-          "w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0",
-          isAI ? "bg-primary/10 glow-subtle" : "bg-secondary"
-        )}
-      >
-        {isAI ? (
-          <Brain className="w-5 h-5 text-primary" />
-        ) : (
-          <User className="w-5 h-5 text-muted-foreground" />
-        )}
+  // System notices (rate limit, errors) read as a quiet centred line, not a reply.
+  if (isNotice) {
+    return (
+      <div className={cn("fade-in flex justify-center", className)} role="status">
+        <p className="rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-center text-xs text-muted-foreground">
+          {content}
+        </p>
       </div>
+    );
+  }
 
-      {/* Message Content */}
-      <div className={cn("max-w-[70%] space-y-2", !isAI && "text-right")}>
+  return (
+    <div className={cn("flex gap-3", !noFade && !streaming && "fade-in", isAI ? "flex-row" : "flex-row-reverse", className)} aria-busy={streaming || undefined}>
+      {isAI && <MirrorMark className="mt-1 h-7 w-7" />}
+
+      <div className={cn("max-w-[78%] space-y-1.5 md:max-w-[70%]", !isAI && "text-right")}>
         <div
           className={cn(
-            "rounded-2xl px-5 py-4",
-            isAI ? "chat-bubble-ai rounded-tl-sm" : "chat-bubble-user rounded-tr-sm"
+            "inline-block rounded-3xl px-5 py-3.5 text-left",
+            isAI ? "chat-bubble-ai rounded-tl-md" : "chat-bubble-user rounded-tr-md"
           )}
         >
-          <p className="text-sm leading-relaxed">{parseMarkdown(content)}</p>
+          <p className="text-[15px] leading-relaxed">
+            {parseMarkdown(content)}
+            {streaming ? <span className="stream-caret" aria-hidden="true" /> : null}
+          </p>
         </div>
 
-        {/* Metadata & Indicators */}
-        <div className={cn("flex items-center gap-3 px-1", !isAI && "justify-end")}>
-          <span className="text-xs text-muted-foreground/60">{timestamp}</span>
-          
+        <div className={cn("flex items-center gap-3 px-2", !isAI && "justify-end")}>
+          <span className="font-mono text-[10px] tracking-wide text-muted-foreground/50">{timestamp}</span>
+
           {isAI && indicators && (
             <div className="flex items-center gap-2">
               {indicators.memoryUsed && (

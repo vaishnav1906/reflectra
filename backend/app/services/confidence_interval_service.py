@@ -1,29 +1,73 @@
-"""Confidence interval fusion service for Persona Mirror control."""
+"""How sure Reflectra is that it knows someone.
+
+One overall confidence (0-1), a range around it, and the level that range puts the
+user in. Mirror mode acts on the cautious end of the range.
+
+Four kinds of evidence go in. Each is a plain, checkable quantity:
+
+  traits         How settled the four trait readings are: the average of the
+                 per-trait confidences, which rise when new messages agree with the
+                 current reading and fall when they contradict it.
+  conversations  How much the user has said (depth), over how many separate days
+                 (breadth), and how long ago they last spoke (freshness).
+  voice          How many usable samples of their writing exist for Mirror to copy.
+                 Imported real texts count for half.
+  reflections    Patterns that survived quote verification, by their confidence.
+
+Rules the numbers must obey (tests/backend/test_confidence_logic.py):
+  - more evidence never lowers confidence; an import never lowers it either,
+    because imports only reach confidence through the traits and voice they add to;
+  - a source with nothing in it is left out, not counted as zero, but its absence
+    widens the range;
+  - the range is wide when there is little to go on or when the sources disagree,
+    and narrows as messages accumulate.
+"""
 
 from __future__ import annotations
 
 import math
-import statistics
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-import logging
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BehavioralInsight, ExternalInput, Message, ReflectionLog, UserPersonaMetric
+from app.db.models import BehavioralInsight, ExternalInput, Message, UserPersonaMetric
 
 SOURCE_WEIGHTS: Dict[str, float] = {
-    "conversations": 0.40,
-    "traits": 0.20,
-    "timeline_reflections": 0.15,
-    "reflection_summaries": 0.15,
-    "external_inputs": 0.10,
+    "traits": 0.40,
+    "conversations": 0.25,
+    "voice": 0.20,
+    "reflections": 0.15,
 }
 
-logger = logging.getLogger(__name__)
+# conversations
+DEPTH_MESSAGES = 50.0  # 50 messages -> 63% of full depth, 150 -> 95%
+BREADTH_DAYS = 6.0  # 6 separate days -> 63% of full breadth, 18 -> 95%
+ONE_DAY_WORTH = 0.4  # everything said in a single day counts 40%: one mood is not a person
+FRESH_FOR_DAYS = 30  # no decay for a month
+STALE_HALF_LIFE_DAYS = 180.0  # after that, what it knows loses half its weight every 6 months
+
+# voice
+VOICE_MESSAGES = 25.0  # 25 usable messages -> 63%, 75 -> 95%
+VOICE_MIN_CHARS = 12  # shorter than this ("ok", "lol") says little about how someone writes
+IMPORTED_TEXT_WORTH = 0.5  # texts written elsewhere count half: different audience, older habits
+VOICE_IMPORT_SOURCE = "voice_import"
+
+# reflections
+REFLECTIONS_FULL_SET = 3
+
+# range
+MIN_HALF_WIDTH = 0.03
+MAX_HALF_WIDTH = 0.25
+THIN_EVIDENCE_WIDTH = 0.12  # extra half-width with no messages at all...
+THIN_EVIDENCE_MESSAGES = 40.0  # ...fading as messages accumulate
+DISAGREEMENT_WIDTH = 0.35  # times the spread between the sources
+MISSING_SOURCE_WIDTH = 0.10  # times the share of weight that has no data
+
+TIER_BOUNDS = (("very_low", 20), ("partial", 50), ("moderate", 75), ("high", 100))
 
 
 @dataclass
@@ -40,313 +84,113 @@ class ConfidenceIntervalResult:
     style_enforcement_intensity: float
     include_uncertainty_note: bool
     source_contributions: Dict[str, float]
-    timeline_recency_override: Dict[str, float | bool]
+    facts: Dict[str, float] = field(default_factory=dict)
+    # Kept so stored Mirror telemetry keeps its shape; nothing overrides anything any more.
+    timeline_recency_override: Dict[str, float | bool] = field(default_factory=dict)
 
 
-async def compute_confidence_interval(
-    db: AsyncSession,
-    user_id: UUID,
-    message_text: str,
-) -> ConfidenceIntervalResult:
-    """Fuse all mandatory sources into a confidence interval and generation controls."""
-    timeline_score, timeline_details = await _score_timeline_with_details(db, user_id)
-    raw_scores: Dict[str, Optional[float]] = {
-        "conversations": await _score_conversations(db, user_id),
-        "traits": await _score_traits(db, user_id),
-        "timeline_reflections": timeline_score,
-        "reflection_summaries": await _score_reflections(db, user_id),
-        "external_inputs": await _score_external_inputs(db, user_id, message_text),
-    }
-    result = fuse_source_scores(raw_scores)
-    center = result["center"]
-    lower = result["lower"]
-    upper = result["upper"]
-    source_scores = result["source_scores"]
-    source_contributions = result["source_contributions"]
-
-    tier = tier_from_confidence_lower(lower)
-    controls = controls_for_tier(tier)
-
-    return ConfidenceIntervalResult(
-        center=round(center, 4),
-        lower=round(lower, 4),
-        upper=round(upper, 4),
-        tier=tier,
-        source_scores={k: round(v, 4) for k, v in source_scores.items()},
-        source_weights=SOURCE_WEIGHTS.copy(),
-        phrase_usage_frequency=controls["phrase_usage_frequency"],
-        tone_strength=controls["tone_strength"],
-        reaction_accuracy_threshold=controls["reaction_accuracy_threshold"],
-        style_enforcement_intensity=controls["style_enforcement_intensity"],
-        include_uncertainty_note=controls["include_uncertainty_note"],
-        source_contributions={k: round(v, 4) for k, v in source_contributions.items()},
-        timeline_recency_override=timeline_details,
-    )
+# --------------------------------------------------------------------------- pure scoring
 
 
-def fuse_source_scores(raw_scores: Dict[str, Optional[float]]) -> Dict[str, object]:
-    """Fuse per-source scores into a confidence interval.
+def _saturate(amount: float, scale: float) -> float:
+    """0 at nothing, 63% at `scale`, 95% at three times `scale`, never quite 1."""
+    return 1.0 - math.exp(-max(0.0, float(amount)) / scale)
 
-    A source with no data (score None) is left out and the remaining weights are
-    renormalized, instead of counting as a near-zero score. Otherwise sources a
-    user never touches (e.g. external inputs) would permanently cap confidence
-    and make the higher tiers unreachable. Missing coverage still widens the
-    interval, so sparse evidence stays conservative.
+
+def score_traits(confidences: Sequence[float], evidence_total: int) -> Optional[float]:
+    """Average per-trait confidence. None until at least one message has been read for traits."""
+    values = [float(c) for c in confidences if c is not None]
+    if not values or evidence_total <= 0:
+        return None
+    return _clamp(sum(values) / len(values))
+
+
+def freshness(days_since_last: Optional[float]) -> float:
+    if days_since_last is None or days_since_last <= FRESH_FOR_DAYS:
+        return 1.0
+    return 0.5 ** ((days_since_last - FRESH_FOR_DAYS) / STALE_HALF_LIFE_DAYS)
+
+
+def score_conversations(messages: int, active_days: int, days_since_last: Optional[float]) -> Optional[float]:
+    """How much the user has said, scaled by how many days it is spread over, discounted if old."""
+    if messages <= 0:
+        return None
+    depth = _saturate(messages, DEPTH_MESSAGES)
+    breadth = _saturate(active_days, BREADTH_DAYS)
+    spread_over_days = ONE_DAY_WORTH + (1.0 - ONE_DAY_WORTH) * breadth
+    return _clamp(depth * spread_over_days * freshness(days_since_last))
+
+
+def score_voice(own_usable: int, imported: int = 0) -> Optional[float]:
+    """How much real writing Mirror has to copy from."""
+    amount = max(0, own_usable) + IMPORTED_TEXT_WORTH * max(0, imported)
+    if amount <= 0:
+        return None
+    return _clamp(_saturate(amount, VOICE_MESSAGES))
+
+
+def score_reflections(confidences: Sequence[float]) -> Optional[float]:
+    """Quote-verified patterns: how many of a full set exist, times how sure they are."""
+    values = [_clamp(float(c)) for c in confidences if c is not None]
+    if not values:
+        return None
+    return _clamp(min(1.0, len(values) / REFLECTIONS_FULL_SET) * (sum(values) / len(values)))
+
+
+def fuse_source_scores(raw_scores: Dict[str, Optional[float]], messages: int = 0) -> Dict[str, object]:
+    """Combine the source scores into a centre and a range.
+
+    Centre: weighted average over the sources that have data.
+    Half-width: a floor, plus a thin-evidence term that fades with messages, plus the
+    spread between the sources, plus a penalty for sources with no data.
     """
-    available = {k: float(v) for k, v in raw_scores.items() if v is not None and k in SOURCE_WEIGHTS}
-    source_scores = {k: round(float(raw_scores.get(k) or 0.0), 4) for k in SOURCE_WEIGHTS}
+    available = {k: _clamp(float(v)) for k, v in raw_scores.items() if v is not None and k in SOURCE_WEIGHTS}
+    source_scores = {k: round(float(available.get(k, 0.0)), 4) for k in SOURCE_WEIGHTS}
+    contributions: Dict[str, float] = {k: 0.0 for k in SOURCE_WEIGHTS}
 
     if not available:
         return {
             "center": 0.0,
             "lower": 0.0,
             "upper": 0.0,
+            "half_width": 0.0,
             "source_scores": source_scores,
-            "source_contributions": {k: 0.0 for k in SOURCE_WEIGHTS},
+            "source_contributions": contributions,
         }
 
     coverage = sum(SOURCE_WEIGHTS[k] for k in available)
-    source_contributions: Dict[str, float] = {k: 0.0 for k in SOURCE_WEIGHTS}
     center = 0.0
     for source, score in available.items():
-        contribution = score * (SOURCE_WEIGHTS[source] / coverage)
-        source_contributions[source] = round(contribution, 4)
-        center += contribution
+        share = SOURCE_WEIGHTS[source] / coverage
+        contributions[source] = round(score * share, 4)
+        center += score * share
 
-    scores = list(available.values())
-    disagreement = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-    evidence_density = sum(1 for v in scores if v >= 0.4) / len(scores)
-    uncertainty = 0.32 + (0.45 * disagreement) - (0.20 * evidence_density) + (0.12 * (1.0 - coverage))
-    uncertainty = _clamp(uncertainty, 0.08, 0.45)
+    spread = math.sqrt(
+        sum((SOURCE_WEIGHTS[k] / coverage) * (score - center) ** 2 for k, score in available.items())
+    )
+    half_width = (
+        MIN_HALF_WIDTH
+        + THIN_EVIDENCE_WIDTH * math.exp(-max(0, messages) / THIN_EVIDENCE_MESSAGES)
+        + DISAGREEMENT_WIDTH * spread
+        + MISSING_SOURCE_WIDTH * (1.0 - coverage)
+    )
+    half_width = _clamp(half_width, MIN_HALF_WIDTH, MAX_HALF_WIDTH)
 
     return {
         "center": center,
-        "lower": _clamp(center - (uncertainty / 2.0), 0.0, 1.0),
-        "upper": _clamp(center + (uncertainty / 2.0), 0.0, 1.0),
+        "lower": _clamp(center - half_width),
+        "upper": _clamp(center + half_width),
+        "half_width": half_width,
         "source_scores": source_scores,
-        "source_contributions": source_contributions,
+        "source_contributions": contributions,
     }
-
-
-async def build_confidence_explainability(
-    db: AsyncSession,
-    user_id: UUID,
-    message_text: str,
-) -> Dict[str, object]:
-    """Return explainability payload for confidence interval source contributions."""
-    result = await compute_confidence_interval(db=db, user_id=user_id, message_text=message_text)
-    return {
-        "center": result.center,
-        "interval": {
-            "lower": result.lower,
-            "upper": result.upper,
-        },
-        "tier": result.tier,
-        "source_scores": result.source_scores,
-        "source_weights": result.source_weights,
-        "source_contributions": result.source_contributions,
-        "timeline_recency_override": result.timeline_recency_override,
-        "controls": {
-            "phrase_usage_frequency": result.phrase_usage_frequency,
-            "tone_strength": result.tone_strength,
-            "reaction_accuracy_threshold": result.reaction_accuracy_threshold,
-            "style_enforcement_intensity": result.style_enforcement_intensity,
-            "include_uncertainty_note": result.include_uncertainty_note,
-        },
-    }
-
-
-async def _score_conversations(db: AsyncSession, user_id: UUID) -> Optional[float]:
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=45)
-
-    stmt = (
-        select(Message.content, Message.created_at)
-        .where(
-            Message.user_id == user_id,
-            Message.role == "user",
-            Message.created_at >= cutoff,
-        )
-        .order_by(Message.created_at.desc())
-        .limit(120)
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    if not rows:
-        return None
-
-    count_score = _clamp(len(rows) / 120.0, 0.0, 1.0)
-
-    slang_markers = ["idk", "tbh", "ngl", "bro", "not gonna lie", "kinda", "man"]
-    hits = 0
-    lengths: List[int] = []
-
-    for content, created_at in rows:
-        text = (content or "").lower()
-        if any(marker in text for marker in slang_markers):
-            hits += 1
-        lengths.append(len(text.split()))
-
-    slang_consistency = hits / max(len(rows), 1)
-    length_stability = 1.0
-    if len(lengths) > 1:
-        mean_len = sum(lengths) / len(lengths)
-        variance = statistics.pvariance(lengths)
-        cv = math.sqrt(variance) / max(mean_len, 1.0)
-        length_stability = _clamp(1.0 - cv, 0.0, 1.0)
-
-    return _clamp((0.50 * count_score) + (0.30 * slang_consistency) + (0.20 * length_stability), 0.0, 1.0)
-
-
-async def _score_traits(db: AsyncSession, user_id: UUID) -> Optional[float]:
-    stmt = select(UserPersonaMetric.confidence, UserPersonaMetric.last_updated).where(UserPersonaMetric.user_id == user_id)
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    if not rows:
-        return None
-
-    avg_conf = statistics.mean(float(row[0] or 0.0) for row in rows)
-    now = datetime.now(timezone.utc)
-    recency_weights: List[float] = []
-    for _, updated_at in rows:
-        if updated_at is None:
-            recency_weights.append(0.5)
-            continue
-        age_days = max((now - _ensure_utc(updated_at)).days, 0)
-        recency_weights.append(math.exp(-age_days / 30.0))
-
-    recency = statistics.mean(recency_weights) if recency_weights else 0.5
-    return _clamp((0.75 * avg_conf) + (0.25 * recency), 0.0, 1.0)
-
-
-async def _score_timeline_with_details(db: AsyncSession, user_id: UUID) -> tuple[Optional[float], Dict[str, float | bool]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-    stmt = (
-        select(BehavioralInsight.confidence, BehavioralInsight.created_at)
-        .where(
-            BehavioralInsight.user_id == user_id,
-            BehavioralInsight.created_at >= cutoff,
-        )
-        .order_by(BehavioralInsight.created_at.desc())
-        .limit(80)
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    if not rows:
-        return None, {
-            "applied": False,
-            "recent_avg": 0.0,
-            "older_avg": 0.0,
-            "override_strength": 0.0,
-        }
-
-    conf_avg = statistics.mean(float(row[0] or 0.6) for row in rows)
-    density = _clamp(len(rows) / 80.0, 0.0, 1.0)
-
-    now = datetime.now(timezone.utc)
-    recent_bucket: List[float] = []
-    older_bucket: List[float] = []
-    for confidence, created_at in rows:
-        value = float(confidence or 0.6)
-        if created_at is None:
-            older_bucket.append(value)
-            continue
-        age_days = max((now - _ensure_utc(created_at)).days, 0)
-        if age_days <= 7:
-            recent_bucket.append(value)
-        else:
-            older_bucket.append(value)
-
-    recent_avg = statistics.mean(recent_bucket) if recent_bucket else conf_avg
-    older_avg = statistics.mean(older_bucket) if older_bucket else conf_avg
-    delta = recent_avg - older_avg
-    # Recency override: recent shifts dominate when there is meaningful change.
-    override_strength = _clamp(abs(delta) * 1.8, 0.0, 0.45)
-    recency_blend = _clamp(0.55 + (0.35 if recent_bucket else 0.0), 0.0, 0.9)
-    recency_weighted = (recent_avg * recency_blend) + (older_avg * (1.0 - recency_blend))
-
-    base_score = _clamp((0.65 * conf_avg) + (0.35 * density), 0.0, 1.0)
-    overridden = _clamp((base_score * (1.0 - override_strength)) + (recency_weighted * override_strength), 0.0, 1.0)
-
-    return overridden, {
-        "applied": bool(recent_bucket and older_bucket and abs(delta) > 0.06),
-        "recent_avg": round(recent_avg, 4),
-        "older_avg": round(older_avg, 4),
-        "override_strength": round(override_strength, 4),
-    }
-
-
-async def _score_reflections(db: AsyncSession, user_id: UUID) -> Optional[float]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=45)
-    stmt = (
-        select(ReflectionLog.sentiment, ReflectionLog.created_at)
-        .where(
-            ReflectionLog.user_id == user_id,
-            ReflectionLog.created_at >= cutoff,
-        )
-        .order_by(ReflectionLog.created_at.desc())
-        .limit(60)
-    )
-    result = await db.execute(stmt)
-    rows = result.all()
-
-    if not rows:
-        return None
-
-    density = _clamp(len(rows) / 60.0, 0.0, 1.0)
-    sentiment_defined = sum(1 for sentiment, _ in rows if sentiment is not None) / max(len(rows), 1)
-    return _clamp((0.60 * density) + (0.40 * sentiment_defined), 0.0, 1.0)
-
-
-async def _score_external_inputs(db: AsyncSession, user_id: UUID, message_text: str) -> Optional[float]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=60)
-    stmt = (
-        select(ExternalInput.content, ExternalInput.created_at, ExternalInput.confidence_weight)
-        .where(
-            ExternalInput.user_id == user_id,
-            ExternalInput.created_at >= cutoff,
-        )
-        .order_by(ExternalInput.created_at.desc())
-        .limit(40)
-    )
-    try:
-        result = await db.execute(stmt)
-        rows = result.all()
-    except Exception as exc:
-        # External input memory is optional; return conservative score if table is unavailable.
-        logger.warning("Skipping external input scoring: %s", exc)
-        await db.rollback()
-        return None
-
-    if not rows:
-        return None
-
-    density = _clamp(len(rows) / 40.0, 0.0, 1.0)
-    avg_weight = statistics.mean(float(weight or 0.1) for _, _, weight in rows)
-
-    msg_tokens = set((message_text or "").lower().split())
-    overlap_scores: List[float] = []
-    for content, _, _ in rows[:12]:
-        ext_tokens = set((content or "").lower().split())
-        if not ext_tokens:
-            continue
-        overlap_scores.append(len(msg_tokens & ext_tokens) / len(ext_tokens))
-
-    overlap = statistics.mean(overlap_scores) if overlap_scores else 0.0
-    return _clamp((0.45 * density) + (0.30 * avg_weight) + (0.25 * overlap), 0.0, 1.0)
 
 
 def tier_from_confidence_lower(lower: float) -> str:
     pct = lower * 100.0
-    if pct <= 20.0:
-        return "very_low"
-    if pct <= 50.0:
-        return "partial"
-    if pct <= 75.0:
-        return "moderate"
+    for tier, up_to in TIER_BOUNDS:
+        if pct <= up_to:
+            return tier
     return "high"
 
 
@@ -384,9 +228,146 @@ def controls_for_tier(tier: str) -> Dict[str, float | bool]:
     }
 
 
-async def _score_timeline(db: AsyncSession, user_id: UUID) -> Optional[float]:
-    score, _ = await _score_timeline_with_details(db, user_id)
-    return score
+def build_result(
+    trait_confidences: Sequence[float],
+    trait_evidence: int,
+    messages: int,
+    active_days: int,
+    days_since_last: Optional[float],
+    voice_own: int,
+    voice_imported: int,
+    reflection_confidences: Sequence[float],
+) -> ConfidenceIntervalResult:
+    """Everything from plain numbers, so the whole rule can be tested without a database."""
+    fused = fuse_source_scores(
+        {
+            "traits": score_traits(trait_confidences, trait_evidence),
+            "conversations": score_conversations(messages, active_days, days_since_last),
+            "voice": score_voice(voice_own, voice_imported),
+            "reflections": score_reflections(reflection_confidences),
+        },
+        messages=messages,
+    )
+    tier = tier_from_confidence_lower(float(fused["lower"]))
+    controls = controls_for_tier(tier)
+    return ConfidenceIntervalResult(
+        center=round(float(fused["center"]), 4),
+        lower=round(float(fused["lower"]), 4),
+        upper=round(float(fused["upper"]), 4),
+        tier=tier,
+        source_scores=dict(fused["source_scores"]),  # type: ignore[arg-type]
+        source_weights=SOURCE_WEIGHTS.copy(),
+        phrase_usage_frequency=float(controls["phrase_usage_frequency"]),
+        tone_strength=float(controls["tone_strength"]),
+        reaction_accuracy_threshold=float(controls["reaction_accuracy_threshold"]),
+        style_enforcement_intensity=float(controls["style_enforcement_intensity"]),
+        include_uncertainty_note=bool(controls["include_uncertainty_note"]),
+        source_contributions=dict(fused["source_contributions"]),  # type: ignore[arg-type]
+        facts={
+            "messages": messages,
+            "active_days": active_days,
+            "days_since_last": round(days_since_last, 1) if days_since_last is not None else -1,
+            "freshness": round(freshness(days_since_last), 3),
+            "voice_messages": voice_own,
+            "voice_imported": voice_imported,
+            "reflections": len(list(reflection_confidences)),
+            "half_width": round(float(fused["half_width"]), 4),
+        },
+    )
+
+
+# --------------------------------------------------------------------------- database
+
+
+async def compute_confidence_interval(
+    db: AsyncSession,
+    user_id: UUID,
+    message_text: str = "",  # unused; kept for callers
+) -> ConfidenceIntervalResult:
+    metrics = (
+        await db.execute(
+            select(UserPersonaMetric.confidence, UserPersonaMetric.evidence_count).where(
+                UserPersonaMetric.user_id == user_id
+            )
+        )
+    ).all()
+
+    own = (Message.user_id == user_id) & (Message.role == "user")
+    messages, active_days, last_at = (
+        await db.execute(
+            select(
+                func.count(Message.id),
+                func.count(func.distinct(cast(Message.created_at, Date))),
+                func.max(Message.created_at),
+            ).where(own)
+        )
+    ).one()
+    voice_own = (
+        await db.execute(select(func.count(Message.id)).where(own, func.length(Message.content) >= VOICE_MIN_CHARS))
+    ).scalar() or 0
+
+    voice_imported = 0
+    imports = (
+        await db.execute(
+            select(ExternalInput.extracted_markers).where(
+                ExternalInput.user_id == user_id, ExternalInput.source == VOICE_IMPORT_SOURCE
+            )
+        )
+    ).scalars().all()
+    for markers in imports:
+        if isinstance(markers, dict):
+            voice_imported += int(markers.get("sample_count") or 0)
+
+    reflection_confidences: List[float] = [
+        float(value if value is not None else 0.6)
+        for value in (
+            await db.execute(
+                select(BehavioralInsight.confidence).where(
+                    BehavioralInsight.user_id == user_id, BehavioralInsight.kind == "reflection"
+                )
+            )
+        ).scalars().all()
+    ]
+
+    days_since_last: Optional[float] = None
+    if last_at is not None:
+        days_since_last = max(0.0, (datetime.now(timezone.utc) - _ensure_utc(last_at)).total_seconds() / 86400.0)
+
+    return build_result(
+        trait_confidences=[float(row[0] or 0.0) for row in metrics],
+        trait_evidence=sum(int(row[1] or 0) for row in metrics),
+        messages=int(messages or 0),
+        active_days=int(active_days or 0),
+        days_since_last=days_since_last,
+        voice_own=int(voice_own),
+        voice_imported=voice_imported,
+        reflection_confidences=reflection_confidences,
+    )
+
+
+async def build_confidence_explainability(
+    db: AsyncSession,
+    user_id: UUID,
+    message_text: str = "",
+) -> Dict[str, object]:
+    """The same result as a plain dict, for the API."""
+    result = await compute_confidence_interval(db=db, user_id=user_id)
+    return {
+        "center": result.center,
+        "interval": {"lower": result.lower, "upper": result.upper},
+        "tier": result.tier,
+        "source_scores": result.source_scores,
+        "source_weights": result.source_weights,
+        "source_contributions": result.source_contributions,
+        "facts": result.facts,
+        "controls": {
+            "phrase_usage_frequency": result.phrase_usage_frequency,
+            "tone_strength": result.tone_strength,
+            "reaction_accuracy_threshold": result.reaction_accuracy_threshold,
+            "style_enforcement_intensity": result.style_enforcement_intensity,
+            "include_uncertainty_note": result.include_uncertainty_note,
+        },
+    }
 
 
 def _ensure_utc(dt: datetime) -> datetime:

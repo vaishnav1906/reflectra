@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
@@ -20,6 +21,11 @@ from app.db.models import (
     PersonaSnapshot,
     ScheduleContext,
     UserSettings,
+    MirrorLog,
+    MirrorResponseMemory,
+    LinguisticFingerprint,
+    ReactionPattern,
+    ExternalInput,
 )
 from app.services.auth_service import delete_supabase_auth_user
 from app.services.twin_policy import (
@@ -29,6 +35,27 @@ from app.services.twin_policy import (
 )
 
 router = APIRouter(prefix="/user", tags=["User"])
+logger = logging.getLogger(__name__)
+
+# Everything "Erase what Reflectra knows" removes. Children before parents
+# (messages before conversations). A new per-user table must be added here;
+# tests/backend/test_settings_data.py fails if one is missing.
+ERASABLE_MODELS = (
+    Message,
+    MirrorResponseMemory,
+    MirrorLog,
+    ReactionPattern,
+    Conversation,
+    PersonalityProfile,
+    UserPersonaMetric,
+    PersonaSnapshot,
+    BehavioralInsight,
+    ReflectionLog,
+    LinguisticFingerprint,
+    ExternalInput,
+    ScheduleContext,
+)
+KEPT_ON_ERASE = (UserSettings,)
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -177,8 +204,10 @@ async def update_user_settings(
 @router.get("/export-persona-report")
 async def export_persona_report(
     user_id: str = Query(..., description="User UUID"),
+    tz_offset_minutes: int = Query(0, description="Viewer's UTC offset in minutes"),
     db: AsyncSession = Depends(get_db),
 ):
+    """A PDF portrait of the user, built only from their stored conversations."""
     try:
         user_uuid = UUID(user_id)
     except ValueError:
@@ -186,23 +215,20 @@ async def export_persona_report(
 
     await _assert_user_exists(db, user_uuid)
 
-    try:
-        # Imported lazily: matplotlib/WeasyPrint are heavy and need system libraries.
-        from app.services.persona_report_service import build_persona_report_pdf
-    except ImportError as exc:
-        raise HTTPException(status_code=503, detail=f"PDF export is not available on this server ({exc.name})")
+    from app.services.persona_report_service import build_persona_report_pdf
 
     try:
-        pdf_bytes = await build_persona_report_pdf(db, user_uuid)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to generate persona report: {str(exc)}")
+        pdf_bytes = await build_persona_report_pdf(db, user_uuid, tz_offset_minutes)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("Persona report generation failed")
+        raise HTTPException(status_code=500, detail="Couldn't build the report. Try again in a moment.")
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": 'attachment; filename="persona-summary-report.pdf"'
-        },
+        headers={"Content-Disposition": 'attachment; filename="reflectra-portrait.pdf"'},
     )
 
 
@@ -245,13 +271,11 @@ async def get_system_state(
         + int(snapshot_count_result.scalar_one() or 0)
     )
 
-    # Overall confidence from trait metrics.
-    confidence_stmt = select(func.avg(UserPersonaMetric.confidence)).where(
-        UserPersonaMetric.user_id == user_uuid
-    )
-    confidence_result = await db.execute(confidence_stmt)
-    avg_confidence = confidence_result.scalar_one_or_none()
-    confidence_pct = round(float(avg_confidence) * 100, 1) if avg_confidence is not None else 0.0
+    # One overall confidence everywhere: the same number "How it works" breaks down.
+    from app.services.confidence_interval_service import compute_confidence_interval
+
+    overall = await compute_confidence_interval(db, user_uuid)
+    confidence_pct = round(overall.center * 100, 1)
 
     cycle_days = 7
     now = datetime.now(timezone.utc)
@@ -259,58 +283,57 @@ async def get_system_state(
         last_inference and (now - last_inference) <= timedelta(days=cycle_days)
     )
 
+    # What the sidebar actually shows: how much of the user Reflectra has read,
+    # and whether the "Keep learning about me" switch is on.
+    messages = int(
+        (
+            await db.execute(
+                select(func.count(Message.id)).where(Message.user_id == user_uuid, Message.role == "user")
+            )
+        ).scalar_one()
+        or 0
+    )
+    tracking = (
+        await db.execute(select(UserSettings.pattern_tracking).where(UserSettings.user_id == user_uuid))
+    ).scalar_one_or_none()
+
     return {
         "last_inference": last_inference.isoformat() if last_inference else None,
         "memory_count": memory_count,
         "confidence": confidence_pct,
+        "confidence_range": [round(overall.lower * 100), round(overall.upper * 100)],
+        "confidence_tier": overall.tier,
         "learning_active": learning_active,
         "cycle_days": cycle_days,
+        "messages": messages,
+        "learning_enabled": True if tracking is None else bool(tracking),
     }
 
 @router.post("/clear-data")
 async def clear_user_data(request: UserRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
-    """Soft Reset: Clears all user data except the user account itself."""
-    
+    """Erase everything Reflectra has stored or learned about the user; keep the account.
+
+    Settings are preferences, not learned data, so they survive: someone who turned
+    learning off should not have it silently switched back on by an erase.
+    """
     try:
         try:
             user_uuid = ensure_self(request.user_id, current_user)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user_id format")
 
-        # delete messages
-        await db.execute(delete(Message).where(Message.user_id == user_uuid))
-        
-        # delete conversations
-        await db.execute(delete(Conversation).where(Conversation.user_id == user_uuid))
-        
-        # delete persona profiles
-        await db.execute(delete(PersonalityProfile).where(PersonalityProfile.user_id == user_uuid))
-        
-        # delete persona traits / metrics
-        await db.execute(delete(UserPersonaMetric).where(UserPersonaMetric.user_id == user_uuid))
-        
-        # delete snapshots
-        await db.execute(delete(PersonaSnapshot).where(PersonaSnapshot.user_id == user_uuid))
-        
-        # delete insights
-        await db.execute(delete(BehavioralInsight).where(BehavioralInsight.user_id == user_uuid))
-        
-        # delete reflections
-        await db.execute(delete(ReflectionLog).where(ReflectionLog.user_id == user_uuid))
-        
-        # delete schedule context
-        await db.execute(delete(ScheduleContext).where(ScheduleContext.user_id == user_uuid))
+        # One transaction: either all of it goes or none of it does.
+        for model in ERASABLE_MODELS:
+            await db.execute(delete(model).where(model.user_id == user_uuid))
 
-        # delete user settings
-        await db.execute(delete(UserSettings).where(UserSettings.user_id == user_uuid))
-        
         await db.commit()
         return {"status": "success", "message": "All user data cleared."}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("clear-data failed")
+        raise HTTPException(status_code=500, detail="Couldn't erase your data. Nothing was changed.")
 
 @router.delete("/delete-account")
 async def delete_user_account(request: UserRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
@@ -334,6 +357,7 @@ async def delete_user_account(request: UserRequest, current_user: CurrentUser, d
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("delete-account failed")
+        raise HTTPException(status_code=500, detail="Couldn't delete your account. Nothing was changed.")

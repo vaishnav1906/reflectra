@@ -1,1164 +1,759 @@
-import base64
+"""Persona report (PDF): a portrait of the user built only from stored data.
+
+Two halves, so the rendering can be tested without a database:
+  collect_report_data(db, user_id) -> ReportData   (queries)
+  render_report(data) -> bytes                      (pure drawing, ReportLab)
+
+What goes in, and where it comes from:
+  - Trait readings + confidence ......... user_persona_metrics
+  - How the traits moved ................ persona_snapshots (one point per day)
+  - What keeps coming up ................ evidence-backed reflections (with the user's quotes)
+  - Rhythm (when, how often) ............ message timestamps
+  - Voice (how they write) .............. their own messages + linguistic fingerprint
+  - How Reflectra adapts ................ derived from the trait readings
+
+ReportLab is pure Python, so export works on Windows, Linux and serverless without
+system libraries (the old WeasyPrint/matplotlib stack needed GTK and failed to import).
+"""
+
+from __future__ import annotations
+
 import io
-import logging
 import math
-from collections import Counter
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Tuple
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from statistics import median
+from typing import Dict, List, Optional
 from uuid import UUID
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-from sqlalchemy import desc, select
+from reportlab.lib.colors import Color, HexColor
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import simpleSplit
+from reportlab.pdfgen import canvas as pdfcanvas
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from weasyprint import HTML
 
-from app.db.models import (
-    BehavioralInsight,
-    Message,
-    PersonalityProfile,
-    PersonaSnapshot,
-    ReflectionLog,
-    ScheduleContext,
-    User,
-    UserPersonaMetric,
-)
+from app.constants import TRAIT_LIST
 
-logger = logging.getLogger(__name__)
+# ----------------------------------------------------------------------------
+# Data
+# ----------------------------------------------------------------------------
 
-def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, value))
+TRAIT_META = {
+    "communication_style": {
+        "name": "Communication",
+        "low": "Concise",
+        "high": "Elaborate",
+        "read_low": "You get to the point. Your messages are short and you rarely pad them.",
+        "read_mid": "You flex: brief when it's simple, detailed when it matters.",
+        "read_high": "You think out loud in full, giving context and detail before the point.",
+        "tag_low": "gets to the point",
+        "tag_high": "thinks out loud in full",
+        "adapt_low": "Keeps its replies short, because you do.",
+        "adapt_high": "Gives you fuller answers and room to elaborate.",
+    },
+    "emotional_expressiveness": {
+        "name": "Emotional expressiveness",
+        "low": "Reserved",
+        "high": "Open",
+        "read_low": "You keep feelings low-key and tend to report the facts first.",
+        "read_mid": "You share feelings when something big is going on, and otherwise stay even.",
+        "read_high": "You say how you feel, plainly and often.",
+        "tag_low": "keeps feelings low-key",
+        "tag_high": "open about feelings",
+        "adapt_low": "Stays matter-of-fact unless you open the door to feelings.",
+        "adapt_high": "Meets feelings head-on instead of steering around them.",
+    },
+    "decision_framing": {
+        "name": "Decision framing",
+        "low": "Hesitant",
+        "high": "Decisive",
+        "read_low": "You weigh things for a while and often hedge before committing.",
+        "read_mid": "You are quick on small calls and careful on big ones.",
+        "read_high": "You decide fast and say it flatly.",
+        "tag_low": "weighs things before committing",
+        "tag_high": "decides fast",
+        "adapt_low": "Doesn't rush you to a verdict; helps you narrow the options.",
+        "adapt_high": "Skips the hedging and gets to the call with you.",
+    },
+    "reflection_depth": {
+        "name": "Reflection depth",
+        "low": "Surface",
+        "high": "Deep",
+        "read_low": "You stay practical: what happened, and what's next.",
+        "read_mid": "You reflect after setbacks without dwelling on them.",
+        "read_high": "You dig for the why behind what you do.",
+        "tag_low": "stays practical",
+        "tag_high": "digs for the why",
+        "adapt_low": "Keeps things practical rather than analytical.",
+        "adapt_high": "Goes after the why with you, not just the what.",
+    },
+}
 
-def _safe_float(value, default: float = 0.5) -> float:
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-def _to_utc(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-def _limit_words(text: str, max_words: int) -> str:
-    words = text.split()
-    if len(words) <= max_words:
-        return text.strip()
-    trimmed = " ".join(words[:max_words]).rstrip(" ,;:-")
-    if trimmed.endswith((".", "!", "?")):
-        return trimmed
-    return f"{trimmed}."
-
-def _chart_story(what_it_shows: str, what_data_means: str, why_this_matters: str) -> Dict[str, str]:
-    return {
-        "what_it_shows": _limit_words(what_it_shows, 14),
-        "what_your_data_means": _limit_words(what_data_means, 16),
-        "why_this_matters": _limit_words(why_this_matters, 14),
-    }
-
-def _file_to_data_uri(file_path: Path, mime: str) -> str | None:
-    try:
-        payload = base64.b64encode(file_path.read_bytes()).decode("utf-8")
-        return f"data:{mime};base64,{payload}"
-    except OSError:
-        return None
-
-def _load_brand_icon_uri() -> str | None:
-    root = Path(__file__).resolve().parents[3]
-    favicon_path = root / "frontend" / "public" / "favicon.ico"
-    if favicon_path.exists():
-        icon_uri = _file_to_data_uri(favicon_path, "image/x-icon")
-        if icon_uri:
-            return icon_uri
-
-    # Fallback if icon file is unavailable in a runtime.
-    fallback_svg = root / "frontend" / "public" / "placeholder.svg"
-    if fallback_svg.exists():
-        return _file_to_data_uri(fallback_svg, "image/svg+xml")
-    return None
-
-
-def _profile_numeric_dimensions(profile: PersonalityProfile | None) -> Dict[str, float]:
-    if not profile:
-        return {}
-
-    raw_dimensions = {
-        "Openness": _safe_float(profile.openness, 0.5),
-        "Conscientiousness": _safe_float(profile.conscientiousness, 0.5),
-        "Extraversion": _safe_float(profile.extraversion, 0.5),
-        "Agreeableness": _safe_float(profile.agreeableness, 0.5),
-        "Neuroticism": _safe_float(profile.neuroticism, 0.5),
-    }
-    return {name: _clamp(value) for name, value in raw_dimensions.items()}
-
-
-def _profile_signal_counter(profile: PersonalityProfile | None) -> Counter:
-    counter = Counter()
-    if not profile:
-        return counter
-
-    for group in (profile.themes, profile.traits, profile.values, profile.stressors):
-        if not isinstance(group, dict):
-            continue
-
-        for raw_label, raw_value in group.items():
-            if not raw_label:
-                continue
-
-            label = str(raw_label).replace("_", "-").strip().lower()
-            if not label:
-                continue
-
-            weight = 1.0
-            if isinstance(raw_value, (int, float)):
-                weight = float(raw_value)
-            elif isinstance(raw_value, dict):
-                for key in ("count", "score", "weight", "value"):
-                    nested = raw_value.get(key)
-                    if isinstance(nested, (int, float)):
-                        weight = float(nested)
-                        break
-                else:
-                    weight = float(len(raw_value)) if raw_value else 1.0
-            elif isinstance(raw_value, list):
-                weight = float(len(raw_value)) if raw_value else 1.0
-
-            counter[label] += max(weight, 1.0)
-
-    return counter
-
-
-def _profile_communication_traits(profile_dimensions: Dict[str, float]) -> Dict[str, float]:
-    if not profile_dimensions:
-        return {}
-
-    openness = profile_dimensions.get("Openness", 0.5)
-    conscientiousness = profile_dimensions.get("Conscientiousness", 0.5)
-    extraversion = profile_dimensions.get("Extraversion", 0.5)
-    agreeableness = profile_dimensions.get("Agreeableness", 0.5)
-    neuroticism = profile_dimensions.get("Neuroticism", 0.5)
-
-    return {
-        "Curiosity": _clamp((openness * 0.72) + (extraversion * 0.28)),
-        "Directness": _clamp((conscientiousness * 0.55) + ((1 - agreeableness) * 0.2) + ((1 - neuroticism) * 0.25)),
-        "Detail Level": _clamp((conscientiousness * 0.62) + (openness * 0.23) + ((1 - neuroticism) * 0.15)),
-    }
-
-
-def _profile_personality_dimensions(profile_dimensions: Dict[str, float]) -> Dict[str, float]:
-    if not profile_dimensions:
-        return {}
-
-    openness = profile_dimensions.get("Openness", 0.5)
-    conscientiousness = profile_dimensions.get("Conscientiousness", 0.5)
-    extraversion = profile_dimensions.get("Extraversion", 0.5)
-    agreeableness = profile_dimensions.get("Agreeableness", 0.5)
-    neuroticism = profile_dimensions.get("Neuroticism", 0.5)
-
-    return {
-        "Analytical": _clamp((conscientiousness * 0.65) + ((1 - neuroticism) * 0.35)),
-        "Creative": _clamp((openness * 0.72) + (extraversion * 0.28)),
-        "Structured": _clamp((conscientiousness * 0.78) + ((1 - openness) * 0.22)),
-        "Expressive": _clamp(extraversion),
-        "Decisive": _clamp((conscientiousness * 0.45) + ((1 - neuroticism) * 0.55)),
-    }
-
-
-def _blend_trait_maps(primary: Dict[str, float], secondary: Dict[str, float], primary_weight: float = 0.75) -> Dict[str, float]:
-    if not primary:
-        return secondary
-    if not secondary:
-        return primary
-
-    blended: Dict[str, float] = {}
-    keys = set(primary) | set(secondary)
-    for key in keys:
-        blended[key] = _clamp((primary.get(key, 0.5) * primary_weight) + (secondary.get(key, 0.5) * (1 - primary_weight)))
-    return blended
-
-
-def _build_profile_highlights(profile_dimensions: Dict[str, float]) -> List[Tuple[str, str]]:
-    if not profile_dimensions:
-        return [("Profile", "No stored profile signals yet")]
-
-    highlights: List[Tuple[str, str]] = []
-    for label, value in sorted(profile_dimensions.items(), key=lambda item: item[1], reverse=True):
-        highlights.append((label, f"{value:.2f}"))
-    return highlights[:6]
-
-@dataclass
-class ReportPayload:
-    display_name: str
-    generated_at: str
-    overall_score: int
-    emotional_identity_line: str
-    why_this_score: str
-    archetype_name: str
-    archetype_tagline: str
-    archetype_summary: str
-    about_this_report: str
-    how_to_read_report: List[Tuple[str, str]]
-    executive_analysis: str
-    key_findings: List[Tuple[str, str]]
-    what_this_means: str
-    chart_interpretations: Dict[str, Dict[str, str]]
-    inferred_tags: List[str]
-    insight_cards: List[Tuple[str, str, str]]
-    strengths: List[str]
-    blind_spots: List[str]
-    optimization_dos: List[str]
-    optimization_donts: List[str]
-    interests_distribution: Dict[str, float]
-    communication_traits: Dict[str, float]
-    personality_dimensions: Dict[str, float]
-    profile_highlights: List[Tuple[str, str]]
-    timeline_points: List[Tuple[str, float, float]]
-
-async def build_persona_report_pdf(db: AsyncSession, user_id: UUID) -> bytes:
-    payload = await _build_payload(db, user_id)
-
-    pie_b64 = _build_pie_chart(payload.interests_distribution)
-    bar_b64 = _build_bar_chart(payload.communication_traits)
-    radar_b64 = _build_radar_chart(payload.personality_dimensions)
-    timeline_b64 = _build_timeline_chart(payload.timeline_points)
-    brand_icon_uri = _load_brand_icon_uri()
-
-    html_content = _render_html(payload, pie_b64, bar_b64, radar_b64, timeline_b64, brand_icon_uri)
-    pdf = HTML(string=html_content).write_pdf()
-    return pdf
-
-async def _build_payload(db: AsyncSession, user_id: UUID) -> ReportPayload:
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-
-    profile_result = await db.execute(
-        select(PersonalityProfile).where(PersonalityProfile.user_id == user_id)
-    )
-    personality_profile = profile_result.scalar_one_or_none()
-
-    snapshots_result = await db.execute(
-        select(PersonaSnapshot).where(PersonaSnapshot.user_id == user_id).order_by(PersonaSnapshot.created_at.desc()).limit(30)
-    )
-    # Newest 30 snapshots, in chronological order for the trend chart.
-    snapshots = list(reversed(snapshots_result.scalars().all()))
-
-    metrics_result = await db.execute(
-        select(UserPersonaMetric).where(UserPersonaMetric.user_id == user_id).order_by(desc(UserPersonaMetric.last_updated))
-    )
-    metrics = metrics_result.scalars().all()
-
-    insights_result = await db.execute(
-        select(BehavioralInsight).where(BehavioralInsight.user_id == user_id).order_by(desc(BehavioralInsight.created_at)).limit(120)
-    )
-    insights = insights_result.scalars().all()
-
-    reflections_result = await db.execute(
-        select(ReflectionLog).where(ReflectionLog.user_id == user_id).order_by(desc(ReflectionLog.created_at)).limit(60)
-    )
-    reflections = reflections_result.scalars().all()
-
-    messages_result = await db.execute(
-        select(Message).where(Message.user_id == user_id, Message.role == "user").order_by(desc(Message.created_at)).limit(120)
-    )
-    messages = messages_result.scalars().all()
-
-    schedule_result = await db.execute(select(ScheduleContext).where(ScheduleContext.user_id == user_id))
-    schedule = schedule_result.scalar_one_or_none()
-
-    profile_dimensions = _profile_numeric_dimensions(personality_profile)
-    profile_signals = _profile_signal_counter(personality_profile)
-    profile_communication_traits = _profile_communication_traits(profile_dimensions)
-    profile_personality_dimensions = _profile_personality_dimensions(profile_dimensions)
-
-    metric_map = {m.trait_name: _safe_float(m.score) for m in metrics}
-
-    comm_style = metric_map.get("communication_style", 0.5)
-    emotional_expr = metric_map.get("emotional_expressiveness", 0.5)
-    decision_framing = metric_map.get("decision_framing", 0.5)
-    reflection_depth = metric_map.get("reflection_depth", 0.5)
-
-    texts = [m.content for m in messages if m.content] + [r.response for r in reflections if r.response]
-    metric_communication_traits = _derive_communication_traits(texts, comm_style, decision_framing)
-    communication_traits = _blend_trait_maps(profile_communication_traits, metric_communication_traits, primary_weight=0.7)
-
-    metric_personality_dimensions = {
-        "Analytical": _clamp((reflection_depth * 0.6) + (decision_framing * 0.4)),
-        "Creative": _clamp((emotional_expr * 0.55) + (comm_style * 0.45)),
-        "Structured": _clamp((decision_framing * 0.7) + ((1 - comm_style) * 0.3)),
-        "Expressive": _clamp(emotional_expr),
-        "Decisive": _clamp(decision_framing),
-    }
-    personality_dimensions = _blend_trait_maps(profile_personality_dimensions, metric_personality_dimensions, primary_weight=0.7)
-
-    tags_counter = Counter()
-    for insight in insights:
-        for tag in (insight.tags or []):
-            if not tag:
-                continue
-            normalized = tag.strip().lower()
-            if normalized in {"behavioral-pattern", "trait-drift", "workload-context", "stress-signal"}:
-                continue
-            tags_counter[normalized] += 1
-
-    if not tags_counter:
-        tags_counter.update(profile_signals or {"self-reflection": 3, "decision-making": 2, "growth": 2, "communication": 2})
-
-    top_tags = [name for name, _ in tags_counter.most_common(8)]
-    interests_distribution = _normalize_distribution(tags_counter, max_items=6)
-    timeline_points = _build_timeline_points(snapshots)
-
-    inferred_tags = _humanize_tags(top_tags)
-    insight_cards = _build_insight_cards(communication_traits, personality_dimensions, schedule)
-    profile_highlights = _build_profile_highlights(profile_dimensions)
-
-    archetype_name, archetype_tagline, archetype_summary = _build_archetype(communication_traits, personality_dimensions)
-    overall_score = int((
-        communication_traits.get("Curiosity", 0.5) +
-        communication_traits.get("Directness", 0.5) +
-        communication_traits.get("Detail Level", 0.5) +
-        personality_dimensions.get("Expressive", 0.5)
-    ) / 4.0 * 100)
-
-    emotional_identity_line = _build_emotional_identity_line(communication_traits, personality_dimensions, archetype_name)
-    why_this_score = _build_why_this_score(communication_traits, personality_dimensions, overall_score)
-    about_this_report = _build_about_this_report()
-    how_to_read_report = _build_how_to_read_report()
-
-    strengths = _build_strengths(communication_traits, personality_dimensions)
-    blind_spots = _build_blind_spots(communication_traits, personality_dimensions)
-    dos, donts = _build_optimization_rules(communication_traits, personality_dimensions)
-
-    chart_interpretations = {
-        "pie": _interpret_pie(interests_distribution),
-        "bar": _interpret_bar(communication_traits),
-        "radar": _interpret_radar(personality_dimensions),
-        "timeline": _interpret_timeline(timeline_points),
-    }
-
-    display_name = (user.display_name if user and user.display_name else "User").strip() or "User"
-
-    return ReportPayload(
-        display_name=display_name,
-        generated_at=datetime.now(timezone.utc).strftime("%B %d, %Y"),
-        overall_score=overall_score,
-        emotional_identity_line=emotional_identity_line,
-        why_this_score=why_this_score,
-        archetype_name=archetype_name,
-        archetype_tagline=archetype_tagline,
-        archetype_summary=archetype_summary,
-        about_this_report=about_this_report,
-        how_to_read_report=how_to_read_report,
-        executive_analysis=_build_executive_analysis(communication_traits, personality_dimensions, archetype_name),
-        key_findings=_build_key_findings(communication_traits, personality_dimensions),
-        what_this_means=_build_what_this_means(communication_traits, personality_dimensions),
-        chart_interpretations=chart_interpretations,
-        inferred_tags=inferred_tags,
-        insight_cards=insight_cards,
-        strengths=strengths,
-        blind_spots=blind_spots,
-        optimization_dos=dos,
-        optimization_donts=donts,
-        interests_distribution=interests_distribution,
-        communication_traits=communication_traits,
-        personality_dimensions=personality_dimensions,
-        profile_highlights=profile_highlights,
-        timeline_points=timeline_points,
-    )
+LOW, HIGH = 0.38, 0.62
 
 
 @dataclass
-class CoreTrait:
-    name: str
-    left_label: str
-    right_label: str
+class TraitReading:
+    key: str
     score: float
-    lean_label: str
+    confidence: float
+    evidence_count: int
 
 
 @dataclass
-class PatternNote:
-    pattern: str
-    meaning: str
+class ReportData:
+    name: str
+    generated_at: datetime
+    first_date: Optional[str] = None
+    last_date: Optional[str] = None
+    active_days: int = 0
+    user_messages: int = 0
+    conversations: int = 0
+    longest_streak: int = 0
+    busiest_day: Optional[Dict[str, object]] = None
+    conversations_by_mode: Dict[str, int] = field(default_factory=dict)
+    traits: List[TraitReading] = field(default_factory=list)
+    trait_series: List[Dict[str, object]] = field(default_factory=list)
+    milestones: List[Dict[str, object]] = field(default_factory=list)
+    reflections: List[Dict[str, object]] = field(default_factory=list)
+    reflections_read: int = 0
+    hour_histogram: List[int] = field(default_factory=lambda: [0] * 24)
+    weekday_histogram: List[int] = field(default_factory=lambda: [0] * 7)
+    voice: Dict[str, object] = field(default_factory=dict)
 
 
-@dataclass
-class ModernReportPayload:
-    display_name: str
-    report_date_long: str
-    report_date_short: str
-    basis_line: str
-    snapshot_summary: str
-    activity_points: List[Tuple[str, int]]
-    activity_what: str
-    activity_meaning: str
-    depth_frequency_class: str
-    depth_frequency_what: str
-    depth_frequency_meaning: str
-    emotional_what: str
-    emotional_meaning: str
-    emotional_points: List[Tuple[str, float]]
-    core_traits: List[CoreTrait]
-    key_patterns: List[PatternNote]
-    big_picture: str
-    stage_label: str
-    action_plan: List[str]
+def side(score: float) -> str:
+    return "low" if score <= LOW else "high" if score >= HIGH else "mid"
 
 
-def _build_executive_analysis(comm: Dict[str, float], pers: Dict[str, float], arch_name: str) -> str:
-    cur = comm.get("Curiosity", 0.5)
-    _dir = comm.get("Directness", 0.5)
-    det = comm.get("Detail Level", 0.5)
+def confidence_label(confidence: float) -> str:
+    if confidence < 0.3:
+        return "an early guess"
+    if confidence < 0.6:
+        return "taking shape"
+    return "well established"
 
-    if _dir > 0.6 and det > 0.6:
-        insight = "you favor concise, high-signal briefs that convert quickly from problem framing to decision."
-    elif cur > 0.6:
-        insight = "you consistently expand questions to test causes, alternatives, and trade-offs before committing."
-    else:
-        insight = "you shift smoothly between exploration and execution as context changes."
 
-    analysis = (
-        f"Your operating profile aligns most strongly with {arch_name}. "
-        f"Across sessions, {insight} "
-        "You consistently reward clarity and structure, so outputs perform best when they are direct, sequenced, and explicit about next actions. "
-        "Speed can occasionally obscure edge cases; adding a brief constraint or risk line materially improves precision without reducing momentum. "
-        "Overall, your signature is stable enough for high-confidence personalization while remaining adaptable as priorities evolve."
-    )
-    return _limit_words(analysis, 140)
+def headline(traits: List[TraitReading]) -> str:
+    """One-line portrait from the two most distinctive, reasonably certain traits."""
+    distinctive = sorted(
+        (t for t in traits if side(t.score) != "mid" and t.confidence >= 0.3),
+        key=lambda t: abs(t.score - 0.5) * t.confidence,
+        reverse=True,
+    )[:2]
+    if not distinctive:
+        return "Still getting to know you."
+    tags = [TRAIT_META[t.key][f"tag_{side(t.score)}"] for t in distinctive]
+    text = tags[0] if len(tags) == 1 else f"{tags[0]}, and {tags[1]}"
+    return text[0].upper() + text[1:] + "."
 
-def _build_about_this_report() -> str:
-    text = (
-        "This report consolidates recent interaction patterns into a practical operating brief for how the assistant currently models your working style. "
-        "It is a performance lens, not a psychological diagnosis. Scores and labels are inferred from language signals, decision behavior, and consistency over time. "
-        "Use it to improve prompt quality, accelerate outcomes, and deliberately switch response modes when needed."
-    )
-    return _limit_words(text, 95)
 
-def _build_how_to_read_report() -> List[Tuple[str, str]]:
-    return [
-        ("Start with the score", _limit_words("Treat the score as a calibration snapshot of current operating rhythm, not a fixed judgment.", 18)),
-        ("Use findings as levers", _limit_words("Key findings surface repeat behaviors you can amplify or rebalance for stronger output quality.", 18)),
-        ("Read charts in order", _limit_words("Move from signal, to interpretation, to action you can apply in the next prompt.", 19)),
+def adaptation_lines(traits: List[TraitReading], voice: Dict[str, object]) -> List[str]:
+    lines = []
+    for t in traits:
+        s = side(t.score)
+        if s != "mid" and t.confidence >= 0.3:
+            lines.append(TRAIT_META[t.key][f"adapt_{s}"])
+    if voice.get("lowercase_share", 0) >= 0.7:
+        lines.append("In Mirror mode it writes in lowercase, the way you do.")
+    if voice.get("messages", 0) >= 20 and voice.get("emoji_share", 0) == 0:
+        lines.append("It leaves emojis out, since you don't use them.")
+    elif voice.get("emoji_share", 0) >= 0.25:
+        lines.append("It uses the emojis you use, about as often as you do.")
+    return lines or ["Nothing yet. It needs more conversation before it changes how it talks to you."]
+
+
+def voice_profile(texts: List[str], fingerprint_abbreviations: Dict[str, int], phrases: List[str]) -> Dict[str, object]:
+    cleaned = [t.strip() for t in texts if t and t.strip()]
+    if not cleaned:
+        return {"messages": 0}
+    lengths = [len(t.split()) for t in cleaned]
+    emoji = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
+    return {
+        "messages": len(cleaned),
+        "median_words": int(median(lengths)),
+        "longest_words": max(lengths),
+        "lowercase_share": sum(1 for t in cleaned if not re.search(r"[A-Z]", t)) / len(cleaned),
+        "question_share": sum(1 for t in cleaned if "?" in t) / len(cleaned),
+        "emoji_share": sum(1 for t in cleaned if emoji.search(t)) / len(cleaned),
+        "no_period_share": sum(1 for t in cleaned if not re.search(r"[.!?]\s*$", t)) / len(cleaned),
+        "abbreviations": sorted(fingerprint_abbreviations.items(), key=lambda kv: kv[1], reverse=True)[:6],
+        "phrases": phrases[:6],
+    }
+
+
+async def collect_report_data(db: AsyncSession, user_id: UUID, tz_offset_minutes: int = 0) -> ReportData:
+    from app.db.models import LinguisticFingerprint, Message, User, UserPersonaMetric
+    from app.services.reflection_service import get_reflections
+    from app.services.timeline_service import build_timeline
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    name = (user.display_name or "").strip() if user else ""
+    name = (name.split()[0] if name else "You")
+    name = name[0].upper() + name[1:]
+
+    timeline = await build_timeline(db, user_id, None, tz_offset_minutes)
+    summary = timeline["summary"]
+
+    metrics = (await db.execute(select(UserPersonaMetric).where(UserPersonaMetric.user_id == user_id))).scalars().all()
+    by_name = {m.trait_name: m for m in metrics}
+    traits = [
+        TraitReading(key, float(by_name[key].score), float(by_name[key].confidence), int(by_name[key].evidence_count or 0))
+        for key in TRAIT_LIST
+        if key in by_name
     ]
 
-def _build_why_this_score(comm: Dict[str, float], pers: Dict[str, float], overall_score: int) -> str:
-    directness = int(comm.get("Directness", 0.5) * 100)
-    detail = int(comm.get("Detail Level", 0.5) * 100)
-    expressive = int(pers.get("Expressive", 0.5) * 100)
-    curiosity = int(comm.get("Curiosity", 0.5) * 100)
-    text = (
-        f"This score is derived from four weighted signals: Directness ({directness}), Detail ({detail}), Expressiveness ({expressive}), and Curiosity ({curiosity}). "
-        f"Together, they position your current engagement baseline at {overall_score}."
-    )
-    return _limit_words(text, 45)
+    reflections_state = await get_reflections(db, user_id)
 
-def _build_emotional_identity_line(comm: Dict[str, float], pers: Dict[str, float], archetype_name: str) -> str:
-    if comm.get("Directness", 0.5) > 0.62:
-        text = f"You lead with intent and momentum. {archetype_name} reflects a decisive, execution-first rhythm."
-    elif pers.get("Expressive", 0.5) > 0.6:
-        text = f"You lead with tone and meaning. {archetype_name} reflects a nuanced, human-centered cognitive style."
+    rows = (
+        await db.execute(
+            select(Message.content, Message.created_at)
+            .where(Message.user_id == user_id, Message.role == "user")
+            .order_by(Message.created_at.desc())
+            .limit(4000)
+        )
+    ).all()
+    offset = timedelta(minutes=max(-840, min(840, tz_offset_minutes)))
+    hours, weekdays = [0] * 24, [0] * 7
+    for _, created_at in rows:
+        if created_at is None:
+            continue
+        local = (created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc) + offset
+        hours[local.hour] += 1
+        weekdays[local.weekday()] += 1
+
+    fingerprint = (
+        await db.execute(select(LinguisticFingerprint).where(LinguisticFingerprint.user_id == user_id))
+    ).scalar_one_or_none()
+    abbreviations = dict(fingerprint.abbreviation_stats or {}) if fingerprint else {}
+    phrases = list(fingerprint.characteristic_phrases or []) if fingerprint else []
+
+    return ReportData(
+        name=name,
+        generated_at=datetime.now(timezone.utc) + offset,
+        first_date=summary["first_date"],
+        last_date=summary["last_date"],
+        active_days=summary["active_days"],
+        user_messages=summary["user_messages"],
+        conversations=summary["conversations"],
+        longest_streak=summary["longest_streak"],
+        busiest_day=summary["busiest_day"],
+        conversations_by_mode=summary["conversations_by_mode"],
+        traits=traits,
+        trait_series=timeline["trait_series"],
+        milestones=timeline["milestones"],
+        reflections=reflections_state["reflections"],
+        reflections_read=reflections_state["status"]["messages_read"],
+        hour_histogram=hours,
+        weekday_histogram=weekdays,
+        voice=voice_profile([content for content, _ in rows], abbreviations, phrases),
+    )
+
+
+async def build_persona_report_pdf(db: AsyncSession, user_id: UUID, tz_offset_minutes: int = 0) -> bytes:
+    return render_report(await collect_report_data(db, user_id, tz_offset_minutes))
+
+
+# ----------------------------------------------------------------------------
+# Rendering
+# ----------------------------------------------------------------------------
+
+PAGE_W, PAGE_H = A4
+MARGIN = 54
+CONTENT_W = PAGE_W - 2 * MARGIN
+
+INK = HexColor("#15141C")
+SOFT = HexColor("#5E5B6B")
+FAINT = HexColor("#A7A4B3")
+RULE = HexColor("#E6E3EC")
+PAPER = HexColor("#FBFAF7")
+NIGHT = HexColor("#0B0B12")
+VIOLET = HexColor("#7C6BF2")
+CYAN = HexColor("#1FA7BD")
+PEACH = HexColor("#EE8E63")
+ROSE = HexColor("#D9578C")
+TRAIT_COLORS = {
+    "communication_style": CYAN,
+    "emotional_expressiveness": PEACH,
+    "decision_framing": VIOLET,
+    "reflection_depth": ROSE,
+}
+
+SERIF, SERIF_I, SANS, SANS_B, MONO = "Times-Roman", "Times-Italic", "Helvetica", "Helvetica-Bold", "Courier"
+
+_REPLACEMENTS = {
+    "’": "'", "‘": "'", "“": '"', "”": '"', "—": ", ", "–": "-",
+    "…": "...", " ": " ", "→": "->", "↔": "<->",
+}
+
+
+def pdf_safe(text: str) -> str:
+    """The built-in PDF fonts cover Latin text only: normalise punctuation, drop the rest."""
+    out = str(text or "")
+    for src, dst in _REPLACEMENTS.items():
+        out = out.replace(src, dst)
+    out = out.encode("cp1252", "ignore").decode("cp1252")
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def printable(text: str) -> bool:
+    """False when too much of the text would be lost (e.g. a quote in another script)."""
+    original = re.sub(r"\s+", "", str(text or ""))
+    return bool(original) and len(re.sub(r"\s+", "", pdf_safe(text))) >= 0.85 * len(original)
+
+
+def _mix(a: Color, b: Color, t: float) -> Color:
+    return Color(a.red + (b.red - a.red) * t, a.green + (b.green - a.green) * t, a.blue + (b.blue - a.blue) * t)
+
+
+def _iris(t: float) -> Color:
+    stops = [HexColor("#C4BAFF"), HexColor("#96E8F5"), HexColor("#FFCDB0"), HexColor("#C4BAFF")]
+    x = (t % 1) * 3
+    i = min(int(x), 2)
+    return _mix(stops[i], stops[i + 1], x - i)
+
+
+def _fmt_date(iso: Optional[str]) -> str:
+    if not iso:
+        return ""
+    try:
+        d = datetime.fromisoformat(iso)
+        return f"{d.day} {d.strftime('%b %Y')}"
+    except ValueError:
+        return iso
+
+
+class _Doc:
+    """Thin layout helper around a ReportLab canvas: a cursor, wrapped text, page breaks."""
+
+    def __init__(self, data: ReportData):
+        self.buffer = io.BytesIO()
+        self.c = pdfcanvas.Canvas(self.buffer, pagesize=A4)
+        self.c.setTitle(pdf_safe(f"Reflectra: a portrait of {data.name}"))
+        self.c.setAuthor("Reflectra")
+        self.data = data
+        self.page = 0
+        self.y = PAGE_H - MARGIN
+
+    # -- pages --
+    def new_page(self, section: str = "") -> None:
+        if self.page:
+            self.c.showPage()
+        self.page += 1
+        self.c.setFillColor(PAPER)
+        self.c.rect(0, 0, PAGE_W, PAGE_H, stroke=0, fill=1)
+        self.c.setFont(MONO, 7.5)
+        self.c.setFillColor(FAINT)
+        self.c.drawString(MARGIN, PAGE_H - 34, "REFLECTRA  /  A PORTRAIT OF " + pdf_safe(self.data.name).upper())
+        self.c.drawRightString(PAGE_W - MARGIN, PAGE_H - 34, section.upper())
+        self.c.drawString(MARGIN, 30, f"Generated {self.data.generated_at.strftime('%d %b %Y')}. Built only from your own conversations.")
+        self.c.drawRightString(PAGE_W - MARGIN, 30, str(self.page))
+        self.y = PAGE_H - 78
+
+    def ensure(self, height: float, section: str = "") -> None:
+        if self.y - height < 56:
+            self.new_page(section)
+
+    # -- text --
+    def text(self, text: str, font: str = SANS, size: float = 10, color: Color = INK, x: float = MARGIN,
+             width: float = CONTENT_W, leading: Optional[float] = None, gap: float = 0) -> None:
+        leading = leading or size * 1.42
+        for line in simpleSplit(pdf_safe(text), font, size, width):
+            self.c.setFont(font, size)
+            self.c.setFillColor(color)
+            self.c.drawString(x, self.y - size, line)
+            self.y -= leading
+        self.y -= gap
+
+    def eyebrow(self, text: str) -> None:
+        self.c.setFont(MONO, 7.5)
+        self.c.setFillColor(VIOLET)
+        self.c.drawString(MARGIN, self.y - 7.5, pdf_safe(text).upper())
+        self.y -= 18
+
+    def heading(self, plain: str, italic: str = "", size: float = 27) -> None:
+        self.c.setFont(SERIF, size)
+        self.c.setFillColor(INK)
+        self.c.drawString(MARGIN, self.y - size, pdf_safe(plain))
+        if italic:
+            x = MARGIN + self.c.stringWidth(pdf_safe(plain) + " ", SERIF, size)
+            self.c.setFont(SERIF_I, size)
+            self.c.setFillColor(VIOLET)
+            self.c.drawString(x, self.y - size, pdf_safe(italic))
+        self.y -= size * 1.5
+
+    def rule(self, gap: float = 14) -> None:
+        self.c.setStrokeColor(RULE)
+        self.c.setLineWidth(0.6)
+        self.c.line(MARGIN, self.y, PAGE_W - MARGIN, self.y)
+        self.y -= gap
+
+    def finish(self) -> bytes:
+        self.c.showPage()
+        self.c.save()
+        return self.buffer.getvalue()
+
+
+def _cover(doc: _Doc) -> None:
+    c, d = doc.c, doc.data
+    doc.page += 1
+    c.setFillColor(NIGHT)
+    c.rect(0, 0, PAGE_W, PAGE_H, stroke=0, fill=1)
+
+    # Iridescent oval mirror: short strokes with a colour that travels round the rim.
+    cx, cy, rx, ry = PAGE_W / 2, PAGE_H * 0.62, 118, 158
+    c.setLineWidth(1.6)
+    segments = 240
+    for i in range(segments):
+        a0, a1 = 2 * math.pi * i / segments, 2 * math.pi * (i + 1.4) / segments
+        c.setStrokeColor(_iris(i / segments + 0.1))
+        c.line(cx + rx * math.cos(a0), cy + ry * math.sin(a0), cx + rx * math.cos(a1), cy + ry * math.sin(a1))
+
+    c.setFillColor(HexColor("#F3F1FA"))
+    c.setFont(SERIF, 50)
+    c.drawCentredString(cx, cy + 4, "Reflectra")
+    c.setFont(MONO, 8)
+    c.setFillColor(HexColor("#8D8AA0"))
+    c.drawCentredString(cx, cy - 22, "A MIRROR FOR YOUR MIND")
+
+    c.setFillColor(HexColor("#F3F1FA"))
+    c.setFont(SERIF, 30)
+    c.drawCentredString(cx, 262, "A portrait of")
+    c.setFont(SERIF_I, 40)
+    c.setFillColor(HexColor("#C4BAFF"))
+    c.drawCentredString(cx, 218, pdf_safe(d.name))
+
+    c.setFont(SANS, 10.5)
+    c.setFillColor(HexColor("#B9B6C9"))
+    c.drawCentredString(cx, 186, pdf_safe(headline(d.traits)))
+
+    # Numbers strip
+    stats = [
+        (str(d.user_messages), "messages"),
+        (str(d.conversations), "conversations"),
+        (str(d.active_days), "days talked"),
+        (str(d.longest_streak), "day streak"),
+    ]
+    col = CONTENT_W / len(stats)
+    for i, (value, label) in enumerate(stats):
+        x = MARGIN + col * i + col / 2
+        c.setFont(SERIF, 24)
+        c.setFillColor(HexColor("#F3F1FA"))
+        c.drawCentredString(x, 118, value)
+        c.setFont(MONO, 7)
+        c.setFillColor(HexColor("#8D8AA0"))
+        c.drawCentredString(x, 102, label.upper())
+
+    c.setFont(MONO, 7.5)
+    c.setFillColor(HexColor("#6F6C80"))
+    period = f"{_fmt_date(d.first_date)} to {_fmt_date(d.last_date)}" if d.first_date else "No conversations yet"
+    c.drawCentredString(cx, 58, pdf_safe(f"{period}   /   generated {d.generated_at.strftime('%d %b %Y')}").upper())
+
+
+def _trait_bar(doc: _Doc, trait: TraitReading) -> None:
+    c = doc.c
+    meta = TRAIT_META[trait.key]
+    color = TRAIT_COLORS[trait.key]
+    doc.ensure(96, "At a glance")
+    top = doc.y
+
+    c.setFont(SANS_B, 11)
+    c.setFillColor(INK)
+    c.drawString(MARGIN, top - 11, meta["name"])
+    c.setFont(SERIF, 22)
+    c.setFillColor(color)
+    c.drawRightString(PAGE_W - MARGIN, top - 16, f"{round(trait.score * 100)}")
+    c.setFont(MONO, 7)
+    c.setFillColor(FAINT)
+    c.drawRightString(PAGE_W - MARGIN - 30, top - 9, "OUT OF 100")
+
+    # Track with an uncertainty band: the wider the band, the less sure Reflectra is.
+    track_y = top - 36
+    c.setStrokeColor(RULE)
+    c.setLineWidth(5)
+    c.setLineCap(1)
+    c.line(MARGIN, track_y, PAGE_W - MARGIN, track_y)
+    x = MARGIN + CONTENT_W * max(0.0, min(1.0, trait.score))
+    band = CONTENT_W * 0.22 * (1 - max(0.0, min(1.0, trait.confidence)))
+    c.setStrokeColor(Color(color.red, color.green, color.blue, alpha=0.28))
+    c.line(max(MARGIN, x - band), track_y, min(PAGE_W - MARGIN, x + band), track_y)
+    c.setFillColor(color)
+    c.circle(x, track_y, 5.5, stroke=0, fill=1)
+    c.setFillColor(PAPER)
+    c.circle(x, track_y, 2, stroke=0, fill=1)
+    c.setLineCap(0)
+
+    c.setFont(MONO, 7)
+    c.setFillColor(FAINT)
+    c.drawString(MARGIN, track_y - 15, meta["low"].upper())
+    c.drawRightString(PAGE_W - MARGIN, track_y - 15, meta["high"].upper())
+    c.drawCentredString(PAGE_W / 2, track_y - 15, "50")
+
+    doc.y = track_y - 26
+    doc.text(meta[f"read_{side(trait.score)}"], SANS, 10, INK)
+    doc.text(
+        f"{round(trait.confidence * 100)}% sure ({confidence_label(trait.confidence)}), from {trait.evidence_count} signals in your messages.",
+        SANS, 8.5, SOFT, gap=14,
+    )
+
+
+def _glance(doc: _Doc) -> None:
+    d = doc.data
+    doc.new_page("At a glance")
+    doc.eyebrow("01 / At a glance")
+    doc.heading("How you", "come across")
+    doc.text(
+        "Four things Reflectra measures from the way you write to it. Each score moves a little with every "
+        "message, so it reflects a pattern, not a single day. The shaded band shows how unsure it still is.",
+        SANS, 10, SOFT, gap=16,
+    )
+    if not d.traits:
+        doc.text("Not enough conversation yet to read any of these.", SERIF_I, 14, SOFT)
+        return
+    for trait in d.traits:
+        _trait_bar(doc, trait)
+
+    unsure = [TRAIT_META[t.key]["name"].lower() for t in d.traits if t.confidence < 0.5]
+    doc.ensure(50, "At a glance")
+    doc.rule()
+    doc.text(
+        "Still unsure about: " + (", ".join(unsure) + "." if unsure else "nothing major. All four readings are past the halfway mark in confidence."),
+        SANS, 9, SOFT,
+    )
+
+
+def _reflections(doc: _Doc) -> None:
+    d = doc.data
+    section = "What keeps coming up"
+    doc.new_page(section)
+    doc.eyebrow("02 / What keeps coming up")
+    doc.heading("Patterns in", "your own words")
+    if not d.reflections:
+        doc.text(
+            "No reflections yet. Reflectra writes these once it has seen the same thing come up at least twice "
+            "in what you've told it. Open the Reflections page in the app to generate them.",
+            SANS, 10.5, SOFT,
+        )
+        return
+    doc.text(
+        f"Each pattern below showed up on at least two separate occasions in your last {d.reflections_read} messages. "
+        "The quotes are yours, word for word.",
+        SANS, 10, SOFT, gap=14,
+    )
+    for index, reflection in enumerate(d.reflections, start=1):
+        quotes = [e for e in reflection.get("evidence", []) if printable(str(e.get("quote", "")))]
+        insight_lines = simpleSplit(pdf_safe(reflection.get("insight", "")), SANS, 10, CONTENT_W - 30)
+        needed = 44 + len(insight_lines) * 14.2 + sum(
+            len(simpleSplit(pdf_safe(str(q["quote"])), SERIF_I, 10.5, CONTENT_W - 62)) * 14 + 16 for q in quotes
+        )
+        doc.ensure(min(needed, 420), section)
+
+        doc.c.setFont(SERIF, 30)
+        doc.c.setFillColor(Color(VIOLET.red, VIOLET.green, VIOLET.blue, alpha=0.35))
+        doc.c.drawString(MARGIN, doc.y - 26, f"{index:02d}")
+        top = doc.y
+        doc.text(reflection.get("title", ""), SERIF, 17, INK, x=MARGIN + 44, width=CONTENT_W - 44, leading=20)
+        doc.c.setFont(MONO, 7)
+        doc.c.setFillColor(FAINT)
+        confidence = reflection.get("confidence") or 0
+        doc.c.drawString(MARGIN + 44, doc.y - 8, pdf_safe(f"{reflection.get('theme', 'other')}  /  seen {len(reflection.get('evidence', []))} times  /  {round(confidence * 100)}% sure").upper())
+        doc.y = min(doc.y - 20, top - 44)
+        doc.text(reflection.get("insight", ""), SANS, 10, INK, x=MARGIN + 44, width=CONTENT_W - 44, gap=6)
+        for quote in quotes:
+            start = doc.y
+            doc.text(f'"{quote["quote"]}"', SERIF_I, 10.5, SOFT, x=MARGIN + 58, width=CONTENT_W - 62, leading=14)
+            doc.c.setFont(MONO, 6.5)
+            doc.c.setFillColor(FAINT)
+            doc.c.drawString(MARGIN + 58, doc.y - 8, pdf_safe(_fmt_date(quote.get("date"))).upper())
+            doc.c.setStrokeColor(PEACH)
+            doc.c.setLineWidth(1.4)
+            doc.c.line(MARGIN + 48, start - 2, MARGIN + 48, doc.y - 9)
+            doc.y -= 16
+        doc.y -= 8
+        if index < len(d.reflections):
+            doc.rule(16)
+
+
+def _trajectory_chart(doc: _Doc, height: float = 150) -> None:
+    c, series = doc.c, doc.data.trait_series
+    left, right, bottom = MARGIN + 22, PAGE_W - MARGIN, doc.y - height
+    width = right - left
+
+    c.setFont(MONO, 6.5)
+    for value in (0, 50, 100):
+        y = bottom + height * value / 100
+        c.setStrokeColor(RULE)
+        c.setLineWidth(0.5)
+        c.line(left, y, right, y)
+        c.setFillColor(FAINT)
+        c.drawRightString(left - 5, y - 2, str(value))
+
+    # Evenly spaced by day talked: long silences would otherwise squash the chart.
+    xs = [left + width * (i / max(len(series) - 1, 1)) for i in range(len(series))]
+    for trait in TRAIT_LIST:
+        points = [(x, bottom + height * float(p[trait])) for x, p in zip(xs, series) if p.get(trait) is not None]
+        if len(points) < 2:
+            continue
+        c.setStrokeColor(TRAIT_COLORS[trait])
+        c.setLineWidth(1.6)
+        c.setLineJoin(1)
+        path = c.beginPath()
+        path.moveTo(*points[0])
+        for point in points[1:]:
+            path.lineTo(*point)
+        c.drawPath(path, stroke=1, fill=0)
+        c.setFillColor(TRAIT_COLORS[trait])
+        c.circle(points[-1][0], points[-1][1], 2.4, stroke=0, fill=1)
+
+    c.setFillColor(FAINT)
+    c.drawString(left, bottom - 11, _fmt_date(str(series[0]["date"])).upper())
+    c.drawRightString(right, bottom - 11, _fmt_date(str(series[-1]["date"])).upper())
+
+    # Legend
+    x = left
+    y = bottom - 28
+    for trait in TRAIT_LIST:
+        c.setFillColor(TRAIT_COLORS[trait])
+        c.circle(x + 3, y + 2.5, 3, stroke=0, fill=1)
+        c.setFillColor(SOFT)
+        c.setFont(SANS, 8)
+        label = TRAIT_META[trait]["name"]
+        c.drawString(x + 10, y, label)
+        x += c.stringWidth(label, SANS, 8) + 28
+    doc.y = y - 18
+
+
+def _bars(doc: _Doc, values: List[int], labels: Dict[int, str], x: float, width: float, height: float, color: Color) -> None:
+    c = doc.c
+    peak = max(values) or 1
+    gap = 2
+    bar_w = (width - gap * (len(values) - 1)) / len(values)
+    base = doc.y - height
+    for i, value in enumerate(values):
+        h = height * value / peak
+        c.setFillColor(color if value == peak and value else Color(color.red, color.green, color.blue, alpha=0.35))
+        c.roundRect(x + i * (bar_w + gap), base, bar_w, max(h, 0.8), 1, stroke=0, fill=1)
+    c.setFont(MONO, 6.5)
+    c.setFillColor(FAINT)
+    for i, label in labels.items():
+        c.drawCentredString(x + i * (bar_w + gap) + bar_w / 2, base - 10, label)
+
+
+def _change_and_rhythm(doc: _Doc) -> None:
+    d = doc.data
+    section = "Over time"
+    doc.new_page(section)
+    doc.eyebrow("03 / Over time")
+    doc.heading("How you've", "moved")
+    if len(d.trait_series) >= 2:
+        doc.text("Your four readings, one point for each day you talked (gaps between days are not shown). Early swings are normal: the first few messages count for a lot until a pattern forms.", SANS, 10, SOFT, gap=14)
+        _trajectory_chart(doc)
     else:
-        text = f"You lead with balance and range. {archetype_name} reflects a steady blend of exploration and delivery."
-    return _limit_words(text, 28)
+        doc.text("This chart appears once you've talked on at least two different days.", SANS, 10, SOFT, gap=10)
 
-def _build_key_findings(comm: Dict[str, float], pers: Dict[str, float]) -> List[Tuple[str, str]]:
-    findings = []
+    notable = [m for m in d.milestones if m.get("kind") in {"trait", "activity", "start", "import"}][:5]
+    if notable:
+        doc.ensure(30 + 18 * len(notable), section)
+        for milestone in reversed(notable):
+            doc.c.setFont(MONO, 7)
+            doc.c.setFillColor(VIOLET)
+            doc.c.drawString(MARGIN, doc.y - 8, pdf_safe(_fmt_date(str(milestone["date"]))).upper())
+            doc.text(str(milestone["text"]), SANS, 9.5, INK, x=MARGIN + 86, width=CONTENT_W - 86, gap=4)
 
-    if comm.get("Directness", 0.5) > 0.55:
-        findings.append(("High Directness", _limit_words("You often skip ceremony and move quickly toward action, decisions, and concrete output formats.", 20)))
+    doc.ensure(200, section)
+    doc.y -= 10
+    doc.rule(18)
+    doc.eyebrow("When you talk")
+    total = sum(d.hour_histogram)
+    if not total:
+        doc.text("No messages yet.", SANS, 10, SOFT)
+        return
+    peak_hour = max(range(24), key=lambda h: d.hour_histogram[h])
+    late = sum(d.hour_histogram[h] for h in (22, 23, 0, 1, 2, 3)) / total
+    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    peak_day = max(range(7), key=lambda i: d.weekday_histogram[i])
+    hour12 = f"{(peak_hour % 12) or 12} {'am' if peak_hour < 12 else 'pm'}"
+    doc.text(
+        f"You talk most around {hour12}, and {days[peak_day]} is your busiest day. "
+        f"{round(late * 100)}% of your messages come between 10 pm and 4 am."
+        + (f" Your biggest day was {_fmt_date(str(d.busiest_day['date']))}: {d.busiest_day['user_messages']} messages." if d.busiest_day else ""),
+        SANS, 10, INK, gap=14,
+    )
+    half = (CONTENT_W - 30) * 0.68
+    _bars(doc, d.hour_histogram, {0: "12A", 6: "6A", 12: "12P", 18: "6P", 23: "11P"}, MARGIN, half, 70, VIOLET)
+    _bars(doc, d.weekday_histogram, {i: day[0] for i, day in enumerate(days)}, MARGIN + half + 30, CONTENT_W - half - 30, 70, PEACH)
+    doc.y -= 96
+
+
+def _voice_and_adaptation(doc: _Doc) -> None:
+    d = doc.data
+    section = "Your voice"
+    doc.new_page(section)
+    doc.eyebrow("04 / Your voice")
+    doc.heading("How you", "write")
+    voice = d.voice
+    if voice.get("messages", 0) < 5:
+        doc.text("Not enough messages yet to describe how you write.", SANS, 10, SOFT, gap=20)
     else:
-        findings.append(("Context-Heavy Framing", _limit_words("You front-load context to reduce ambiguity and improve alignment before execution starts.", 18)))
+        doc.text(f"Measured across your {voice['messages']} most recent messages. This is what Mirror mode copies.", SANS, 10, SOFT, gap=16)
+        stats = [
+            (str(voice["median_words"]), "words in a typical message"),
+            (f"{round(voice['lowercase_share'] * 100)}%", "typed with no capitals"),
+            (f"{round(voice['question_share'] * 100)}%", "contain a question"),
+            (f"{round(voice['emoji_share'] * 100)}%", "contain an emoji"),
+        ]
+        col = CONTENT_W / 4
+        for i, (value, label) in enumerate(stats):
+            x = MARGIN + col * i
+            doc.c.setFont(SERIF, 30)
+            doc.c.setFillColor(INK)
+            doc.c.drawString(x, doc.y - 30, value)
+            doc.c.setFont(SANS, 8)
+            doc.c.setFillColor(SOFT)
+            for j, line in enumerate(simpleSplit(label, SANS, 8, col - 14)):
+                doc.c.drawString(x, doc.y - 44 - j * 10, line)
+        doc.y -= 78
+        habits = [f"{word} ({count})" for word, count in voice.get("abbreviations", []) if count >= 2]
+        if habits:
+            doc.text("Shorthand you use: " + ", ".join(habits) + ".", SANS, 10, INK, gap=4)
+        phrases = [p for p in voice.get("phrases", []) if printable(p)]
+        if phrases:
+            doc.text("Phrases that recur: " + ", ".join(f'"{p}"' for p in phrases) + ".", SANS, 10, INK, gap=4)
+        doc.y -= 12
 
-    if comm.get("Curiosity", 0.5) > 0.55:
-        findings.append(("Exploratory Curiosity", _limit_words("Your prompts frequently probe causes and alternatives, signaling a preference for understanding over quick surface answers.", 20)))
+    doc.rule(18)
+    doc.eyebrow("Because of all this")
+    doc.heading("How Reflectra", "talks to you", size=22)
+    for line in adaptation_lines(d.traits, voice):
+        doc.ensure(24, section)
+        doc.c.setFillColor(CYAN)
+        doc.c.circle(MARGIN + 3, doc.y - 6.5, 2.2, stroke=0, fill=1)
+        doc.text(line, SANS, 10.5, INK, x=MARGIN + 16, width=CONTENT_W - 16, gap=5)
 
-    if pers.get("Analytical", 0.5) > 0.55:
-        findings.append(("Analytical Rigor", _limit_words("You engage best when reasoning is explicit, sequential, and transparent from assumptions to conclusion.", 18)))
-
-    if pers.get("Expressive", 0.5) > 0.55:
-        findings.append(("Expressive Resonance", _limit_words("You respond well to language with tone and nuance, especially when ideas are framed in a human way.", 21)))
-
-    if len(findings) < 4:
-        findings.append(("Systemic Rhythm", _limit_words("Your pacing stays consistent across sessions, which improves personalization reliability over time.", 17)))
-        findings.append(("Detail Orientation", _limit_words("You increasingly specify output structure, which helps produce high-fit answers faster.", 14)))
-
-    return findings[:4]
-
-def _build_what_this_means(comm: Dict[str, float], pers: Dict[str, float]) -> str:
-    text = (
-        "Your behavior now acts as a reusable operating layer for response configuration. "
-        "Because the system recognizes your preferred pace, tone, and information density, you can write shorter prompts without sacrificing quality. "
-        "When you need a different style, one explicit instruction can temporarily override your default baseline."
-    )
-    return _limit_words(text, 75)
-
-def _build_archetype(comm: Dict[str, float], pers: Dict[str, float]) -> Tuple[str, str, str]:
-    if pers.get("Structured", 0) > 0.6 and comm.get("Directness", 0) > 0.6:
-        return (
-            "The Clarity-Driven Operator",
-            "You prioritize clarity, speed, and practical outcomes.",
-            "Your profile reflects structured decision-making and a bias toward clear execution. You likely use AI to reduce ambiguity and move quickly into action."
-        )
-    elif comm.get("Curiosity", 0) > 0.6 and pers.get("Creative", 0) > 0.5:
-        return (
-            "The Outcome-Focused Thinker",
-            "You explore broadly, then converge on what works.",
-            "You naturally investigate why and how before committing to a direction. You use AI for both exploration and practical synthesis that leads to outcomes."
-        )
-    elif pers.get("Analytical", 0) > 0.6:
-        return (
-            "The Decisive Strategist",
-            "You rely on logic, patterns, and deliberate reasoning.",
-            "You break down complex problems systematically and make deliberate trade-offs. You prefer responses that are nuanced, evidence-based, and context aware."
-        )
-    elif pers.get("Expressive", 0) > 0.6:
-        return (
-            "The Precision Executor",
-            "Your ideas flow freely with creativity and emotional resonance.",
-            "You communicate with nuance while keeping strong intent. You value thoughtful framing but still expect practical structure and follow-through."
-        )
-    else:
-        return (
-            "The Adaptive Pragmatist",
-            "You adapt your style seamlessly based on the context at hand.",
-            "Your interactions show a highly balanced approach. You can dive into details when necessary, but remain comfortable with high-level summaries."
-        )
-
-def _build_strengths(comm: Dict[str, float], pers: Dict[str, float]) -> List[str]:
-    s = []
-    if comm.get("Directness", 0.5) > 0.6: s.append("Clear and unambiguous in expressing needs, saving time and friction.")
-    else: s.append("Provides rich, contextual detail allowing for highly personalized AI responses.")
-    if pers.get("Analytical", 0.5) > 0.6: s.append("Strong ability to structure complex problems logically.")
-    if pers.get("Creative", 0.5) > 0.6: s.append("Highly imaginative; pushes the boundaries of standard solutions.")
-    if not s: s.extend(["Highly adaptable communication style.", "Consistently provides balanced context."])
-    return s[:3]
-
-def _build_blind_spots(comm: Dict[str, float], pers: Dict[str, float]) -> List[str]:
-    b = []
-    if comm.get("Directness", 0.5) > 0.65: b.append("May occasionally sacrifice deeper exploratory thinking for speed.")
-    if comm.get("Curiosity", 0.5) < 0.4: b.append("Could benefit from asking more open-ended 'what if' questions to unlock broader insights.")
-    if pers.get("Structured", 0.5) > 0.7: b.append("High structure preference might limit lateral or purely creative brainstorming sessions.")
-    if not b: b.append("Interaction rhythm is steady, but could unlock edges by varying prompt structures.")
-    return b[:3]
-
-def _build_optimization_rules(comm: Dict[str, float], pers: Dict[str, float]) -> Tuple[List[str], List[str]]:
-    dos = ["Do use your natural voice; the AI is actively adapting to your baseline style."]
-    donts = ["Don't feel the need to over-explain simple tasks unless you want a deep dive."]
-    if comm.get("Directness", 0.5) > 0.6:
-        dos.append("Frame your goals as direct execution tasks to trigger immediate action.")
-        donts.append("Don't worry about conversational pleasantries; optimize for speed.")
-    else:
-        dos.append("Share background context and 'why' you are doing something for better alignment.")
-        donts.append("Don't assume the AI will guess your constraints—state them clearly.")
-    return dos[:3], donts[:3]
-
-def _interpret_pie(dist: Dict[str, float]) -> Dict[str, str]:
-    if not dist:
-        return _chart_story(
-            "This chart shows your recurring conversation theme mix.",
-            "There is not enough topic data yet to identify a dominant focus.",
-            "More usage will make personalization recommendations sharper and more reliable.",
-        )
-    items = list(dist.items())
-    top_label, top_ratio = items[0]
-    concentration = "highly concentrated" if top_ratio >= 0.38 else "fairly distributed"
-    return _chart_story(
-        "This chart shows where your attention is spent most often.",
-        f"{top_label} leads at about {top_ratio:.0%}, and your mix is {concentration}.",
-        "Use this focus to prioritize examples, depth, and default response framing.",
+    doc.ensure(110, section)
+    doc.y -= 12
+    doc.rule(16)
+    doc.eyebrow("How to read this report")
+    doc.text(
+        "Everything here is computed from conversations stored in your account. Trait scores are a running "
+        "average that each message nudges by at most a fifth of the way, so one bad day cannot rewrite you. "
+        "Reflections are written by an AI model, then checked: any pattern whose quotes are not found word for "
+        "word in your messages is thrown out. Incognito conversations are never stored and are not part of this. "
+        "This is a mirror, not a diagnosis.",
+        SANS, 8.8, SOFT,
     )
 
-def _interpret_bar(traits: Dict[str, float]) -> Dict[str, str]:
-    top_trait = max(traits, key=traits.get) if traits else "Directness"
-    top_val = traits.get(top_trait, 0.5)
-    return _chart_story(
-        "This chart compares curiosity, directness, and detail in your prompt style.",
-        f"{top_trait} is strongest at {top_val:.2f}, driving most of your interaction tone.",
-        "Match prompts to this lead trait first, then tune the other two.",
-    )
 
-def _interpret_radar(dims: Dict[str, float]) -> Dict[str, str]:
-    if not dims:
-        return _chart_story(
-            "This chart maps your profile across core behavior dimensions.",
-            "There is not enough stable data yet to identify a dominant dimension.",
-            "A clearer shape improves fit for response tone and structure.",
-        )
-    top = max(dims, key=dims.get)
-    spread = max(dims.values()) - min(dims.values())
-    shape = "specialized" if spread > 0.25 else "balanced"
-    return _chart_story(
-        "This chart shows your multi-axis behavioral signature in one shape.",
-        f"{top} is highest, and your overall profile currently looks {shape}.",
-        "The shape guides optimization for precision, creativity, structure, and tone.",
-    )
+def render_report(data: ReportData) -> bytes:
+    doc = _Doc(data)
+    _cover(doc)
+    _glance(doc)
+    _reflections(doc)
+    _change_and_rhythm(doc)
+    _voice_and_adaptation(doc)
+    return doc.finish()
 
-def _interpret_timeline(points: List[Tuple[str, float, float]]) -> Dict[str, str]:
-    if not points or len(points) < 2:
-        return _chart_story(
-            "This chart tracks consistency and reflection depth over time.",
-            "There are not enough sessions yet to detect meaningful movement.",
-            "More history increases confidence in long-range personalization decisions.",
-        )
-    delta = points[-1][1] - points[0][1]
-    direction = "upward" if delta > 0.08 else "stable"
-    return _chart_story(
-        "This chart tracks how steady your interaction baseline stays across sessions.",
-        f"Consistency trend is {direction}, indicating how stable your interaction rhythm is.",
-        "Higher stability enables faster personalization with fewer clarifying questions.",
-    )
 
-def _humanize_tags(tags: List[str]) -> List[str]:
-    mapping = {
-        "self-reflection": "Introspective Thinker 🪞",
-        "decision-making": "Decisive Executor 🎯",
-        "growth": "Growth Mindset 🌱",
-        "communication": "Clear Communicator 💬",
-        "planning": "Strategic Planner 📅",
-        "creativity": "Creative Explorer 🎨",
-    }
-    return [mapping.get(t.lower(), f"{t.replace('-', ' ').title()} 📌") for t in tags]
-
-def _normalize_distribution(counter: Counter, max_items: int = 6) -> Dict[str, float]:
-    most_common = counter.most_common(max_items)
-    if not most_common: return {"General": 1.0}
-    total = sum(count for _, count in most_common)
-    if total <= 0: return {name.title(): 1 / len(most_common) for name, _ in most_common}
-    return {name.replace("-", " ").title(): count / total for name, count in most_common}
-
-def _derive_communication_traits(texts: List[str], comm: float, dec: float) -> Dict[str, float]:
-    if not texts: return {"Curiosity": 0.5, "Directness": 0.5, "Detail Level": comm}
-    total_words, question_hits, qualifier_hits = 0, 0, 0
-    q_words = {"why", "how", "what", "when", "where", "could", "can", "should", "would"}
-    c_words = {"maybe", "perhaps", "kind of", "sort of", "i think", "possibly", "not sure", "might"}
-    for t in texts:
-        l = t.lower()
-        w = l.split()
-        total_words += len(w)
-        for q in q_words:
-            if f" {q} " in f" {l} ": question_hits += 1
-        for c in c_words:
-            if c in l: qualifier_hits += 1
-    d_level = _clamp((total_words / max(len(texts), 1) / 35.0) * 0.55 + comm * 0.45)
-    cur = _clamp((question_hits / max(len(texts), 1)) * 0.8)
-    dr = _clamp((1.0 - (qualifier_hits / max(len(texts), 1) * 0.28)) * 0.55 + dec * 0.45)
-    return {"Curiosity": cur, "Directness": dr, "Detail Level": d_level}
-
-def _build_timeline_points(snapshots: List[PersonaSnapshot]) -> List[Tuple[str, float, float]]:
-    pts = []
-    for s in snapshots[-12:]:
-        dt = _to_utc(s.created_at)
-        lbl = dt.strftime("%b %d") if dt else "Session"
-        stab = _safe_float(s.stability_index, 0.5)
-        prof = (s.persona_vector or {}).get("behavioral_profile", {})
-        refl = 0.5
-        if isinstance(prof, dict):
-            tp = prof.get("reflection_depth", {})
-            if isinstance(tp, dict): refl = _safe_float(tp.get("score"), 0.5)
-        pts.append((lbl, _clamp(stab), _clamp(refl)))
-    return pts
-
-def _build_insight_cards(comm: Dict[str, float], pers: Dict[str, float], sched: ScheduleContext | None) -> List[Tuple[str, str, str]]:
-    cards = []
-    if comm.get("Curiosity", 0.0) >= 0.62: cards.append(("🧐", "Highly Curious", "Regularly asks exploratory questions and seeks context."))
-    if comm.get("Directness", 0.0) >= 0.62: cards.append(("⚡", "Action-Oriented", "Responds strongly to clear, actionable guidance."))
-    if pers.get("Expressive", 0.0) >= 0.62: cards.append(("🌟", "Expressive Mind", "Comfortable with richer emotional language/nuance."))
-    if pers.get("Analytical", 0.0) >= 0.62: cards.append(("🛠️", "Analytical Thinker", "Reasons through patterns before committing to decisions."))
-    if sched and _safe_float(sched.stress_level, 0.0) >= 0.7: cards.append(("⚠️", "High Workload", "Periods benefit from concise planning and priority framing."))
-    if not cards: cards.append(("⚖️", "Balanced Profile", "Interaction style is robust, broad, and still forming."))
-    return cards[:4]
-
-def _fig_to_b64(fig) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor="white", transparent=True)
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
-
-def _style_matplotlib():
-    plt.rcParams.update({
-        "font.family": "sans-serif", "font.sans-serif": ["DejaVu Sans", "Liberation Sans", "Arial", "sans-serif"], "font.size": 11,
-        "axes.edgecolor": "#E2E8F0", "axes.labelcolor": "#475569", "axes.titleweight": "bold",
-        "axes.titlesize": 13, "xtick.color": "#94A3B8", "ytick.color": "#94A3B8",
-        "figure.facecolor": "none", "axes.facecolor": "none"
-    })
-
-def _build_pie_chart(dist: Dict[str, float]) -> str:
-    _style_matplotlib()
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    palette = ["#6366F1", "#8B5CF6", "#A855F7", "#D946EF", "#EC4899", "#F43F5E"]
-    ax.pie(dist.values(), labels=dist.keys(), colors=palette[:len(dist)], autopct=lambda p: f"{p:.0f}%", startangle=140, wedgeprops={"linewidth": 3, "edgecolor": "white"})
-    ax.axis("equal")
-    return _fig_to_b64(fig)
-
-def _build_bar_chart(traits: Dict[str, float]) -> str:
-    _style_matplotlib()
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    bars = ax.bar(traits.keys(), traits.values(), color=["#6366F1", "#8B5CF6", "#EC4899"], width=0.45)
-    ax.set_ylim(0, 1)
-    ax.grid(axis="y", alpha=0.25, color="#CBD5E1")
-    ax.set_axisbelow(True)
-    for bar, val in zip(bars, traits.values()):
-        ax.text(bar.get_x() + bar.get_width()/2, val + 0.04, f"{val:.2f}", ha="center", va="bottom", fontsize=10, fontweight="bold", color="#334155")
-    return _fig_to_b64(fig)
-
-def _build_radar_chart(dims: Dict[str, float]) -> str:
-    _style_matplotlib()
-    labels, values = list(dims.keys()), list(dims.values())
-    angles = np.linspace(0, 2*math.pi, len(labels), endpoint=False).tolist()
-    angles += angles[:1]; values += values[:1]
-    fig, ax = plt.subplots(figsize=(6, 3.8), subplot_kw={"polar": True})
-    ax.plot(angles, values, color="#8B5CF6", linewidth=2.5)
-    ax.fill(angles, values, color="#A855F7", alpha=0.25)
-    ax.set_xticks(angles[:-1]); ax.set_xticklabels(labels, fontsize=10, color="#64748B")
-    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
-    ax.set_yticklabels([""]*5)
-    ax.set_ylim(0, 1)
-    return _fig_to_b64(fig)
-
-def _build_timeline_chart(points: List[Tuple[str, float, float]]) -> str:
-    _style_matplotlib()
-    if not points: points = [("Intro", 0.5, 0.5), ("Latest", 0.52, 0.5)]
-    labels, stab, depth = [p[0] for p in points], [p[1] for p in points], [p[2] for p in points]
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.plot(labels, stab, marker="o", lw=2.5, color="#6366F1", label="Consistency")
-    ax.plot(labels, depth, marker="o", lw=2.5, color="#EC4899", label="Reflection Depth")
-    ax.set_ylim(0, 1)
-    ax.grid(axis="y", alpha=0.25, color="#CBD5E1")
-    ax.legend(loc="lower right", frameon=True, fontsize=9, facecolor="#F8FAFC", edgecolor="#E2E8F0")
-    ax.tick_params(axis="x", rotation=25)
-    ax.set_axisbelow(True)
-    return _fig_to_b64(fig)
-
-def _render_html(p: ReportPayload, pie_b64: str, bar_b64: str, radar_b64: str, timeline_b64: str, brand_icon_uri: str | None = None) -> str:
-    import jinja2
-
-    template = """<!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="UTF-8">
-    <title>Persona Intelligence Report</title>
-    <style>
-        /* A4 Page dimensions strictly defined */
-        @page {
-            size: A4;
-            margin: 15mm 20mm;
-            background: #F8FAFC;
-            counter-increment: report_page;
-            @bottom-center {
-                content: "Page " counter(report_page);
-                font-size: 9px;
-                color: #94A3B8;
-            }
-        }
-        @page cover {
-            background:
-                radial-gradient(circle at 16% 18%, rgba(56, 189, 248, 0.20) 0%, rgba(56, 189, 248, 0.00) 42%),
-                radial-gradient(circle at 82% 78%, rgba(167, 139, 250, 0.18) 0%, rgba(167, 139, 250, 0.00) 44%),
-                linear-gradient(145deg, #0B1220 0%, #1A2140 56%, #121A34 100%);
-            margin: 0;
-            counter-increment: none;
-            @bottom-center {
-                content: none;
-            }
-        }
-        
-        body {
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-            color: #1E293B;
-            line-height: 1.5;
-            margin: 0;
-            padding: 0;
-            font-size: 12px;
-        }
-
-        /* PAGE 1: COVER PAGE */
-        .cover-wrapper {
-            page: cover;
-            page-break-after: always;
-            position: relative;
-            height: 297mm; /* Absolute height for WeasyPrint */
-            width: 210mm;
-            box-sizing: border-box;
-            overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 44px 40px 88px 40px;
-        }
-        .cover-wrapper::before {
-            content: "";
-            position: absolute;
-            inset: 26px;
-            border-radius: 14px;
-            border: 1px solid rgba(148, 163, 184, 0.12);
-            background: linear-gradient(165deg, rgba(15, 23, 42, 0.16), rgba(30, 27, 75, 0.04));
-            pointer-events: none;
-        }
-        .cover-wrapper::after {
-            content: "";
-            position: absolute;
-            top: -80px;
-            right: -120px;
-            width: 340px;
-            height: 340px;
-            border-radius: 999px;
-            background: radial-gradient(circle, rgba(56, 189, 248, 0.20) 0%, rgba(56, 189, 248, 0) 70%);
-            pointer-events: none;
-        }
-        .cover-content {
-            position: relative;
-            width: 100%;
-            max-width: 760px;
-            text-align: center;
-            color: #FFFFFF;
-            z-index: 2;
-        }
-        .cover-brand-icon {
-            width: 34px;
-            height: 34px;
-            margin: 0 auto 18px auto;
-            display: block;
-            border-radius: 10px;
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            background: rgba(15, 23, 42, 0.55);
-            padding: 6px;
-            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.34);
-        }
-        .cover-title-small { font-size: 12px; color: #93C5FD; text-transform: uppercase; letter-spacing: 2.2px; margin-bottom: 24px; font-weight: 700; }
-        .cover-main-title { font-size: 60px; font-weight: 900; line-height: 1.06; margin: 0 0 14px 0; letter-spacing: -1.4px; text-wrap: balance; }
-        .cover-subtitle { font-size: 27px; font-weight: 600; color: #D6E4FF; margin: 0 0 22px 0; letter-spacing: -0.2px; }
-        .cover-tagline { font-size: 18px; color: #C4B5FD; margin: 0 auto 36px auto; line-height: 1.5; max-width: 620px; }
-        .cover-badge {
-            display: inline-block;
-            background: linear-gradient(160deg, rgba(56, 189, 248, 0.16), rgba(99, 102, 241, 0.12));
-            border: 1px solid rgba(125, 211, 252, 0.38);
-            border-radius: 10px;
-            padding: 22px 46px;
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-        }
-        .cover-val { font-size: 48px; font-weight: 800; color: #38BDF8; line-height: 1; margin-bottom: 8px; }
-        .cover-label { font-size: 12px; text-transform: uppercase; font-weight: 700; color: #E0F2FE; letter-spacing: 1px; }
-        .cover-why {
-            margin: 24px auto 0 auto;
-            max-width: 560px;
-            font-size: 12px;
-            color: #E2E8F0;
-            line-height: 1.5;
-            padding: 14px 16px;
-            border-radius: 8px;
-            background: rgba(15, 23, 42, 0.34);
-            border: 1px solid rgba(148, 163, 184, 0.30);
-        }
-
-        .cover-footer {
-            position: absolute;
-            bottom: 40px;
-            left: 50px;
-            right: 50px;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            padding-top: 20px;
-            font-size: 11px;
-            color: #94A3B8;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .cover-fl { float: left; }
-        .cover-fr { float: right; }
-        .clear { clear: both; }
-
-        .report-pages {
-            counter-reset: report_page 0;
-        }
-
-        /* ANALYTICAL REPORT CONTENT */
-        .section-block {
-            margin-bottom: 32px;
-            page-break-inside: avoid;
-        }
-        .section-heading {
-            font-size: 18px; font-weight: 800; color: #0F172A; text-transform: uppercase; letter-spacing: -0.5px;
-            margin: 0 0 6px 0; border-bottom: 2px solid #E2E8F0; padding-bottom: 8px;
-            page-break-after: avoid;
-        }
-        .section-sub {
-            font-size: 11px; color: #64748B; margin: 12px 0 20px 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
-            page-break-after: avoid;
-        }
-
-        .grid-2-col {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-        }
-        .col-half {
-            width: calc(50% - 10px);
-            box-sizing: border-box;
-        }
-
-        .premium-card {
-            background: #FFFFFF;
-            border-radius: 8px;
-            padding: 16px;
-            box-shadow: 0 2px 4px rgba(15, 23, 42, 0.03);
-            border: 1px solid #E2E8F0;
-            margin-bottom: 20px;
-            page-break-inside: avoid;
-        }
-
-        .card-title {
-            font-weight: 800; font-size: 12px; color: #1E293B; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;
-        }
-        .list-item { margin-bottom: 8px; font-size: 11.5px; color: #334155; line-height: 1.5; }
-
-        /* Exec Block */
-        .exec-block {
-            background: #FFFFFF; border-left: 4px solid #6366F1; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-            font-size: 12.5px; color: #334155; line-height: 1.7; page-break-inside: avoid; margin-bottom: 12px;
-        }
-
-        /* Pills */
-        .pill-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
-        .pill { 
-            background: #FFFFFF; border: 1px solid #CBD5E1; padding: 10px 18px; border-radius: 6px; 
-            font-size: 11px; font-weight: 700; color: #0F172A; text-transform: uppercase; letter-spacing: 0.5px; 
-            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-            page-break-inside: avoid;
-        }
-
-        /* Charts */
-        .chart-img { width: 100%; border-radius: 4px; margin-bottom: 16px; border: 1px solid #F1F5F9; }
-        .chart-caption { font-size: 10.5px; color: #475569; padding-top: 8px; border-top: 1px solid #F1F5F9; line-height: 1.32; }
-        .chart-tier { margin-bottom: 5px; }
-        .chart-tier:last-child { margin-bottom: 0; }
-        .chart-tier-label {
-            display: block;
-            font-size: 8.5px;
-            letter-spacing: 0.7px;
-            text-transform: uppercase;
-            font-weight: 800;
-            color: #64748B;
-            margin-bottom: 1px;
-        }
-
-        .how-item {
-            margin-bottom: 8px;
-            font-size: 11.5px;
-            color: #334155;
-            line-height: 1.5;
-        }
-        .how-item:last-child { margin-bottom: 0; }
-
-        .card-green { border-top: 4px solid #10B981; }
-        .card-green .card-title { color: #047857; }
-        .card-red { border-top: 4px solid #EF4444; }
-        .card-red .card-title { color: #B91C1C; }
-        .card-neutral { border-top: 4px solid #38BDF8; }
-        .card-neutral .card-title { color: #0369A1; }
-
-        .footer-disclaimer {
-            text-align: center; color: #94A3B8; font-size: 9px; padding: 24px 40px; line-height: 1.5; 
-            text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid #E2E8F0; margin-top: 20px;
-        }
-    </style>
-    </head>
-    <body>
-
-    <!-- PAGE 1: COVER PAGE -->
-    <div class="cover-wrapper">
-        <div class="cover-content">
-            {% if brand_icon_uri %}
-            <img class="cover-brand-icon" src="{{ brand_icon_uri }}" alt="Brand">
-            {% endif %}
-            <div class="cover-title-small">Reflectra</div>
-            <div class="cover-main-title">Persona Report Summary</div>
-            <div class="cover-subtitle">Your AI Interaction Profile</div>
-            <div class="cover-tagline">You prioritize clarity, speed, and practical outcomes.</div>
-            
-            <div class="cover-badge">
-                <div class="cover-val">{{ p.overall_score }}</div>
-                <div class="cover-label">Engagement Baseline</div>
-            </div>
-            <div class="cover-why"><b>Why This Score:</b> {{ p.why_this_score }}</div>
-        </div>
-        
-        <div class="cover-footer">
-            <div class="cover-fl">User: <b>{{ p.display_name }}</b></div>
-            <div class="cover-fr">Generated: <b>{{ p.generated_at }}</b></div>
-            <div class="clear"></div>
-        </div>
-    </div>
-
-    <!-- PAGE 2+: ANALYTICAL CONTENT -->
-    <div class="report-pages">
-
-    <div class="section-block">
-        <h2 class="section-heading">Before You Read</h2>
-        <p class="section-sub">Context to interpret the report quickly and correctly.</p>
-
-        <div class="premium-card">
-            <div class="card-title">About This Report</div>
-            <p style="margin: 0; font-size: 11.5px; color: #475569; line-height: 1.6;">{{ p.about_this_report }}</p>
-        </div>
-
-        <div class="premium-card">
-            <div class="card-title">How To Read This Report</div>
-            {% for title, desc in p.how_to_read_report %}
-            <div class="how-item"><b>{{ title }}:</b> {{ desc }}</div>
-            {% endfor %}
-        </div>
-
-        <div class="premium-card">
-            <div class="card-title">Why This Score</div>
-            <p style="margin: 0; font-size: 11.5px; color: #475569; line-height: 1.6;">{{ p.why_this_score }}</p>
-        </div>
-    </div>
-    
-    <div class="section-block">
-        <h2 class="section-heading">Executive Analysis</h2>
-        <p class="section-sub">High-level synthesis of your interaction footprint.</p>
-        
-        <div class="exec-block">
-            <b>Primary Cognitive Footprint:</b> {{ p.executive_analysis }}
-        </div>
-        <div class="exec-block" style="border-left-color: #38BDF8;">
-            <b>Operational Translation:</b> {{ p.what_this_means }}
-        </div>
-    </div>
-
-    <div class="section-block">
-        <h2 class="section-heading">Behavioral Mechanics</h2>
-        <p class="section-sub">Foundational cognitive signatures driving engagement.</p>
-        
-        <div class="pill-grid">
-            <div class="pill">Action-Oriented</div>
-            <div class="pill">Structured Thinker</div>
-            <div class="pill">Outcome Driven</div>
-            <div class="pill">Expressive Communicator</div>
-        </div>
-    </div>
-
-    <div class="section-block">
-        <h2 class="section-heading">Capability Assessment</h2>
-        <p class="section-sub">Strengths and limitations inferred from behavior.</p>
-
-        <div class="grid-2-col">
-            <div class="premium-card card-green col-half">
-                <div class="card-title">Operational Strengths</div>
-                {% for item in p.strengths %}
-                <div class="list-item">- {{ item }}</div>
-                {% endfor %}
-            </div>
-            <div class="premium-card card-red col-half">
-                <div class="card-title">Blind Spots</div>
-                {% for item in p.blind_spots %}
-                <div class="list-item">- {{ item }}</div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-
-    <div class="section-block">
-        <h2 class="section-heading">Key Findings</h2>
-        <p class="section-sub">Critical mechanisms shaping your AI alignment.</p>
-
-        <div class="grid-2-col">
-            {% for title, desc in p.key_findings %}
-            <div class="premium-card col-half" style="border-left: 4px solid #8B5CF6;">
-                <div class="card-title">{{ title }}</div>
-                <p style="margin: 0; font-size: 11.5px; color: #475569;">{{ desc }}</p>
-            </div>
-            {% endfor %}
-        </div>
-    </div>
-
-    <div class="section-block">
-        <h2 class="section-heading">Data Storytelling</h2>
-        <p class="section-sub">Premium visual analytics representing your baseline.</p>
-
-        <div class="grid-2-col">
-            <div class="premium-card col-half">
-                <div class="card-title">Interests & Topic Gravity</div>
-                <img class="chart-img" src="data:image/png;base64,{{ pie_b64 }}" alt="Chart">
-                <div class="chart-caption">
-                    <div class="chart-tier"><span class="chart-tier-label">What This Shows</span>{{ p.chart_interpretations.pie.what_it_shows }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">What Your Data Means</span>{{ p.chart_interpretations.pie.what_your_data_means }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">Why This Matters</span>{{ p.chart_interpretations.pie.why_this_matters }}</div>
-                </div>
-            </div>
-
-            <div class="premium-card col-half">
-                <div class="card-title">Interaction Vectors</div>
-                <img class="chart-img" src="data:image/png;base64,{{ bar_b64 }}" alt="Chart">
-                <div class="chart-caption">
-                    <div class="chart-tier"><span class="chart-tier-label">What This Shows</span>{{ p.chart_interpretations.bar.what_it_shows }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">What Your Data Means</span>{{ p.chart_interpretations.bar.what_your_data_means }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">Why This Matters</span>{{ p.chart_interpretations.bar.why_this_matters }}</div>
-                </div>
-            </div>
-
-            <div class="premium-card col-half">
-                <div class="card-title">Multi-Axis Signature</div>
-                <img class="chart-img" src="data:image/png;base64,{{ radar_b64 }}" alt="Chart">
-                <div class="chart-caption">
-                    <div class="chart-tier"><span class="chart-tier-label">What This Shows</span>{{ p.chart_interpretations.radar.what_it_shows }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">What Your Data Means</span>{{ p.chart_interpretations.radar.what_your_data_means }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">Why This Matters</span>{{ p.chart_interpretations.radar.why_this_matters }}</div>
-                </div>
-            </div>
-
-            <div class="premium-card col-half">
-                <div class="card-title">Rhythm Over Time</div>
-                <img class="chart-img" src="data:image/png;base64,{{ timeline_b64 }}" alt="Chart">
-                <div class="chart-caption">
-                    <div class="chart-tier"><span class="chart-tier-label">What This Shows</span>{{ p.chart_interpretations.timeline.what_it_shows }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">What Your Data Means</span>{{ p.chart_interpretations.timeline.what_your_data_means }}</div>
-                    <div class="chart-tier"><span class="chart-tier-label">Why This Matters</span>{{ p.chart_interpretations.timeline.why_this_matters }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="section-block">
-        <h2 class="section-heading">Persona Playbook</h2>
-        <p class="section-sub">AI Optimization Mode: Proven prompt framing techniques.</p>
-
-        <div class="grid-2-col">
-            <div class="premium-card card-green col-half">
-                <div class="card-title">Do This</div>
-                {% for d in p.optimization_dos %}
-                <div class="list-item">- {{ d }}</div>
-                {% endfor %}
-            </div>
-            <div class="premium-card card-red col-half">
-                <div class="card-title">Avoid This</div>
-                {% for d in p.optimization_donts %}
-                <div class="list-item">- {{ d }}</div>
-                {% endfor %}
-            </div>
-            <div class="premium-card card-neutral" style="width: 100%;">
-                <div class="card-title">Strategic Adjustments</div>
-                <p style="margin: 0; font-size: 11.5px; color: #475569; line-height: 1.5;">The system maps firmly to your <b>{{ p.archetype_name }}</b> baseline. It filters out irrelevant boilerplate automatically. If you want to break out of this operational mold to explore horizontally, simply instruct: <i>"Give me an exploratory, completely unrestricted summary."</i></p>
-            </div>
-        </div>
-    </div>
-
-    <div class="footer-disclaimer">
-        Disclaimer: The insights presented in this report are algorithmically inferred based on historical interaction patterns and linguistic analysis. They reflect probability clusters rather than absolute psychological profiles and represent a snapshot in time. Your cognitive footprint is dynamic and will naturally evolve as your usage scales. Use this intelligence strictly as an operational optimization layer.
-    </div>
-
-    </div>
-
-    </body>
-    </html>"""
-    
-    t = jinja2.Template(template)
-    return t.render(p=p, pie_b64=pie_b64, bar_b64=bar_b64, radar_b64=radar_b64, timeline_b64=timeline_b64, brand_icon_uri=brand_icon_uri)
+__all__ = ["ReportData", "TraitReading", "build_persona_report_pdf", "collect_report_data", "render_report"]

@@ -68,6 +68,7 @@ class Message(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(32), nullable=False, index=True)
     content = Column(Text, nullable=False)
+    # Length differs between databases (1024 or 1536); embedding_service reads the real one.
     embedding = Column(Vector(1536))
     token_count = Column(Integer)
     emotional_intensity = Column(Float)
@@ -107,6 +108,10 @@ class BehavioralInsight(Base):
     insight_text = Column(Text, nullable=False)
     tags = Column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
     confidence = Column(Float)
+    # "reflection" = evidence-backed pattern across conversations; "signal" = legacy per-message line.
+    kind = Column(String(32), nullable=False, server_default=text("'signal'"))
+    title = Column(Text)
+    evidence = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="behavioral_insights")

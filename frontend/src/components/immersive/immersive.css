@@ -1,0 +1,276 @@
+/* Landing page scenes. Scroll progress arrives as CSS custom properties set by
+   each scene (see scroll.ts), so animation never re-renders React. */
+
+/* ---------- Nav ---------- */
+.immersive-nav {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 50;
+  transition: background 0.4s ease, border-color 0.4s ease, backdrop-filter 0.4s ease;
+  border-bottom: 1px solid transparent;
+}
+.immersive-nav.is-solid {
+  background: hsl(240 18% 4% / 0.62);
+  border-color: hsl(0 0% 100% / 0.06);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* ---------- 1. Hero mirror ---------- */
+.hero-thought {
+  --edge: 7.5rem;
+  position: absolute;
+  transform: translate(-50%, -50%) scale(calc(1 - var(--pull, 0) * 0.55));
+  white-space: nowrap;
+  font-size: clamp(0.95rem, 1.6vw, 1.35rem);
+  color: hsl(250 20% 92% / 0.55);
+  opacity: var(--thoughts, 1);
+  filter: blur(calc(var(--pull, 0) * 3px));
+}
+@media (max-width: 760px) {
+  .hero-thought { --edge: 5.5rem; font-size: 0.85rem; }
+  .hero-thought:nth-child(n + 6) { display: none; }
+}
+.hero-intro {
+  opacity: var(--intro, 1);
+  transform: translateY(calc(-50% - (1 - var(--intro, 1)) * 40px));
+  filter: blur(calc((1 - var(--intro, 1)) * 8px));
+}
+.hero-title {
+  opacity: var(--title, 0);
+  pointer-events: none;
+}
+.hero-word {
+  font-size: clamp(4.2rem, 15vw, 13rem);
+  line-height: 0.85;
+  letter-spacing: -0.035em;
+  transform: translateY(calc((1 - var(--title, 0)) * 60px));
+  filter: blur(calc((1 - var(--title, 0)) * 14px));
+  background: linear-gradient(180deg, hsl(250 30% 98%) 0%, hsl(252 60% 86%) 55%, hsl(188 60% 78%) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero-reflection {
+  font-size: clamp(4.2rem, 15vw, 13rem);
+  line-height: 0.85;
+  letter-spacing: -0.035em;
+  transform: scaleY(-1) translateY(calc(-0.06em + (1 - var(--reflect, 0)) * -30px));
+  opacity: calc(var(--reflect, 0) * 0.5);
+  background: linear-gradient(180deg, hsl(252 70% 85%) 0%, hsl(188 70% 78%) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 70%);
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 70%);
+  filter: url(#ripple) blur(0.6px);
+  user-select: none;
+}
+.hero-cta {
+  opacity: var(--cta, 0);
+  transform: translateY(calc((1 - var(--cta, 0)) * 24px));
+  pointer-events: none;
+}
+.hero-stage[data-live="true"] .hero-cta { pointer-events: auto; }
+.hero-cue { opacity: var(--cue, 1); transition: opacity 0.5s ease; }
+
+/* ---------- 2. Conversation ---------- */
+.convo-stage h2 {
+  opacity: calc(0.25 + var(--heading, 1) * 0.75);
+}
+.convo-line {
+  display: flex;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(14px);
+  overflow: hidden;
+  transition: max-height 0.6s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s ease, transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.convo-line.on {
+  max-height: 260px;
+  opacity: 1;
+  transform: none;
+}
+.convo-line.is-you { justify-content: flex-end; }
+.convo-bubble {
+  max-width: 82%;
+  border-radius: 1.1rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.is-you .convo-bubble { border-bottom-right-radius: 0.35rem; }
+.is-ai .convo-bubble { border-bottom-left-radius: 0.35rem; color: hsl(var(--foreground) / 0.9); }
+.convo-signal {
+  background: none;
+  color: inherit;
+  border-radius: 0.3rem;
+  padding: 0 0.15rem;
+  transition: background 0.8s ease, box-shadow 0.8s ease;
+}
+.convo-line.on .convo-signal {
+  background: hsl(var(--iris-peach) / 0.16);
+  box-shadow: 0 0 0 1px hsl(var(--iris-peach) / 0.3), 0 0 22px -4px hsl(var(--iris-peach) / 0.5);
+}
+.convo-typing {
+  display: none;
+  gap: 4px;
+  width: fit-content;
+  padding: 0.7rem 1rem;
+  border-radius: 1.1rem;
+  background: hsl(0 0% 100% / 0.035);
+}
+.convo-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.6);
+}
+.convo-stage[data-typing="true"] .convo-typing { display: inline-flex; }
+.convo-noticed {
+  opacity: 0;
+  transform: translateX(-26px);
+  filter: blur(6px);
+  transition: opacity 0.8s ease, transform 0.8s cubic-bezier(0.16, 1, 0.3, 1), filter 0.8s ease;
+}
+.convo-noticed.on { opacity: 1; transform: none; filter: none; }
+
+/* ---------- 3. Traits ---------- */
+.traits-stage h2 { opacity: calc(0.3 + var(--heading, 1) * 0.7); }
+.trait-gauge { position: relative; }
+.trait-gauge svg circle {
+  fill: none;
+  transform: rotate(135deg);
+  transform-origin: 90px 90px;
+}
+.trait-track {
+  stroke: hsl(0 0% 100% / 0.07);
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+.trait-value {
+  stroke: var(--hue);
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: calc(var(--arc) * var(--value, 0.5)) 9999 !important;
+  filter: drop-shadow(0 0 10px var(--hue));
+}
+.trait-confidence {
+  stroke: var(--hue);
+  stroke-width: 1.5;
+  opacity: 0.55;
+  stroke-dasharray: var(--confidence, 0.1) 1;
+  transform: rotate(-90deg) !important;
+}
+.trait-center {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  aspect-ratio: 1;
+  max-width: 200px;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.traits-caption {
+  opacity: var(--caption, 0);
+  transform: translateY(calc((1 - var(--caption, 0)) * 16px));
+}
+
+/* ---------- 4. Two mirrors ---------- */
+.modes-stage h2 { opacity: calc(0.3 + var(--heading, 1) * 0.7); }
+.modes-message {
+  opacity: var(--message, 0);
+  transform: translateY(calc((1 - var(--message, 0)) * 16px));
+}
+.modes-card { transition: none; }
+.modes-reflection {
+  opacity: calc(0.12 + var(--left, 0) * 0.88);
+  clip-path: inset(0 calc((1 - var(--left, 0)) * 100%) 0 0 round 1.5rem);
+}
+.modes-mirror {
+  opacity: calc(0.12 + var(--right, 0) * 0.88);
+  clip-path: inset(0 calc((1 - var(--right, 0)) * 100%) 0 0 round 1.5rem);
+}
+.modes-seam {
+  position: absolute;
+  top: -12px;
+  bottom: -12px;
+  left: calc(var(--seam, 0) * 100%);
+  width: 2px;
+  z-index: 2;
+  background: linear-gradient(180deg, transparent, hsl(var(--iris-cyan)), hsl(var(--iris-violet)), transparent);
+  box-shadow: 0 0 24px 4px hsl(var(--iris-cyan) / 0.45);
+  opacity: calc(min(1, var(--seam, 0) * 8) * (1 - max(0, var(--seam, 0) - 0.92) * 12));
+  pointer-events: none;
+}
+@media (max-width: 767px) {
+  .modes-seam { display: none; }
+  .modes-reflection, .modes-mirror { clip-path: none; }
+}
+
+/* ---------- 5. Manifesto ---------- */
+.manifesto-word {
+  opacity: calc(0.14 + var(--lit, 0) * 0.86);
+  transition: opacity 0.2s linear;
+}
+.manifesto-word.is-em {
+  font-style: italic;
+}
+.manifesto-word.is-em {
+  background: linear-gradient(100deg, hsl(var(--iris-violet)), hsl(var(--iris-cyan)) 50%, hsl(var(--iris-peach)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- 7. Final ring ---------- */
+@property --ring-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.final-frame {
+  width: min(86vw, 520px);
+  aspect-ratio: 1 / 1.08;
+}
+.final-ring {
+  border-radius: 50%;
+  background: conic-gradient(from var(--ring-angle), hsl(var(--iris-violet)), hsl(var(--iris-cyan)), hsl(var(--iris-peach)), hsl(var(--iris-violet)));
+  -webkit-mask: radial-gradient(closest-side, transparent 97.2%, #000 97.8%, #000 99.4%, transparent 100%);
+  mask: radial-gradient(closest-side, transparent 97.2%, #000 97.8%, #000 99.4%, transparent 100%);
+  filter: drop-shadow(0 0 26px hsl(var(--iris-violet) / 0.55));
+  opacity: 0.9;
+  animation: ring-flow 12s linear infinite;
+}
+@keyframes ring-flow {
+  to { --ring-angle: 360deg; }
+}
+.final-frame::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, hsl(var(--iris-violet) / 0.12), transparent 70%);
+  pointer-events: none;
+}
+
+/* ---------- Ambient light behind the middle scenes ---------- */
+.convo-stage {
+  background: radial-gradient(55% 60% at 20% 55%, hsl(var(--iris-violet) / 0.07), transparent 70%),
+              radial-gradient(40% 50% at 85% 40%, hsl(var(--iris-peach) / 0.05), transparent 70%);
+}
+.traits-stage {
+  background: radial-gradient(60% 50% at 50% 60%, hsl(var(--iris-cyan) / 0.06), transparent 70%);
+}
+.modes-stage {
+  background: radial-gradient(40% 55% at 25% 65%, hsl(var(--iris-violet) / 0.07), transparent 70%),
+              radial-gradient(40% 55% at 75% 65%, hsl(var(--iris-cyan) / 0.06), transparent 70%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .final-ring { animation: none; }
+  .hero-reflection { filter: blur(0.6px); }
+}

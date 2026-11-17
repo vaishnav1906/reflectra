@@ -5,12 +5,12 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, ensure_self
 from app.db.database import get_db
-from app.services.trait_extraction_service import extract_traits, extract_bootstrap_traits
+from app.services.trait_extraction_service import extract_traits
 from app.services.persona_update_service import update_traits
 from app.services.snapshot_service import generate_persona_snapshot
 from app.services.mirror_engine import invalidate_snapshot_cache
@@ -65,59 +65,156 @@ class ReflectionResponse(BaseModel):
 class BootstrapRequest(BaseModel):
     user_id: Optional[str] = None  # ignored: identity comes from the access token
     summary_text: str
+    # dry_run=True analyses the text and returns what WOULD change, without saving.
+    dry_run: bool = False
 
 
-@router.post("/bootstrap", response_model=ReflectionResponse)
+class VoiceImportRequest(BaseModel):
+    # A chat export (WhatsApp .txt, Telegram or ChatGPT .json) or one message per line.
+    text: str = Field(max_length=3_500_000)
+    sender: Optional[str] = Field(default=None, max_length=80)  # which person in the chat is the user
+    dry_run: bool = True
+
+
+@router.get("/voice-import")
+async def get_voice_import(current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    """Whether the user has imported their own texts, and what was learned from them."""
+    from app.services import voice_import_service
+
+    return {"imported": await voice_import_service.current_import(db, current_user.id)}
+
+
+@router.post("/voice-import")
+async def import_voice(request: VoiceImportRequest, current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    """Learn how the user writes from messages they wrote elsewhere.
+
+    Only the chosen sender's messages are kept; everyone else's are discarded.
+    dry_run=True returns what would be learned without saving anything.
+    """
+    from sqlalchemy import select
+
+    from app.db.models import User
+    from app.services import voice_import_service
+
+    display_name = (
+        await db.execute(select(User.display_name).where(User.id == current_user.id))
+    ).scalar_one_or_none()
+    try:
+        result = voice_import_service.read_upload(request.text, request.sender, display_name)
+    except voice_import_service.VoiceImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    samples = result.pop("_samples", None)
+    result["saved"] = False
+    if samples and not request.dry_run:
+        await voice_import_service.save_import(db, current_user.id, samples, str(result["format"]))
+        invalidate_snapshot_cache(str(current_user.id))
+        result["saved"] = True
+    return result
+
+
+@router.delete("/voice-import")
+async def delete_voice_import(current_user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    from app.services import voice_import_service
+
+    await voice_import_service.remove_import(db, current_user.id)
+    return {"imported": None}
+
+
+@router.post("/bootstrap")
 async def bootstrap_persona(
     request: BootstrapRequest,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Bootstrap a persona from an external AI behavioral summary, jumping starting 
-    the confidences to a moderate "assist" level.
+    Seed the persona from a description of the user (e.g. a summary another AI wrote).
+
+    Each trait reading must be backed by a verbatim quote from the text; traits the
+    text does not cover are left alone, and existing learning is blended, not replaced.
+    See app.services.persona_bootstrap_service for the rules.
     """
+    from app.constants import DEFAULT_TRAIT_CONFIDENCE, DEFAULT_TRAIT_SCORE, TRAIT_LIST
+    from app.db.models import ExternalInput
+    from app.services.persona_bootstrap_service import (
+        BootstrapInputError,
+        BootstrapUnavailable,
+        merge_trait,
+        read_summary,
+        validate_summary,
+    )
+
+    user_id = ensure_self(request.user_id, current_user)
+
     try:
-        user_id = ensure_self(request.user_id, current_user)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id format")
+        summary_text = validate_summary(request.summary_text)
+    except BootstrapInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    logger.info(f"🚀 Bootstrapping persona for user {user_id}")
+    try:
+        readings, notes = await read_summary(summary_text)
+    except BootstrapUnavailable as exc:
+        logger.warning("Bootstrap unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="The AI couldn't read that right now. Nothing was changed. Try again in a minute.",
+        )
 
-    # Extract target scores
-    extracted_scores = await extract_bootstrap_traits(request.summary_text)
-    logger.info(f"📊 Bootstrapped scores: {extracted_scores}")
+    existing = {m.trait_name: m for m in await PersonaRepository.get_all_metrics(db, user_id)}
+    changes = []
+    for reading in readings:
+        metric = existing.get(reading.trait)
+        changes.append(
+            merge_trait(
+                previous_score=float(metric.score) if metric else DEFAULT_TRAIT_SCORE,
+                previous_confidence=float(metric.confidence) if metric else DEFAULT_TRAIT_CONFIDENCE,
+                evidence_count=int(metric.evidence_count or 0) if metric else 0,
+                reading=reading,
+            )
+        )
 
-    # For each core trait, we force the score and set a moderate confidence
-    # (e.g., 0.45) so it stands as an "assist" requiring actual app usage to validate.
-    assist_confidence = 0.45
+    applied_any = any(change.applied for change in changes)
+    payload = {
+        "dry_run": request.dry_run,
+        "saved": False,
+        "traits": [change.to_dict() for change in changes],
+        "notes": notes,
+        "recognised": sum(1 for change in changes if change.applied),
+        "total_traits": len(TRAIT_LIST),
+    }
+
+    if request.dry_run or not applied_any:
+        return payload
 
     await PersonaRepository.initialize_missing_traits(db, user_id)
-    
-    from app.constants import TRAIT_LIST
-    for trait_name in TRAIT_LIST:
-        target_score = extracted_scores.get(trait_name, 0.5)
-        
-        metric = await PersonaRepository.get_metric(db, user_id, trait_name)
+    for change in changes:
+        if not change.applied:
+            continue
+        metric = await PersonaRepository.get_metric(db, user_id, change.trait)
         if metric:
             await PersonaRepository.update_metric(
-                db, metric, target_score, assist_confidence, target_score
+                db, metric, change.new_score, change.new_confidence, change.imported_score
             )
-    
+
+    # Keep the source text and the facts taken from it, so conversations can use them.
+    db.add(
+        ExternalInput(
+            user_id=user_id,
+            source="persona_bootstrap",
+            content=summary_text,
+            extracted_markers={"notes": notes, "traits": payload["traits"]},
+            confidence_weight=0.4,
+        )
+    )
     await db.commit()
 
-    # Generate snapshot
     snapshot = await generate_persona_snapshot(db, user_id)
     invalidate_snapshot_cache(user_id)
 
-    # Return response in same format as reflection for ease
-    traits = snapshot.persona_vector.get("behavioral_profile", {})
-    
-    return ReflectionResponse(
-        traits=traits,
-        stability=round(snapshot.stability_index, 2),
-        summary=snapshot.summary_text
-    )
+    payload["saved"] = True
+    payload["stability"] = round(snapshot.stability_index, 2)
+    payload["summary"] = snapshot.summary_text
+    return payload
 
 
 @router.post("/reflection", response_model=ReflectionResponse)
@@ -250,3 +347,53 @@ async def get_user_metrics(
             for m in metrics
         ],
     }
+
+
+@router.get("/portrait/{user_id}")
+async def get_portrait(
+    user_id: str,
+    tz_offset_minutes: int = 0,
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything the Persona page shows, from the same data as the PDF report:
+    trait readings with confidence, how they moved, rhythm, voice and how Reflectra adapts."""
+    from dataclasses import asdict
+
+    from app.services.persona_report_service import (
+        TRAIT_META,
+        adaptation_lines,
+        collect_report_data,
+        confidence_label,
+        headline,
+        side,
+    )
+
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
+    data = await collect_report_data(db, user_uuid, tz_offset_minutes)
+    payload = asdict(data)
+    payload["generated_at"] = data.generated_at.isoformat()
+    payload["headline"] = headline(data.traits)
+    payload["adaptation"] = adaptation_lines(data.traits, data.voice)
+    payload["traits"] = [
+        {
+            "key": t.key,
+            "name": TRAIT_META[t.key]["name"],
+            "low": TRAIT_META[t.key]["low"],
+            "high": TRAIT_META[t.key]["high"],
+            "score": round(t.score, 3),
+            "confidence": round(t.confidence, 3),
+            "confidence_label": confidence_label(t.confidence),
+            "evidence_count": t.evidence_count,
+            "reading": TRAIT_META[t.key][f"read_{side(t.score)}"],
+        }
+        for t in data.traits
+    ]
+    voice = dict(data.voice)
+    voice["abbreviations"] = [{"word": w, "count": c} for w, c in voice.get("abbreviations", [])]
+    payload["voice"] = voice
+    return payload
+

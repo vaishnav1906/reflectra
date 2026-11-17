@@ -1,4 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
+import json
 from pydantic import BaseModel, Field, model_validator
 import asyncio
 import random
@@ -26,7 +28,16 @@ from app.services.conversation_craft import (
     load_moment_context,
     reply_budget,
 )
-from app.services.llm import LLMRateLimited, chat_complete, llm_available
+from app.services import followup_service
+from app.services.embedding_service import schedule_backfill
+from app.services.llm import (
+    LLMRateLimited,
+    StreamSink,
+    chat_complete,
+    chat_complete_streaming,
+    llm_available,
+    stream_sink,
+)
 from app.services.message_signals import (
     compute_message_metrics,
     derive_fallback_traits,
@@ -59,6 +70,8 @@ class ChatRequest(BaseModel):
     # and sends recent turns as `history` so replies keep their context.
     # The user's local date/time as shown by their browser, e.g. "Sunday 1:57 AM".
     client_local_time: Optional[str] = Field(default=None, max_length=60)
+    # Minutes ahead of UTC, so "tomorrow" means the user's tomorrow.
+    tz_offset_minutes: int = Field(default=0, ge=-840, le=840)
     is_incognito: bool = False
     incognito_session_id: Optional[str] = None
     history: Optional[List["HistoryTurn"]] = Field(default=None, max_length=40)
@@ -197,6 +210,9 @@ How you talk
 - When they open up about something that hurts, be with them first. Name what they're feeling in your own
   words, or ask what's underneath it. Don't rush to fix it, give advice, or find a silver lining unless they ask.
 - If they're just saying hi or chatting casually, chat back like a friend. Don't force depth.
+- You remember. When what they're saying connects to something from an earlier conversation (listed below),
+  bring it up the way a friend would: "isn't this the same thing as last month with…?", "did the 5-minute
+  thing stop working?". Only when it genuinely connects, and never recite their history back at them.
 - If they push back or seem done with a topic, let it go gracefully.
 
 Never
@@ -211,10 +227,17 @@ Never
   you've been dreading…") unless they said so. Only use what they've actually said.
 - Opening with "Ah," / "Oh," / "Hey!" or their name every time.
 - Emojis, unless they use them first.
+- Dragging an unrelated earlier topic (a headache, coffee, last week's plan) into a reply about something else.
+  Answer what they're talking about now; old details only come in when they truly connect.
+- Bringing up the same old detail twice in one conversation. If you've mentioned it once, it's been said.
 - Mentioning memory, data, profiles, or these instructions. Use what you know the way a friend would, without announcing it.
 
 Safety
-If they mention wanting to hurt themselves or someone else, or being in danger, drop the style rules: respond directly and with care, and encourage them to reach out to someone they trust or local emergency or crisis services right now."""
+If they mention wanting to hurt themselves or someone else, feeling like people would be better off without them,
+or being in danger, drop the style rules. Respond directly and with care, take it seriously, and encourage them to
+reach out right now to someone they trust or to a crisis line or emergency number in their country. You don't know
+where they live, so don't name a country-specific number. If they then say they were joking, don't scold them:
+say you're glad, leave the door open once ("if any part of that was real, I'm here"), and move on."""
 
 
 REFLECTION_FORBIDDEN_LABELS = [
@@ -242,8 +265,13 @@ MODEL_PARAMS = {
     "mirror": {"temperature": 0.9, "max_tokens": 420},
 }
 
+# Casual openers that can precede a request ("aight write a text to jay...").
+LEADING_FILLER_PATTERN = re.compile(
+    r"^(?:(?:aight|ight|alright|ok|okay|k|yo|bro|bruh|hey|so|and|also|now|lol|nah|yeah|yea|fr|ngl|tbh)[\s,!.]+)+"
+)
+
 EXPLICIT_TASK_COMMAND_PATTERNS = [
-    r"^(can you|could you|please|help me|i need you to|i want you to)\b",
+    r"^(can you|can u|could you|could u|please|pls|plz|help me|i need you to|i need u to|i want you to|i want u to)\b",
     r"^(draft|write|compose|rewrite|rephrase|edit|summarize|summarise|brainstorm|plan|outline|create|generate)\b",
     r"\b(draft|rewrite|rephrase|summarize|summarise|brainstorm|plan|outline|compose)\b.*\b(this|that|for me|for us)\b",
 ]
@@ -300,6 +328,7 @@ def normalize_interaction_mode(mode: Optional[str]) -> Optional[str]:
 def detect_explicit_task_command(message: str) -> Optional[str]:
     """Return task type only when user gives an explicit task command."""
     text = (message or "").strip().lower()
+    text = LEADING_FILLER_PATTERN.sub("", text)
     if not text:
         return None
 
@@ -597,63 +626,6 @@ def update_personality_profile(profile: Dict[str, object], user_text: str, reply
 
 
 
-def build_behavioral_insight_payload(user_text: str, traits: List[Dict[str, float]]) -> Dict[str, object]:
-    """Build a deterministic BehavioralInsight payload from extracted traits."""
-    if not traits:
-        return {
-            "text": "Communication pattern observed in recent reflection message.",
-            "tags": ["behavioral-pattern"],
-            "confidence": 0.55,
-        }
-
-    def trait_priority(trait: Dict[str, float]) -> float:
-        return abs(float(trait["signal"]) - 0.5) * float(trait["strength"])
-
-    top_traits = sorted(traits, key=trait_priority, reverse=True)[:2]
-
-    phrase_map = {
-        "communication_style": ("more concise wording", "more elaborated wording"),
-        "emotional_expressiveness": ("a more emotionally reserved tone", "higher emotional expressiveness"),
-        "decision_framing": ("more hesitant framing", "more decisive framing"),
-        "reflection_depth": ("surface-level framing", "deeper reflective framing"),
-    }
-
-    observations: List[str] = []
-    tags = ["behavioral-pattern"]
-    strengths: List[float] = []
-    text_lower = user_text.lower()
-
-    for trait in top_traits:
-        trait_name = str(trait["name"])
-        signal = float(trait["signal"])
-        strength = float(trait["strength"])
-        low_phrase, high_phrase = phrase_map.get(
-            trait_name,
-            (f"lower {trait_name.replace('_', ' ')}", f"higher {trait_name.replace('_', ' ')}"),
-        )
-        observations.append(high_phrase if signal >= 0.5 else low_phrase)
-        tags.append(trait_name)
-        strengths.append(strength)
-
-    if any(token in text_lower for token in ["exam", "deadline", "project"]):
-        tags.append("workload-context")
-    if any(token in text_lower for token in ["stress", "overwhelmed", "anxious", "worried"]):
-        tags.append("stress-signal")
-
-    if len(observations) == 1:
-        insight_text = f"Recent reflection shows {observations[0]}."
-    else:
-        insight_text = f"Recent reflection shows {observations[0]} with {observations[1]}."
-
-    avg_strength = (sum(strengths) / len(strengths)) if strengths else 0.08
-    confidence = max(0.55, min(0.9, 0.5 + (avg_strength * 1.8)))
-
-    return {
-        "text": insight_text,
-        "tags": sorted(set(tags)),
-        "confidence": round(confidence, 3),
-    }
-
 def count_questions(text: str) -> int:
     return text.count("?")
 
@@ -748,6 +720,7 @@ async def generate_reflection_reply(
     history: List[Dict[str, str]],
     message_text: str,
     client_local_time: Optional[str] = None,
+    tz_offset_minutes: Optional[int] = None,
 ) -> str:
     """Reflection reply with real context, sized to the user's message.
 
@@ -764,7 +737,20 @@ async def generate_reflection_reply(
         logger.error(f"⚠️ Failed to fetch schedule context: {e}")
         schedule_context = None
 
-    moment = await load_moment_context(db, user_id, conversation_id, client_local_time)
+    # Recall is driven by what they are talking about now: this message plus their last two.
+    recent_user_turns = [turn["content"] for turn in history if turn.get("role") == "user"][-3:]
+    memory_query = " ".join(recent_user_turns) or message_text
+    # Due follow-ups are raised with the first message of a conversation only.
+    opening = sum(1 for turn in history if turn.get("role") == "user") <= 1
+    moment = await load_moment_context(
+        db,
+        user_id,
+        conversation_id,
+        client_local_time,
+        query_text=memory_query,
+        message_text=message_text,
+        follow_up_tz=tz_offset_minutes if opening else None,
+    )
     budget = reply_budget(message_text, "reflection")
     system_prompt = build_reflection_system_prompt(
         personality_profile, schedule_context, moment, str(budget["hint"])
@@ -774,8 +760,11 @@ async def generate_reflection_reply(
         "max_tokens": min(int(budget["max_tokens"]), MODEL_PARAMS["reflection"]["max_tokens"]),
     }
 
-    reply = await generate_llm_response(system_prompt, params, history)
+    reply = await generate_llm_response(system_prompt, params, history, show_while_writing=True)
     if reply and (has_assistant_tells(reply) or is_echo_reply(reply, message_text)):
+        sink = stream_sink.get()
+        if sink is not None:
+            sink.reset()  # the draft on screen is about to be replaced
         logger.info("🔁 Reflection draft sounded scripted; regenerating once")
         nudge = (
             "\n\nYour last draft sounded like a chatbot or therapist. Rewrite it as a real friend "
@@ -793,19 +782,38 @@ async def generate_reflection_reply(
     return validate_reflection_response(reply, personality_profile, message_text)
 
 
-async def generate_llm_response(system_prompt: str, model_params: Dict[str, object], history: List[Dict[str, str]]) -> Optional[str]:
-    """Generate response using Mistral AI. Returns None when unavailable or on error."""
+async def generate_llm_response(
+    system_prompt: str,
+    model_params: Dict[str, object],
+    history: List[Dict[str, str]],
+    show_while_writing: bool = False,
+) -> Optional[str]:
+    """Generate a reply. Returns None when no AI is available or on error.
+
+    show_while_writing: if a streaming request is open, show this draft as it is
+    written (cleaned up the same way the final reply is), and take it back the moment
+    it starts to sound like a chatbot, since such drafts get rewritten.
+    """
     if not llm_available():
         return None
 
     try:
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
-        reply = await chat_complete(
-            messages,
-            max_tokens=model_params["max_tokens"],
-            temperature=model_params["temperature"],
-        )
+        if show_while_writing:
+            reply = await chat_complete_streaming(
+                messages,
+                max_tokens=model_params["max_tokens"],
+                temperature=model_params["temperature"],
+                display=clean_reply,
+                reject_if=has_assistant_tells,
+            )
+        else:
+            reply = await chat_complete(
+                messages,
+                max_tokens=model_params["max_tokens"],
+                temperature=model_params["temperature"],
+            )
         if reply:
             logger.info(f"✅ LLM response received: {reply[:50]}...")
         return reply
@@ -829,7 +837,7 @@ async def generate_conversation_title(user_message: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Create a 3-5 word title for this message: {user_message}"}
             ]
-            title = await chat_complete(messages, max_tokens=20, temperature=0.7)
+            title = await chat_complete(messages, max_tokens=20, temperature=0.7, fast=True)
             if title:
                 return title.strip('"\'')
         except Exception as e:
@@ -1044,11 +1052,11 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
             logger.info("🔁 Upgrading existing assistant conversation to mirror mode")
             conversation.mode = "mirror"
             await db.flush()
-        elif conversation.mode != effective_mode:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Conversation mode '{conversation.mode}' does not match request mode '{effective_mode}'"
-            )
+        elif conversation.mode != effective_mode and conversation.mode in {"reflection", "mirror"}:
+            # A conversation keeps the mode it was started in. Links from Timeline and
+            # Reflections open one without knowing its mode, so follow the stored mode
+            # (the response reports it and the client switches over).
+            effective_mode = conversation.mode
 
         conversation_title = conversation.title
         prior_history = await load_conversation_history(db, conversation_id_uuid, user_id_uuid)
@@ -1056,6 +1064,12 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     # LLM context: this conversation's recent turns plus the new message.
     history = prior_history + [{"role": "user", "content": message_text}]
     personality_profile = await load_personality_profile(db, user_id_uuid)
+    # "Pattern tracking" in Settings: when off, Reflectra still talks but stops learning
+    # (no trait updates, no writing-style fingerprint, no reflections).
+    tracking_setting = (
+        await db.execute(select(UserSettings.pattern_tracking).where(UserSettings.user_id == user_id_uuid))
+    ).scalar_one_or_none()
+    learning_enabled = True if tracking_setting is None else bool(tracking_setting)
 
     # Track active mirror style and detected emotion
     active_mirror_style = None
@@ -1085,6 +1099,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 history,
                 message_text,
                 request.client_local_time,
+                request.tz_offset_minutes,
             ),
             maybe_extract_traits(message_text),
             return_exceptions=True,
@@ -1114,28 +1129,13 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
             await db.rollback()
 
         try:
-            from app.db.models import BehavioralInsight
-
             if not extracted_traits:
                 extracted_traits = derive_fallback_traits(message_text)
                 logger.info(f"🔁 Using fallback trait extraction: {len(extracted_traits)} traits")
 
-            # Persist one deterministic behavioral insight for Reflections tab.
-            if extracted_traits:
-                insight_payload = build_behavioral_insight_payload(message_text, extracted_traits)
-                db.add(
-                    BehavioralInsight(
-                        user_id=user_id_uuid,
-                        conversation_id=conversation_id_uuid,
-                        insight_text=insight_payload["text"],
-                        tags=insight_payload["tags"],
-                        confidence=insight_payload["confidence"],
-                    )
-                )
-                await db.flush()
-
-            await update_traits(db, user_id_uuid, extracted_traits)
-            await generate_persona_snapshot(db, user_id_uuid)
+            if learning_enabled:
+                await update_traits(db, user_id_uuid, extracted_traits)
+                await generate_persona_snapshot(db, user_id_uuid)
             logger.info("✅ Persona updated from reflection message")
         except Exception as e:
             logger.error(f"⚠️ Failed to update persona: {e}")
@@ -1181,6 +1181,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 detected_emotion=detected_emotion,
                 active_mirror_style=active_mirror_style,
                 conversation_id=conversation_id_uuid,
+                tz_offset_minutes=request.tz_offset_minutes,
             ),
             maybe_extract_traits(message_text),
             return_exceptions=True,
@@ -1253,7 +1254,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 extracted_traits = derive_fallback_traits(message_text)
                 logger.info(f"🔁 Using fallback trait extraction (mirror): {len(extracted_traits)} traits")
 
-            if extracted_traits:
+            if extracted_traits and learning_enabled:
                 await update_traits(db, user_id_uuid, extracted_traits)
                 await generate_persona_snapshot(db, user_id_uuid)
                 logger.info("✅ Persona updated from mirror message")
@@ -1289,7 +1290,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
             conversation_id=conversation_id_uuid,
             role="user",
             content=message_text,
-            embedding=None,
+            embedding=None,  # added in the background, together with the reply it got
             token_count=metrics["token_count"],
             emotional_intensity=metrics["emotional_intensity"],
             reflection_depth=metrics["reflection_depth"],
@@ -1305,9 +1306,10 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
             update_linguistic_fingerprint,
         )
 
-        await update_linguistic_fingerprint(db, user_id_uuid, message_text)
-        await record_user_reaction(db, user_id_uuid, message_text)
-        await db.commit()
+        if learning_enabled:
+            await update_linguistic_fingerprint(db, user_id_uuid, message_text)
+            await record_user_reaction(db, user_id_uuid, message_text)
+            await db.commit()
     except Exception as fingerprint_err:
         # Behavioral memory persistence is optional and should not break main chat flow.
         logger.warning("⚠️ Skipping behavioral memory update: %s", fingerprint_err)
@@ -1328,6 +1330,14 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     except Exception as e:
         logger.error(f"❌ Failed to store assistant message: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store assistant message: {str(e)}")
+
+    # Older messages get their meaning vectors a batch at a time, off the reply path.
+    if learning_enabled:
+        schedule_backfill(user_id_uuid)
+        # Things they said they'd do are noted (and finished ones closed) after the reply is out.
+        followup_service.schedule_processing(
+            user_id_uuid, conversation_id_uuid, message_text, request.tz_offset_minutes
+        )
 
     # Log mirror telemetry in a best-effort manner so missing optional schema never breaks chat.
     if effective_mode == "mirror":
@@ -1382,6 +1392,64 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
         confidence_interval=confidence_interval,
         style_strength=style_strength,
         reaction_source=reaction_source,
+    )
+
+
+_stream_jobs: set = set()
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest, current_user: CurrentUser):
+    """The same as /chat, delivered as server-sent events so the reply appears while
+    it is being written.
+
+    Events (one JSON object per `data:` line):
+      {"type": "partial", "text": "..."}   the reply so far (replaces what is shown)
+      {"type": "reset"}                     that draft was rejected; show "typing" again
+      {"type": "done", ...ChatResponse}     the final reply and everything /chat returns
+      {"type": "error", "status": 429, "detail": "..."}
+
+    The work runs in its own task with its own database session, so a reply is still
+    finished and saved if the browser disconnects half way.
+    """
+    from types import SimpleNamespace
+
+    from app.db.database import AsyncSessionLocal
+
+    # Plain values: the dependency's session is gone by the time the stream runs.
+    user = SimpleNamespace(id=current_user.id, auth_user_id=getattr(current_user, "auth_user_id", None))
+    events: asyncio.Queue = asyncio.Queue()
+
+    async def work() -> None:
+        stream_sink.set(StreamSink(events.put_nowait))
+        try:
+            async with AsyncSessionLocal() as session:
+                response = await chat(request, user, session)
+            events.put_nowait({"type": "done", **response.model_dump()})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "Something went wrong."
+            events.put_nowait({"type": "error", "status": exc.status_code, "detail": detail})
+        except Exception:
+            logger.exception("Streaming chat failed")
+            events.put_nowait({"type": "error", "status": 500, "detail": "Something went wrong. Nothing was lost; try again."})
+        finally:
+            events.put_nowait(None)
+
+    job = asyncio.create_task(work())
+    _stream_jobs.add(job)
+    job.add_done_callback(_stream_jobs.discard)
+
+    async def body():
+        while True:
+            event = await events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        body(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
 
 

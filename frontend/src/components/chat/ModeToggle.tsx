@@ -22,13 +22,13 @@ export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-2">
-        <div className="flex items-center bg-muted/50 rounded-lg p-1 border border-border">
+        <div className="flex items-center rounded-full border border-white/10 bg-white/[0.03] p-1" role="group" aria-label="Conversation mode">
           <button
             onClick={() => onModeChange("reflection")}
             className={cn(
-              "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+              "flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all",
               mode === "reflection"
-                ? "bg-card text-foreground shadow-sm"
+                ? "mode-pill-active text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
@@ -38,20 +38,20 @@ export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
           <button
             onClick={() => onModeChange("mirror")}
             className={cn(
-              "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+              "flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all",
               mode === "mirror"
-                ? "bg-primary/10 text-primary shadow-sm border border-primary/20"
+                ? "mode-pill-active text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
             <Users className="w-3.5 h-3.5" />
-            Persona Mirror
+            Mirror
           </button>
         </div>
         
         <Tooltip>
           <TooltipTrigger asChild>
-            <button className="p-1.5 rounded-md hover:bg-muted/50 transition-colors">
+            <button className="p-1.5 rounded-full hover:bg-white/5 transition-colors" aria-label="About this mode">
               <Info className="w-4 h-4 text-muted-foreground" />
             </button>
           </TooltipTrigger>

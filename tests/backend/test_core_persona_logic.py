@@ -17,12 +17,10 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.api.chat import get_adaptive_mirror_style  # noqa: E402
 from app.services.behavioral_memory_service import extract_reaction_opener, reaction_confidence  # noqa: E402
-from app.services.confidence_interval_service import fuse_source_scores, tier_from_confidence_lower  # noqa: E402
 from app.services.message_signals import compute_message_metrics, derive_fallback_traits, simple_sentiment  # noqa: E402
 from app.services.persona_update_service import compute_trait_update  # noqa: E402
 from app.services.style_enforcement_service import build_user_style_profile, enforce_style  # noqa: E402
 
-SOURCES = ["conversations", "traits", "timeline_reflections", "reflection_summaries", "external_inputs"]
 
 
 class TraitUpdateTests(unittest.TestCase):
@@ -53,25 +51,7 @@ class TraitUpdateTests(unittest.TestCase):
         self.assertLess(high_conf_score, low_conf_score)
 
 
-class ConfidenceFusionTests(unittest.TestCase):
-    def _tier(self, scores):
-        result = fuse_source_scores({source: scores.get(source) for source in SOURCES})
-        return tier_from_confidence_lower(result["lower"]), result
-
-    def test_no_data_is_very_low(self):
-        tier, result = self._tier({})
-        self.assertEqual(tier, "very_low")
-        self.assertEqual(result["center"], 0.0)
-
-    def test_unused_sources_do_not_cap_confidence(self):
-        tier, _ = self._tier(
-            {"conversations": 0.9, "traits": 0.85, "timeline_reflections": 0.9, "reflection_summaries": 0.9}
-        )
-        self.assertEqual(tier, "high")
-
-    def test_sparse_evidence_stays_conservative(self):
-        tier, _ = self._tier({"conversations": 0.15, "traits": 0.3})
-        self.assertEqual(tier, "very_low")
+# Overall confidence is covered in test_confidence_logic.py.
 
 
 class _SequenceResult:

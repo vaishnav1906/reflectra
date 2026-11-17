@@ -1,7 +1,0 @@
-.chat-container {
-  transition: opacity 0.2s ease-in-out;
-}
-
-.chat-loading {
-  opacity: 0.6;
-}

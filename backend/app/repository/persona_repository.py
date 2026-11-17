@@ -1,7 +1,7 @@
 """Repository layer for persona-related database operations."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -73,7 +73,7 @@ class PersonaRepository:
         metric.confidence = confidence
         metric.last_signal = last_signal
         metric.evidence_count += 1
-        metric.last_updated = datetime.utcnow()
+        metric.last_updated = datetime.now(timezone.utc)  # aware: a naive value is read as server-local time
         await db.flush()
         return metric
 

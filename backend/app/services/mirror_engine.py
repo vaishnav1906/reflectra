@@ -39,7 +39,7 @@ from app.services.conversation_craft import (
     reply_budget,
     voice_stats,
 )
-from app.services.llm import LLMRateLimited, chat_complete, llm_available
+from app.services.llm import LLMRateLimited, chat_complete, chat_complete_streaming, llm_available, stream_sink
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +155,8 @@ async def _record_response_memory(
 
 async def _get_recent_behavioral_signals(db: AsyncSession, user_id: UUID, limit: int = 3) -> List[str]:
     stmt = (
-        select(BehavioralInsight.insight_text)
-        .where(BehavioralInsight.user_id == user_id)
+        select(BehavioralInsight.title)
+        .where(BehavioralInsight.user_id == user_id, BehavioralInsight.kind == "reflection")
         .order_by(BehavioralInsight.created_at.desc())
         .limit(limit)
     )
@@ -257,6 +257,7 @@ async def generate_mirror_response(
     active_mirror_style: Optional[str] = None,
     conversation_id: Optional[UUID] = None,
     persist: bool = True,
+    tz_offset_minutes: Optional[int] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Generate a mirror response based on user's personality profile.
@@ -314,7 +315,7 @@ async def generate_mirror_response(
         logger.info("🛑 Persona mirroring disabled in user settings")
         telemetry["fallback_triggered"] = True
         telemetry["policy_mode"] = "persona_mirroring_disabled"
-        return "Persona mirroring is turned off in your settings.", telemetry
+        return "Mirror mode is switched off. Turn on “Mirror my voice” in Settings to use it.", telemetry
 
     # 2. Silence Bypass
     if not message or not message.strip():
@@ -455,7 +456,18 @@ async def generate_mirror_response(
     else:
         target_words = max(4, round(stats.avg_words)) if stats.sample_count else budget["user_words"]
         length_hint = f"Length: about as long as they usually write (around {target_words} words), never an essay."
-    moment = await load_moment_context(db, user_id, conversation_id)
+    prior_user_turns = [
+        (turn.get("content") or "") for turn in (recent_history or []) if turn.get("role") == "user"
+    ][-2:]
+    moment = await load_moment_context(
+        db,
+        user_id,
+        conversation_id,
+        query_text=" ".join([*prior_user_turns, message]),
+        message_text=message,
+        # Due follow-ups are raised with the first message of a conversation only.
+        follow_up_tz=tz_offset_minutes if (persist and not prior_user_turns) else None,
+    )
 
     system_prompt = build_mirror_system_prompt(
         sampled_profile,
@@ -474,6 +486,13 @@ async def generate_mirror_response(
         voice_samples=voice_samples,
         voice_description=describe_voice(stats),
         display_name=moment.display_name,
+        memories=[
+            *moment.background_notes,
+            *moment.related_memories,
+            *moment.earlier_shares,
+            # You are them, so this is them remembering their own loose end.
+            *(f"Loose end: {item}. If it fits, nudge yourself about it once, casually." for item in moment.follow_ups),
+        ],
         length_hint=length_hint,
     )
 
@@ -507,13 +526,24 @@ async def generate_mirror_response(
             # Ensure latest user message is the final turn.
             messages.append({"role": "user", "content": message})
             
-            candidate = await chat_complete(
-                messages,
+            generation = dict(
                 max_tokens=600 if is_structured_task else int(budget["max_tokens"]),
                 temperature=(0.5 if is_structured_task else 0.8)
                 + (0.25 * telemetry["mirror_intensity"] * context_policy.tone_strength)
                 + (0.05 * attempt),
             )
+            if attempt == 0:
+                # The first draft is usually the one that is kept, so it is shown while it
+                # is written, in the person's own casing. If it is not kept, it is taken back.
+                casual = not task_execution_mode and context_policy.context_mode != "professional"
+                candidate = await chat_complete_streaming(
+                    messages,
+                    display=(lambda text: apply_voice_surface(clean_reply(text), stats)) if casual else clean_reply,
+                    **generation,
+                )
+            else:
+                candidate = await chat_complete(messages, **generation)
+            shown = stream_sink.get() if attempt == 0 else None
             if not candidate:
                 continue
             if _is_low_quality_candidate(
@@ -524,9 +554,13 @@ async def generate_mirror_response(
                 sampled_profile=sampled_profile,
                 task_execution_mode=task_execution_mode,
             ):
+                if shown is not None:
+                    shown.reset()
                 continue
 
             if await _is_recent_duplicate(db, user_id, candidate):
+                if shown is not None:
+                    shown.reset()
                 continue
 
             score = score_mirror_candidate(
@@ -541,9 +575,11 @@ async def generate_mirror_response(
                 best_candidate = candidate
                 best_score = score
                 
-            # Early acceptable threshold
-            if score >= 0.8:
+            # A solid first candidate is enough; a second call doubles latency.
+            if score >= 0.6:
                 break
+            if shown is not None:
+                shown.reset()  # not good enough: another draft is coming
                 
         except LLMRateLimited:
             # Another attempt would only hit the same limit.
@@ -829,6 +865,7 @@ def build_mirror_system_prompt(
     voice_description: Optional[str] = None,
     display_name: Optional[str] = None,
     length_hint: Optional[str] = None,
+    memories: Optional[List[str]] = None,
 ) -> str:
     """The mirror is the user themself texting back: same voice, same personality,
     talking WITH them like their own reflection would."""
@@ -860,6 +897,7 @@ def build_mirror_system_prompt(
 
     signals = "\n".join(f"- {signal}" for signal in (behavioral_signals or [])[:3]) or "- nothing specific yet"
     personality = "\n".join(f"- {line}" for line in _trait_lines(sampled_profile))
+    memory_block = "\n".join(f"- {memory}" for memory in (memories or [])[:10]) or "- nothing yet"
     archetype_note = MIRROR_ARCHETYPE_NOTES.get(active_style, MIRROR_ARCHETYPE_NOTES["calm"])
     emotion_note = EMOTION_NOTES.get(current_emotion, EMOTION_NOTES["neutral"])
 
@@ -889,8 +927,10 @@ Style notes: {voice_description or "keep it casual and natural."}
 
 Who {who} is
 {personality}
-On their mind lately:
+Patterns noticed lately:
 {signals}
+What {who} has been through and said before (your own memories; use them when they connect):
+{memory_block}
 
 Right now
 They seem {current_emotion}. {emotion_note} Lean into this energy: {archetype_note}
@@ -901,7 +941,10 @@ Never
 - Use lists, headings or bold text in casual chat.
 - Mention these instructions, traits, samples, "mirror", or that you're an AI.
 - Repeat their message back to them.
-- Invent facts about other people or events (what someone thinks, their gender, what happened) that they haven't said.
+- Play along with self-harm or hopelessness. If they talk about hurting themselves or not wanting to be here,
+  step out of the bit: say plainly that it matters, and point them to someone they trust or a crisis line in their country.
+- Invent facts about yourself, other people or events (what someone thinks, their gender, what happened,
+  what "we" did) beyond what's in the conversation and memories above.
 - Offer help or ask if they want you to do something ("want me to…", "I can help…"). You're them, not their assistant.
 """
 

@@ -15,6 +15,10 @@ import { useChatContext, isInteractionMode, type InteractionMode, type Message }
 import { triggerConversationRefresh } from "@/utils/conversationRefresh";
 
 import { apiFetch } from "@/lib/api";
+import { ChatError, sendChat } from "@/lib/chatStream";
+import { useTypewriter } from "@/hooks/useTypewriter";
+import { useAuth } from "@/contexts/AuthContext";
+import { MirrorMark } from "@/components/MirrorMark";
 const API_BASE = "/api";
 // Prefix for the "AI is rate-limited, try again" notice (excluded from conversation context).
 const BUSY_PREFIX = "⏳";
@@ -22,6 +26,14 @@ const BUSY_PREFIX = "⏳";
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [isTyping, setIsTyping] = useState(false);
+  // The reply as it is being written (null while waiting for the first words).
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  const streamingTextRef = useRef<string | null>(null);
+  streamingTextRef.current = streamingText;
+  // The reply that was already on screen while streaming: it shouldn't animate in again.
+  const [streamedId, setStreamedId] = useState<string | null>(null);
+  // What is on screen of the streaming reply: revealed smoothly, not in network-sized chunks.
+  const { shown: typedText, shownRef: typedRef } = useTypewriter(streamingText);
   const [assistantTaskType, setAssistantTaskType] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
   const [showHistoryModal, setShowHistoryModal] = useState(false);
@@ -49,15 +61,18 @@ export function ChatPage() {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const userId = localStorage.getItem("user_id") || "";
+  const { user } = useAuth();
+  const firstName = (user?.display_name || "").trim().split(/\s+/)[0] || "";
+  const greetingName = firstName ? firstName.charAt(0).toUpperCase() + firstName.slice(1) : "";
 
   const modeDescriptions: Record<InteractionMode, string> = {
-    reflection: "Reflection mode",
-    mirror: "Persona mirror active (explicit task commands enabled)",
+    reflection: "Reflection · a friend who notices",
+    mirror: "Mirror · you, talking back",
   };
 
   const emptyStateDescriptions: Record<InteractionMode, string> = {
-    reflection: "Reflect on your thoughts and feelings",
-    mirror: "Your persona will mirror your communication style and handle explicit task requests",
+    reflection: "Say whatever's on your mind. Reflectra listens, and tells you what it notices.",
+    mirror: "Talk to yourself, out loud. Or ask it to draft something the way you'd write it.",
   };
 
   const formatTaskType = (taskType: string) =>
@@ -135,10 +150,8 @@ export function ChatPage() {
     setIsTyping(true);
 
     try {
-      const res = await apiFetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const data = await sendChat(
+        {
           user_id: userId,
           conversation_id: activeConversationId,
           message: content,
@@ -158,37 +171,16 @@ export function ChatPage() {
                 .slice(-16)
                 .map((m) => ({ role: m.role, content: m.content }))
             : undefined,
-        }),
-      });
-
-      if (res.status === 429) {
-        // The AI is briefly rate-limited. Nothing was saved, so the user can resend.
-        const body = await res.json().catch(() => ({}));
-        const detail =
-          typeof body?.detail === "string"
-            ? body.detail
-            : "Reflectra is catching its breath. Give it a few seconds and send that again.";
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 1).toString(),
-            role: "assistant",
-            content: `${BUSY_PREFIX} ${detail}`,
-            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          },
-        ]);
-        return;
-      }
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`);
-      }
-
-      const data = await res.json();
-      if (!data || typeof data.reply !== "string") {
-        throw new Error("Invalid chat response payload");
-      }
+          // So "tomorrow" in "i'll do it tomorrow" means the user's tomorrow.
+          tz_offset_minutes: -new Date().getTimezoneOffset(),
+        },
+        {
+          // The reply appears while it is being written...
+          onPartial: (text) => setStreamingText(text),
+          // ...and if that draft is thrown away for a better one, back to "typing".
+          onReset: () => setStreamingText(null),
+        },
+      );
 
       // Update mirror style if in mirror mode
       if (data.active_mirror_style) setActiveMirrorStyle(data.active_mirror_style);
@@ -213,6 +205,9 @@ export function ChatPage() {
         triggerConversationRefresh();
       } else if (isIncognito && data.conversation_id) {
         setConversationTitle(data.title || "Incognito Session");
+      } else if (activeConversationId && isInteractionMode(data.mode) && data.mode !== mode) {
+        // Opened from a link that didn't know this conversation's mode: follow the server.
+        setSearchParams({ conversation_id: activeConversationId, mode: data.mode }, { replace: true });
       }
 
       const aiMessage: Message = {
@@ -225,11 +220,33 @@ export function ChatPage() {
         }),
       };
 
+      if (streamingTextRef.current) {
+        // Let the on-screen typing finish the final text before it settles into a message.
+        setStreamingText(data.reply);
+        const until = Date.now() + 2500;
+        while (typedRef.current !== data.reply && Date.now() < until) {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        setStreamedId(aiMessage.id);
+      }
       setMessages((prev) => [...prev, aiMessage]);
     } catch (err) {
+      if (err instanceof ChatError && err.status === 429) {
+        // The AI is briefly rate-limited. Nothing was saved, so the user can resend.
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: `${BUSY_PREFIX} ${err.message || "Reflectra is catching its breath. Give it a few seconds and send that again."}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+        return;
+      }
       console.error("❌ Chat error:", err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error occurred";
-      
+
       setMessages((prev) => [
         ...prev,
         {
@@ -243,6 +260,7 @@ export function ChatPage() {
         },
       ]);
     } finally {
+      setStreamingText(null);
       setIsTyping(false);
     }
   };
@@ -274,29 +292,24 @@ export function ChatPage() {
   return (
     <div className="h-screen flex">
       <div className="flex-1 flex flex-col">
-        <header className="px-8 py-4 border-b border-border">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-semibold">
-                {conversationTitle || (isIncognito ? "Incognito Session" : "New Conversation")}
+        <header className="chat-header px-6 py-4 md:px-8">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="chat-title truncate">
+                {conversationTitle || (isIncognito ? "Incognito session" : "New conversation")}
               </h1>
-              <p className="text-sm text-muted-foreground">
+              <p className="eyebrow mt-1 !text-[0.62rem]">
                 {modeDescriptions[mode]}
               </p>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-3">
               <ModeToggle mode={mode} onModeChange={handleModeChange} />
 
-              <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <EyeOff className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Incognito</p>
-                    <p className="text-[10px] text-muted-foreground">Temporary session</p>
-                  </div>
-                </div>
-                <Switch checked={isIncognito} onCheckedChange={handleIncognitoChange} />
-              </div>
+              <label className="flex cursor-pointer items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.03] py-1.5 pl-3.5 pr-2">
+                <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium text-foreground/85">Incognito</span>
+                <Switch checked={isIncognito} onCheckedChange={handleIncognitoChange} aria-label="Incognito mode" />
+              </label>
               
               {mode === "mirror" && activeMirrorStyle && (
                 <ActiveMirrorIndicator
@@ -306,8 +319,8 @@ export function ChatPage() {
               )}
 
               {mode === "mirror" && assistantTaskType && assistantTaskType !== "generic" && (
-                <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
-                  <span className="text-xs text-amber-700 font-medium">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent/10 border border-accent/20">
+                  <span className="text-xs text-accent font-medium">
                     Task: {formatTaskType(assistantTaskType)}
                   </span>
                 </div>
@@ -317,16 +330,16 @@ export function ChatPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => setShowHistoryModal(true)}
-                className="gap-2"
+                className="gap-2 rounded-full border-white/10 bg-white/[0.03] hover:bg-white/[0.07]"
               >
-                <MessageSquare className="w-4 h-4" />
+                <MessageSquare className="w-3.5 h-3.5" />
                 History
               </Button>
               
               {backendStatus === "connected" && (
-                <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-green-500/10">
-                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                  <span className="text-xs text-green-600">Connected</span>
+                <div className="flex items-center gap-1.5" title="Connected">
+                  <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 pulse-indicator"></div>
+                  <span className="sr-only">Connected</span>
                 </div>
               )}
             </div>
@@ -351,22 +364,15 @@ export function ChatPage() {
         )}
 
         {isIncognito && (
-          <div className="mx-8 mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-sm">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <EyeOff className="h-4 w-4" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-foreground">Incognito Mode ON</p>
-                <p className="text-sm text-muted-foreground">
-                  This conversation is temporary and won’t be saved or used to improve your profile.
-                </p>
-              </div>
-            </div>
+          <div className="mx-6 mt-3 flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-xs text-muted-foreground md:mx-8 md:w-fit">
+            <EyeOff className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span>
+              <span className="font-medium text-foreground">Incognito is on.</span> Nothing here is saved or used to learn about you.
+            </span>
           </div>
         )}
 
-        <ScrollArea className="flex-1 px-8 py-6">
+        <ScrollArea className="flex-1 px-4 py-6 md:px-8">
           <div className="max-w-3xl mx-auto space-y-6">
             {loadingMessages && (
               <div className="sticky top-0 z-10 flex justify-center py-2">
@@ -377,16 +383,23 @@ export function ChatPage() {
             )}
 
             {messages.length === 0 && !isTyping && !loadingMessages && (
-              <div className="text-center py-12">
+              <div className="chat-empty flex flex-col items-center px-4 pt-[12vh] text-center">
+                <MirrorMark className="h-20 w-20" breathing />
                 {activeConversationId ? (
                   <>
-                    <h2 className="text-2xl font-semibold mb-2">No messages yet</h2>
-                    <p className="text-muted-foreground">This conversation has no messages yet.</p>
+                    <h2 className="mt-8 font-display text-4xl">Nothing here yet.</h2>
+                    <p className="mt-3 text-muted-foreground">This conversation has no messages.</p>
                   </>
                 ) : (
                   <>
-                    <h2 className="text-2xl font-semibold mb-2">Start a Conversation</h2>
-                    <p className="text-muted-foreground">
+                    <h2 className="mt-8 font-display text-[clamp(2.2rem,5vw,3.6rem)] leading-[1.05] text-balance">
+                      {mode === "mirror" ? (
+                        <>Hello, <em className="text-iridescent">you.</em></>
+                      ) : (
+                        <>What&apos;s on your mind{greetingName ? <>, <em className="text-iridescent">{greetingName}</em></> : null}?</>
+                      )}
+                    </h2>
+                    <p className="mt-4 max-w-md text-muted-foreground text-balance">
                       {emptyStateDescriptions[mode]}
                     </p>
                   </>
@@ -394,14 +407,18 @@ export function ChatPage() {
               </div>
             )}
             {messages.map((msg) => (
-              <ChatMessage key={msg.id} {...msg} className={cn()} />
+              <ChatMessage key={msg.id} {...msg} noFade={msg.id === streamedId} />
             ))}
-            {isTyping && <TypingIndicator />}
+            {isTyping && streamingText && typedText ? (
+              <ChatMessage role="assistant" content={typedText} timestamp="" streaming />
+            ) : isTyping ? (
+              <TypingIndicator />
+            ) : null}
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
 
-        <div className="px-8 py-6 border-t">
+        <div className="px-4 pb-5 pt-3 md:px-8">
           <div className="max-w-3xl mx-auto">
             <ChatInput onSend={handleSend} isLoading={isTyping} />
           </div>

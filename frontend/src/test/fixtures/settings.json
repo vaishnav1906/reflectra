@@ -1,0 +1,12 @@
+{
+ "user_id": "00000000-0000-0000-0000-00000000000a",
+ "settings": {
+  "persona_mirroring": true,
+  "pattern_tracking": true,
+  "daily_reflections": true,
+  "digital_twin_enabled": true,
+  "twin_autonomy_mode": "keeps slip",
+  "twin_mirror_intensity": 0.8,
+  "twin_require_approval": true
+ }
+}

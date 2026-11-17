@@ -12,14 +12,15 @@ import {
 import { cn } from "@/lib/utils";
 import { ModelStatePanel } from "./ModelStatePanel";
 import { ProfileMenu } from "./ProfileMenu";
+import { MirrorMark } from "@/components/MirrorMark";
 import { ConversationHistoryModal } from "@/components/chat/ConversationHistoryModal";
 import type { InteractionMode } from "@/contexts/ChatContext";
 
 const navItems = [
   { title: "Home", path: "/", icon: Home },
-  { title: "Architecture", path: "/app/architecture", icon: Layers },
+  { title: "How it works", path: "/app/architecture", icon: Layers },
   { title: "Conversation", path: "/app/chat", icon: MessageSquare, hasModal: true },
-  { title: "Persona Profile", path: "/app/personality", icon: User },
+  { title: "Persona", path: "/app/personality", icon: User },
   { title: "Timeline", path: "/app/memory", icon: Calendar },
   { title: "Reflections", path: "/app/reflections", icon: TrendingUp },
   { title: "Settings", path: "/app/settings", icon: Settings },
@@ -35,13 +36,6 @@ export function AppSidebar() {
   // Get userId dynamically each time - it might change after login
   const userId = localStorage.getItem("user_id") || "";
   const currentMode: InteractionMode = searchParams.get("mode") === "mirror" ? "mirror" : "reflection";
-
-  // Debug logs
-  console.log("📊 AppSidebar:", {
-    currentMode,
-    pathname: location.pathname,
-    userId: userId ? "set" : "none",
-  });
 
   const handleNavContextMenu = (e: React.MouseEvent, item: typeof navItems[0]) => {
     if (item.hasModal && item.path === "/app/chat") {
@@ -79,24 +73,20 @@ export function AppSidebar() {
   };
 
   return (
-    <aside className="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col">
+    <aside className="app-sidebar w-64 h-screen flex flex-col">
       {/* Logo */}
-      <div className="p-6 border-b border-sidebar-border">
+      <div className="px-6 pb-5 pt-7">
         <div className="flex items-center gap-3">
-          <img
-            src="/favicon.ico"
-            alt="Reflectra Logo"
-            className="w-10 h-10 rounded-xl glow-subtle"
-          />
+          <MirrorMark className="h-9 w-9" />
           <div>
-            <h1 className="font-semibold text-foreground tracking-tight">Reflectra</h1>
-            <p className="text-xs text-muted-foreground">Persona Reflection</p>
+            <p className="font-display text-2xl leading-none text-foreground">Reflectra</p>
+            <p className="eyebrow mt-1.5 !text-[0.6rem]">A mirror for your mind</p>
           </div>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto" aria-label="App">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           
@@ -112,16 +102,16 @@ export function AppSidebar() {
               onClick={(e) => handleNavClick(e, item)}
               onContextMenu={(e) => handleNavContextMenu(e, item)}
               className={cn(
-                "flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 will-change-transform",
+                "app-nav-item flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm transition-all duration-200",
                 isActive || animatedNavPath === item.path
-                  ? "bg-sidebar-accent text-primary glow-subtle sidebar-nav-pop"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground hover:translate-x-0.5"
+                  ? "is-active text-foreground sidebar-nav-pop"
+                  : "text-sidebar-foreground/70 hover:bg-white/[0.04] hover:text-foreground"
               )}
             >
               <item.icon className={cn("w-4 h-4 transition-transform duration-200", isActive && "text-primary", animatedNavPath === item.path && "scale-110")} />
               <span>{item.title}</span>
               {item.path === "/app/chat" && (
-                <span className="ml-auto w-2 h-2 rounded-full bg-primary pulse-indicator" />
+                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-iris-cyan pulse-indicator" />
               )}
             </NavLink>
           );
@@ -129,12 +119,12 @@ export function AppSidebar() {
       </nav>
 
       {/* Model State Panel */}
-      <div className="p-4 border-t border-sidebar-border">
+      <div className="p-4 border-t border-white/5">
         <ModelStatePanel />
       </div>
 
       {/* Profile Menu */}
-      <div className="p-4 border-t border-sidebar-border">
+      <div className="p-3 border-t border-white/5">
         <ProfileMenu />
       </div>
 

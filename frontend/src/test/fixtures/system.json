@@ -1,0 +1,170 @@
+{
+ "rules": {
+  "traits": {
+   "count": 4,
+   "max_step_per_message": 0.2,
+   "inertia": 0.8,
+   "confidence_gain": 0.25,
+   "confidence_loss": 0.3,
+   "agree_within": 0.2,
+   "conflict_beyond": 0.35,
+   "confidence_floor": 0.05,
+   "confidence_ceiling": 0.98,
+   "snapshot_hours": 6.0
+  },
+  "memory": {
+   "messages_searched": 600,
+   "related_recalled": 4,
+   "recent_recalled": 4,
+   "turns_in_context": 16
+  },
+  "mirror": {
+   "voice_samples": 12,
+   "max_attempts": 2
+  },
+  "confidence": {
+   "source_weights": {
+    "conversations": 0.4,
+    "traits": 0.2,
+    "timeline_reflections": 0.15,
+    "reflection_summaries": 0.15,
+    "external_inputs": 0.1
+   },
+   "tiers": [
+    {
+     "tier": "very_low",
+     "up_to": 20,
+     "phrase_usage_frequency": 0.1,
+     "tone_strength": 0.2,
+     "reaction_accuracy_threshold": 0.85,
+     "style_enforcement_intensity": 0.15,
+     "include_uncertainty_note": true
+    },
+    {
+     "tier": "partial",
+     "up_to": 50,
+     "phrase_usage_frequency": 0.3,
+     "tone_strength": 0.4,
+     "reaction_accuracy_threshold": 0.7,
+     "style_enforcement_intensity": 0.35,
+     "include_uncertainty_note": false
+    },
+    {
+     "tier": "moderate",
+     "up_to": 75,
+     "phrase_usage_frequency": 0.55,
+     "tone_strength": 0.65,
+     "reaction_accuracy_threshold": 0.55,
+     "style_enforcement_intensity": 0.6,
+     "include_uncertainty_note": false
+    },
+    {
+     "tier": "high",
+     "up_to": 100,
+     "phrase_usage_frequency": 0.8,
+     "tone_strength": 0.85,
+     "reaction_accuracy_threshold": 0.4,
+     "style_enforcement_intensity": 0.85,
+     "include_uncertainty_note": false
+    }
+   ]
+  },
+  "reflections": {
+   "messages_read": 160,
+   "min_messages": 12,
+   "min_quotes": 2
+  },
+  "bootstrap": {
+   "confidence_by_evidence": {
+    "weak": 0.22,
+    "moderate": 0.38,
+    "strong": 0.52
+   }
+  },
+  "ai": {
+   "provider": "gemini",
+   "reply_model": "gemini-3.6-flash",
+   "fast_model": "gemini-3.1-flash-lite",
+   "hedge_seconds": 4.0
+  }
+ },
+ "you": {
+  "messages": 350,
+  "conversations": 53,
+  "traits": [
+   {
+    "key": "communication_style",
+    "score": 0.371,
+    "confidence": 0.65,
+    "evidence_count": 133
+   },
+   {
+    "key": "emotional_expressiveness",
+    "score": 0.736,
+    "confidence": 0.666,
+    "evidence_count": 95
+   },
+   {
+    "key": "decision_framing",
+    "score": 0.429,
+    "confidence": 0.512,
+    "evidence_count": 81
+   },
+   {
+    "key": "reflection_depth",
+    "score": 0.718,
+    "confidence": 0.655,
+    "evidence_count": 64
+   }
+  ],
+  "confidence": {
+   "center": 0.444,
+   "interval": {
+    "lower": 0.3116,
+    "upper": 0.5765
+   },
+   "tier": "partial",
+   "source_scores": {
+    "conversations": 0.2459,
+    "traits": 0.6531,
+    "timeline_reflections": 0.7075,
+    "reflection_summaries": 0.43,
+    "external_inputs": 0.0
+   },
+   "source_weights": {
+    "conversations": 0.4,
+    "traits": 0.2,
+    "timeline_reflections": 0.15,
+    "reflection_summaries": 0.15,
+    "external_inputs": 0.1
+   },
+   "source_contributions": {
+    "conversations": 0.1093,
+    "traits": 0.1451,
+    "timeline_reflections": 0.1179,
+    "reflection_summaries": 0.0717,
+    "external_inputs": 0.0
+   },
+   "timeline_recency_override": {
+    "applied": false,
+    "recent_avg": 0.55,
+    "older_avg": 0.55,
+    "override_strength": 0.0
+   },
+   "controls": {
+    "phrase_usage_frequency": 0.3,
+    "tone_strength": 0.4,
+    "reaction_accuracy_threshold": 0.7,
+    "style_enforcement_intensity": 0.35,
+    "include_uncertainty_note": false
+   }
+  },
+  "voice_samples_available": 12,
+  "mirror": {
+   "replies_measured": 109,
+   "avg_seconds": 1.5,
+   "fallback_rate": 0.183
+  },
+  "reflections": 4
+ }
+}

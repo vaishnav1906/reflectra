@@ -1,0 +1,581 @@
+{
+ "range_days": null,
+ "summary": {
+  "first_date": "2026-03-29",
+  "last_date": "2026-11-16",
+  "active_days": 14,
+  "user_messages": 350,
+  "conversations": 51,
+  "longest_streak": 3,
+  "busiest_day": {
+   "date": "2026-04-14",
+   "user_messages": 66
+  },
+  "avg_messages_per_active_day": 25.0,
+  "conversations_by_mode": {
+   "reflection": 33,
+   "mirror": 18
+  }
+ },
+ "days": [
+  {
+   "date": "2026-11-16",
+   "user_messages": 3,
+   "mood": null,
+   "depth": 0.2,
+   "highlight": "then feel bad about it the plan keeps slippi",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000000b",
+     "title": "and i notice it every si",
+     "mode": "reflection",
+     "user_messages": 3
+    }
+   ]
+  },
+  {
+   "date": "2026-04-21",
+   "user_messages": 17,
+   "mood": null,
+   "depth": 0.2,
+   "highlight": "time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000000c",
+     "title": "about it the pl",
+     "mode": "mirror",
+     "user_messages": 5
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000009",
+     "title": "keeps slipping and i",
+     "mode": "mirror",
+     "user_messages": 4
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000000d",
+     "title": "it every single tim",
+     "mode": "reflection",
+     "user_messages": 3
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000008",
+     "title": "but still start late anyway then",
+     "mode": "reflection",
+     "user_messages": 3
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000000e",
+     "title": "feel bad about",
+     "mode": "reflection",
+     "user_messages": 2
+    }
+   ]
+  },
+  {
+   "date": "2026-04-20",
+   "user_messages": 1,
+   "mood": null,
+   "depth": 0.2,
+   "highlight": "the plan keeps slipping and i notice",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000000f",
+     "title": "every single time but st",
+     "mode": "reflection",
+     "user_messages": 1
+    }
+   ]
+  },
+  {
+   "date": "2026-04-18",
+   "user_messages": 63,
+   "mood": 1.0,
+   "depth": 0.21,
+   "highlight": "start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i no",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000010",
+     "title": "it every single time but",
+     "mode": "mirror",
+     "user_messages": 60
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000011",
+     "title": "still start late any",
+     "mode": "mirror",
+     "user_messages": 3
+    }
+   ]
+  },
+  {
+   "date": "2026-04-15",
+   "user_messages": 13,
+   "mood": 1.0,
+   "depth": 0.24,
+   "highlight": "then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway th",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000006",
+     "title": "feel bad about it the plan keeps slippin",
+     "mode": "reflection",
+     "user_messages": 8
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000012",
+     "title": "and i notice it every single",
+     "mode": "reflection",
+     "user_messages": 5
+    }
+   ]
+  },
+  {
+   "date": "2026-04-14",
+   "user_messages": 66,
+   "mood": null,
+   "depth": 0.24,
+   "highlight": "but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slippi",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000002",
+     "title": "and i noti",
+     "mode": "reflection",
+     "user_messages": 15
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000004",
+     "title": "it every single time but still s",
+     "mode": "reflection",
+     "user_messages": 10
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000013",
+     "title": "late anyway then feel bad about it t",
+     "mode": "reflection",
+     "user_messages": 9
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000014",
+     "title": "plan keeps slipping and i notice i",
+     "mode": "reflection",
+     "user_messages": 8
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000015",
+     "title": "every single time but stil",
+     "mode": "reflection",
+     "user_messages": 7
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000016",
+     "title": "start late anyway then",
+     "mode": "reflection",
+     "user_messages": 7
+    }
+   ]
+  },
+  {
+   "date": "2026-04-11",
+   "user_messages": 10,
+   "mood": null,
+   "depth": 0.26,
+   "highlight": "bad about it the plan keeps slipping and i notice it every single time but still start late anyway t",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000017",
+     "title": "feel bad about it the pl",
+     "mode": "reflection",
+     "user_messages": 7
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000018",
+     "title": "keeps slippi",
+     "mode": "mirror",
+     "user_messages": 2
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000019",
+     "title": "and i notice i",
+     "mode": "mirror",
+     "user_messages": 1
+    }
+   ]
+  },
+  {
+   "date": "2026-04-10",
+   "user_messages": 41,
+   "mood": -0.14,
+   "depth": 0.2,
+   "highlight": "every single time but still start late anyway then feel bad about it the",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000001a",
+     "title": "plan keeps slippin",
+     "mode": "reflection",
+     "user_messages": 28
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000001b",
+     "title": "and i notice it every si",
+     "mode": "reflection",
+     "user_messages": 11
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000001c",
+     "title": "time but",
+     "mode": "reflection",
+     "user_messages": 1
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000001d",
+     "title": "still start",
+     "mode": "mirror",
+     "user_messages": 1
+    }
+   ]
+  },
+  {
+   "date": "2026-04-09",
+   "user_messages": 19,
+   "mood": null,
+   "depth": 0.21,
+   "highlight": "late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late an",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000001e",
+     "title": "then feel bad a",
+     "mode": "mirror",
+     "user_messages": 4
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000001f",
+     "title": "it the plan",
+     "mode": "mirror",
+     "user_messages": 4
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000020",
+     "title": "keeps slip",
+     "mode": "mirror",
+     "user_messages": 3
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000021",
+     "title": "and i notice it every single time",
+     "mode": "mirror",
+     "user_messages": 2
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000022",
+     "title": "still start late anyway t",
+     "mode": "reflection",
+     "user_messages": 2
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000023",
+     "title": "feel bad",
+     "mode": "reflection",
+     "user_messages": 2
+    }
+   ]
+  },
+  {
+   "date": "2026-04-07",
+   "user_messages": 2,
+   "mood": null,
+   "depth": 0.2,
+   "highlight": "about it the plan keeps slipping and i notice it every single time but stil",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000024",
+     "title": "start late anyway then fe",
+     "mode": "reflection",
+     "user_messages": 2
+    }
+   ]
+  },
+  {
+   "date": "2026-04-06",
+   "user_messages": 35,
+   "mood": 0.33,
+   "depth": 0.22,
+   "highlight": "bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000025",
+     "title": "every single time but s",
+     "mode": "reflection",
+     "user_messages": 12
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000026",
+     "title": "start late any",
+     "mode": "reflection",
+     "user_messages": 8
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000027",
+     "title": "then feel bad abo",
+     "mode": "mirror",
+     "user_messages": 8
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000028",
+     "title": "it the plan",
+     "mode": "reflection",
+     "user_messages": 3
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000029",
+     "title": "slipping",
+     "mode": "mirror",
+     "user_messages": 2
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000002a",
+     "title": "i notice it every single",
+     "mode": "mirror",
+     "user_messages": 1
+    }
+   ]
+  },
+  {
+   "date": "2026-04-05",
+   "user_messages": 45,
+   "mood": 0.6,
+   "depth": 0.22,
+   "highlight": "but still start late anyway then feel bad about it the plan keeps slipping and i notice it e",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-00000000002b",
+     "title": "single time",
+     "mode": "reflection",
+     "user_messages": 16
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000002c",
+     "title": "but still start",
+     "mode": "mirror",
+     "user_messages": 9
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000002d",
+     "title": "anyway then fe",
+     "mode": "reflection",
+     "user_messages": 8
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000002e",
+     "title": "bad about it the p",
+     "mode": "mirror",
+     "user_messages": 7
+    },
+    {
+     "id": "00000000-0000-0000-0000-00000000002f",
+     "title": "keeps sli",
+     "mode": "reflection",
+     "user_messages": 4
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000030",
+     "title": "and i no",
+     "mode": "reflection",
+     "user_messages": 1
+    }
+   ]
+  },
+  {
+   "date": "2026-03-30",
+   "user_messages": 32,
+   "mood": null,
+   "depth": 0.22,
+   "highlight": "it every single time but still start late anyway then feel bad abou",
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000031",
+     "title": "it the plan",
+     "mode": "mirror",
+     "user_messages": 11
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000032",
+     "title": "keeps slipp",
+     "mode": "reflection",
+     "user_messages": 10
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000033",
+     "title": "and i notice",
+     "mode": "mirror",
+     "user_messages": 9
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000034",
+     "title": "every single time b",
+     "mode": "reflection",
+     "user_messages": 2
+    }
+   ]
+  },
+  {
+   "date": "2026-03-29",
+   "user_messages": 3,
+   "mood": null,
+   "depth": null,
+   "highlight": null,
+   "conversations": [
+    {
+     "id": "00000000-0000-0000-0000-000000000023",
+     "title": "still st",
+     "mode": "reflection",
+     "user_messages": 2
+    },
+    {
+     "id": "00000000-0000-0000-0000-000000000035",
+     "title": "late anyway t",
+     "mode": "reflection",
+     "user_messages": 1
+    }
+   ]
+  }
+ ],
+ "trait_series": [
+  {
+   "date": "2026-03-29",
+   "stability": 0.1,
+   "communication_style": 0.247,
+   "emotional_expressiveness": 0.5,
+   "decision_framing": 0.5,
+   "reflection_depth": 0.5
+  },
+  {
+   "date": "2026-03-30",
+   "stability": 0.104,
+   "communication_style": 0.183,
+   "emotional_expressiveness": 0.711,
+   "decision_framing": 0.181,
+   "reflection_depth": 0.5
+  },
+  {
+   "date": "2026-04-05",
+   "stability": 0.119,
+   "communication_style": 0.383,
+   "emotional_expressiveness": 0.874,
+   "decision_framing": 0.721,
+   "reflection_depth": 0.5
+  },
+  {
+   "date": "2026-04-06",
+   "stability": 0.448,
+   "communication_style": 0.512,
+   "emotional_expressiveness": 0.7,
+   "decision_framing": 0.9,
+   "reflection_depth": 0.4
+  },
+  {
+   "date": "2026-04-07",
+   "stability": 0.447,
+   "communication_style": 0.451,
+   "emotional_expressiveness": 0.627,
+   "decision_framing": 0.7,
+   "reflection_depth": 0.4
+  },
+  {
+   "date": "2026-04-09",
+   "stability": 0.449,
+   "communication_style": 0.252,
+   "emotional_expressiveness": 0.627,
+   "decision_framing": 0.7,
+   "reflection_depth": 0.4
+  },
+  {
+   "date": "2026-04-10",
+   "stability": 0.475,
+   "communication_style": 0.183,
+   "emotional_expressiveness": 0.726,
+   "decision_framing": 0.457,
+   "reflection_depth": 0.442
+  },
+  {
+   "date": "2026-04-11",
+   "stability": 0.478,
+   "communication_style": 0.163,
+   "emotional_expressiveness": 0.731,
+   "decision_framing": 0.581,
+   "reflection_depth": 0.442
+  },
+  {
+   "date": "2026-04-14",
+   "stability": 0.578,
+   "communication_style": 0.661,
+   "emotional_expressiveness": 0.585,
+   "decision_framing": 0.643,
+   "reflection_depth": 0.744
+  },
+  {
+   "date": "2026-04-15",
+   "stability": 0.603,
+   "communication_style": 0.635,
+   "emotional_expressiveness": 0.657,
+   "decision_framing": 0.66,
+   "reflection_depth": 0.718
+  },
+  {
+   "date": "2026-04-20",
+   "stability": 0.603,
+   "communication_style": 0.582,
+   "emotional_expressiveness": 0.657,
+   "decision_framing": 0.66,
+   "reflection_depth": 0.718
+  },
+  {
+   "date": "2026-04-21",
+   "stability": 0.616,
+   "communication_style": 0.407,
+   "emotional_expressiveness": 0.738,
+   "decision_framing": 0.412,
+   "reflection_depth": 0.718
+  },
+  {
+   "date": "2026-11-16",
+   "stability": 0.621,
+   "communication_style": 0.371,
+   "emotional_expressiveness": 0.736,
+   "decision_framing": 0.429,
+   "reflection_depth": 0.718
+  }
+ ],
+ "milestones": [
+  {
+   "date": "2026-11-16",
+   "kind": "trait",
+   "text": "feel bad about it the plan keeps slipping and i notice it every single time but still s"
+  },
+  {
+   "date": "2026-11-16",
+   "kind": "reflection",
+   "text": "late anyway then feel bad about it the pla"
+  },
+  {
+   "date": "2026-04-15",
+   "kind": "trait",
+   "text": "keeps slipping and i notice it every single time but still start late anyway then feel ba"
+  },
+  {
+   "date": "2026-04-14",
+   "kind": "activity",
+   "text": "about it the plan keeps slipping and"
+  },
+  {
+   "date": "2026-04-14",
+   "kind": "trait",
+   "text": "notice it every single time but still start late anyway then feel bad about it th"
+  },
+  {
+   "date": "2026-03-29",
+   "kind": "start",
+   "text": "plan keeps slipping and i notice it eve"
+  }
+ ],
+ "range": "all"
+}

@@ -121,6 +121,15 @@ def compute_message_metrics(user_text: str, nudges: Optional[List[Dict]] = None)
     }
 
 
+def sentiment_counts(text: str) -> tuple[int, int]:
+    """(positive, negative) sentiment-word counts for a piece of text."""
+    words = _words(text)
+    return (
+        sum(1 for word in words if word in POSITIVE_WORDS),
+        sum(1 for word in words if word in NEGATIVE_WORDS),
+    )
+
+
 def simple_sentiment(text: str) -> float:
     """Lexicon sentiment in [-1, 1]; 0.0 when no sentiment words are present."""
     words = _words(text)

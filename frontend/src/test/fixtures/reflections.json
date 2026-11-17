@@ -1,0 +1,94 @@
+{
+ "reflections": [
+  {
+   "id": "00000000-0000-0000-0000-000000000001",
+   "title": "slipping and i notice it every sing",
+   "insight": "time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but",
+   "theme": "habits",
+   "evidence": [
+    {
+     "date": "2026-04-14",
+     "quote": "start late anyway then feel bad about it the plan keeps slipping and i notice it every s",
+     "conversation_id": "00000000-0000-0000-0000-000000000002"
+    },
+    {
+     "date": "2026-04-14",
+     "quote": "time but still start late anyway then feel bad about it the plan keeps slippin",
+     "conversation_id": "00000000-0000-0000-0000-000000000002"
+    }
+   ],
+   "confidence": 0.55,
+   "created_at": "2026-11-16T16:21:14.657841+00:00"
+  },
+  {
+   "id": "00000000-0000-0000-0000-000000000003",
+   "title": "and i notice it every single time but still s",
+   "insight": "late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then fee",
+   "theme": "self-image",
+   "evidence": [
+    {
+     "date": "2026-04-14",
+     "quote": "bad about it the plan keeps slipping and i notice it e",
+     "conversation_id": "00000000-0000-0000-0000-000000000004"
+    },
+    {
+     "date": "2026-04-14",
+     "quote": "single time but still start late anyway then feel bad about it the plan keeps slipping and i",
+     "conversation_id": "00000000-0000-0000-0000-000000000004"
+    }
+   ],
+   "confidence": 0.55,
+   "created_at": "2026-11-16T16:21:14.657841+00:00"
+  },
+  {
+   "id": "00000000-0000-0000-0000-000000000005",
+   "title": "it every single time but still start late anywa",
+   "insight": "then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time bu",
+   "theme": "growth",
+   "evidence": [
+    {
+     "date": "2026-04-14",
+     "quote": "still start late anyway then feel bad about it the plan keeps slipping and i n",
+     "conversation_id": "00000000-0000-0000-0000-000000000002"
+    },
+    {
+     "date": "2026-04-14",
+     "quote": "it every single time but still start late anyway then feel bad about it the plan keeps slipping and i no",
+     "conversation_id": "00000000-0000-0000-0000-000000000006"
+    }
+   ],
+   "confidence": 0.55,
+   "created_at": "2026-11-16T16:21:14.657841+00:00"
+  },
+  {
+   "id": "00000000-0000-0000-0000-000000000007",
+   "title": "it every single time but still start late anywa",
+   "insight": "then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel bad about it the plan keeps slipping and i notice it every single time but still start late anyway then feel",
+   "theme": "emotions",
+   "evidence": [
+    {
+     "date": "2026-04-21",
+     "quote": "about it the plan keeps slipping and i notice it every single time bu",
+     "conversation_id": "00000000-0000-0000-0000-000000000008"
+    },
+    {
+     "date": "2026-04-21",
+     "quote": "still start late anyway then feel bad about it the plan keeps slipping and i notice i",
+     "conversation_id": "00000000-0000-0000-0000-000000000009"
+    }
+   ],
+   "confidence": 0.55,
+   "created_at": "2026-11-16T16:21:14.657841+00:00"
+  }
+ ],
+ "earlier": [],
+ "status": {
+  "generated_at": "2026-11-16T16:21:14.657841+00:00",
+  "messages_available": 269,
+  "messages_read": 160,
+  "new_messages_since": 0,
+  "can_generate": false,
+  "reason": "every single time but still start late anyway then feel bad about it the pl",
+  "pattern_tracking": true
+ }
+}

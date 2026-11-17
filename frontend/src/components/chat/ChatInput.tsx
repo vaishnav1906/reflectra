@@ -292,13 +292,14 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
 
   return (
     <form onSubmit={handleSubmit} className="relative">
-      <div className="relative bg-card border border-border rounded-2xl overflow-hidden transition-all duration-200 focus-within:border-primary/50 focus-within:glow-subtle">
+      <div className="chat-input-shell relative overflow-hidden rounded-[1.75rem] transition-all duration-300">
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Share your thoughts..."
+          placeholder="What's on your mind?"
           rows={1}
-          className="w-full bg-transparent px-5 py-4 pr-24 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
+          aria-label="Message"
+          className="w-full bg-transparent px-6 py-[1.05rem] pr-28 text-[15px] resize-none focus:outline-none placeholder:text-muted-foreground/45"
           disabled={inputDisabled}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -308,7 +309,7 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
           }}
         />
         
-        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
+        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
           <button
             type="button"
             onClick={handleMicClick}
@@ -334,13 +335,14 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
             type="submit"
             disabled={!message.trim() || inputDisabled}
             className={cn(
-              "p-2.5 rounded-xl transition-all duration-200",
+              "p-2.5 rounded-full transition-all duration-200",
               message.trim() && !inputDisabled
-                ? "bg-primary text-primary-foreground hover:opacity-90"
-                : "bg-muted text-muted-foreground cursor-not-allowed"
+                ? "mode-pill-active text-primary-foreground hover:scale-105"
+                : "bg-white/5 text-muted-foreground cursor-not-allowed"
             )}
           >
             <Send className="w-4 h-4" />
+            <span className="sr-only">Send</span>
           </button>
         </div>
       </div>
@@ -357,8 +359,8 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
         </p>
       )}
 
-      <p className="text-center text-xs text-muted-foreground/50 mt-3">
-        Reflectra adapts to your communication style and remembers context
+      <p className="text-center font-mono text-[10px] tracking-wide text-muted-foreground/40 mt-3">
+        Enter to send · Shift + Enter for a new line
       </p>
     </form>
   );

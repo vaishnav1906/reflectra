@@ -1,164 +1,182 @@
-import { useEffect, useMemo, useState } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { PatternHighlight } from "@/components/timeline/PatternHighlight";
-import { Search, Calendar, Info } from "lucide-react";
-import { useTimelineEvents, type TimelineEvent, type TimelineRange } from "@/hooks/useAnalytics";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Flag, Sparkles, TrendingUp, Upload, Zap } from "lucide-react";
+import { ErrorState, LoadingState, PageShell, Panel, Stat } from "@/components/portrait/PageShell";
+import { TraitRiver } from "@/components/portrait/Charts";
+import { Milestone, TimelineDay, formatDay, useTimeline } from "@/hooks/useReflectra";
+import { cn } from "@/lib/utils";
 
-function includesSearch(event: TimelineEvent, query: string) {
-  if (!query.trim()) {
-    return true;
-  }
+/**
+ * Timeline: what you actually talked about, day by day.
+ * Every figure is counted from stored conversations; nothing is estimated except
+ * mood, which is a simple count of positive vs negative feeling-words that day.
+ */
 
-  const normalized = query.trim().toLowerCase();
-  const haystack = [
-    event.observation,
-    event.context || "",
-    event.source,
-    ...event.tags,
-  ]
-    .join(" ")
-    .toLowerCase();
+const RANGES = [
+  { value: "30d", label: "30 days" },
+  { value: "90d", label: "90 days" },
+  { value: "1y", label: "1 year" },
+  { value: "all", label: "All time" },
+];
 
-  return haystack.includes(normalized);
+const MILESTONE_ICON: Record<string, typeof Flag> = {
+  start: Flag,
+  activity: Zap,
+  trait: TrendingUp,
+  import: Upload,
+  reflection: Sparkles,
+};
+
+function moodLabel(mood: number | null): { text: string; color: string } | null {
+  if (mood === null) return null;
+  if (mood >= 0.3) return { text: "mostly upbeat words", color: "hsl(var(--trait-consistent))" };
+  if (mood <= -0.3) return { text: "mostly heavy words", color: "hsl(var(--trait-empathetic))" };
+  return { text: "mixed feelings", color: "hsl(var(--iris-peach))" };
+}
+
+function DayCard({ day, peak }: { day: TimelineDay; peak: number }) {
+  const navigate = useNavigate();
+  const mood = moodLabel(day.mood);
+  return (
+    <li className="relative pl-8">
+      <span className="absolute left-0 top-2 h-2.5 w-2.5 rounded-full bg-iris-violet shadow-[0_0_14px_hsl(var(--iris-violet))]" />
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h3 className="font-display text-2xl">{formatDay(day.date, { weekday: "long", day: "numeric", month: "long" })}</h3>
+        <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
+          {day.user_messages} {day.user_messages === 1 ? "message" : "messages"}
+        </span>
+        {mood ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: mood.color }} />
+            {mood.text}
+          </span>
+        ) : null}
+      </div>
+
+      {/* how much of your busiest day this was */}
+      <div className="mt-3 h-1 w-full max-w-md overflow-hidden rounded-full bg-white/[0.06]" aria-hidden="true">
+        <div className="h-full rounded-full bg-gradient-to-r from-iris-violet to-iris-cyan" style={{ width: `${Math.max(3, (day.user_messages / peak) * 100)}%` }} />
+      </div>
+
+      {day.highlight ? (
+        <blockquote className="mt-4 max-w-2xl border-l border-iris-peach/60 pl-4 text-[15px] italic leading-relaxed text-foreground/80">
+          “{day.highlight}”
+        </blockquote>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {day.conversations.map((conversation) => (
+          <button
+            key={conversation.id}
+            type="button"
+            onClick={() => navigate(`/app/chat?conversation_id=${conversation.id}&mode=${conversation.mode === "mirror" ? "mirror" : "reflection"}`)}
+            className="group flex max-w-full items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs transition-colors hover:border-white/25 hover:bg-white/[0.07]"
+            title="Open this conversation"
+          >
+            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", conversation.mode === "mirror" ? "bg-iris-cyan" : "bg-iris-violet")} />
+            <span className="truncate text-foreground/85">{conversation.title}</span>
+            <span className="shrink-0 font-mono text-muted-foreground">{conversation.user_messages}</span>
+          </button>
+        ))}
+      </div>
+    </li>
+  );
+}
+
+function MilestoneRow({ milestone }: { milestone: Milestone }) {
+  const Icon = MILESTONE_ICON[milestone.kind] || Flag;
+  return (
+    <li className="flex gap-3">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-iris-cyan" aria-hidden="true" />
+      <div>
+        <p className="text-sm leading-snug text-foreground/90">{milestone.text}</p>
+        <p className="mt-0.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{formatDay(milestone.date)}</p>
+      </div>
+    </li>
+  );
 }
 
 export function MemoryPage() {
-  const [userId, setUserId] = useState<string>("anonymous");
-  const [timeRange, setTimeRange] = useState<TimelineRange>("7d");
-  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [range, setRange] = useState("all");
+  const { data, isLoading, error, refetch } = useTimeline(range);
 
-  useEffect(() => {
-    const id = localStorage.getItem("user_id");
-    if (id) {
-      setUserId(id);
-    }
-  }, []);
+  if (isLoading && !data) return <LoadingState label="Laying out your timeline…" />;
+  if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load your timeline."} onRetry={() => void refetch()} />;
 
-  const { data, isLoading, isError } = useTimelineEvents(userId, timeRange);
-
-  const filteredEvents = useMemo(() => {
-    const events = data?.events || [];
-    return events.filter((event) => includesSearch(event, searchQuery));
-  }, [data?.events, searchQuery]);
-
-  const overviewText =
-    data?.overview ||
-    "Patterns are generated from conversation context and persona traits as activity accumulates.";
+  const { summary, days, milestones, trait_series } = data;
+  const peak = Math.max(...days.map((d) => d.user_messages), 1);
+  const reflectionCount = summary.conversations_by_mode.reflection ?? 0;
+  const mirrorCount = summary.conversations_by_mode.mirror ?? 0;
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <header className="px-8 py-6 border-b border-border">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold text-foreground">Timeline</h1>
-              <TooltipProvider delayDuration={200}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button className="p-1 rounded hover:bg-muted/50 transition-colors">
-                      <Info className="w-4 h-4 text-muted-foreground" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" className="max-w-xs bg-card border border-border">
-                    <p className="text-xs text-muted-foreground">
-                      Pattern highlights generated from conversations, persona traits, and context signals.
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Recent patterns and observations
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search patterns..."
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                className="bg-card border border-border rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:border-primary/50 w-56"
-              />
-            </div>
-            <div className="relative p-2 bg-card border border-border rounded-lg hover:bg-muted transition-colors">
-              <Calendar className="w-4 h-4 text-muted-foreground" />
-              <select
-                aria-label="Timeline range"
-                value={timeRange}
-                onChange={(event) => setTimeRange(event.target.value as TimelineRange)}
-                className="absolute inset-0 opacity-0 cursor-pointer"
-              >
-                <option value="7d">Last 7 days</option>
-                <option value="30d">Last 30 days</option>
-                <option value="90d">Last 90 days</option>
-              </select>
-            </div>
-          </div>
+    <PageShell
+      eyebrow="Timeline"
+      title="Your story,"
+      accent="day by day."
+      subtitle="What you talked about, how much, and how your persona moved while you did. Counted straight from your conversations."
+      actions={
+        <div className="flex rounded-full border border-white/10 bg-white/[0.03] p-1" role="group" aria-label="Time range">
+          {RANGES.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setRange(option.value)}
+              aria-pressed={range === option.value}
+              className={cn(
+                "rounded-full px-3.5 py-1.5 text-xs font-medium transition-all",
+                range === option.value ? "mode-pill-active text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
-      </header>
-
-      <ScrollArea className="flex-1">
-        <div className="p-8">
-          <div className="max-w-2xl mx-auto">
-            {/* Summary */}
-            <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-xl p-5 mb-8">
-              <h2 className="font-medium text-foreground mb-2">Recent Overview</h2>
-              <p className="text-sm text-muted-foreground">
-                {overviewText}
-              </p>
+      }
+    >
+      {days.length === 0 ? (
+        <Panel>
+          <p className="py-10 text-center text-muted-foreground">
+            Nothing in this period. {range !== "all" ? "Try a longer range, or start a conversation." : "Start a conversation and it will show up here."}
+          </p>
+        </Panel>
+      ) : (
+        <>
+          <Panel className="iris-border">
+            <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+              <Stat value={summary.active_days} label="days you talked" />
+              <Stat value={summary.user_messages.toLocaleString()} label="messages you sent" />
+              <Stat value={summary.conversations} label={`conversations (${reflectionCount} reflection, ${mirrorCount} mirror)`} />
+              <Stat value={summary.longest_streak} label="longest streak, in days" />
             </div>
+          </Panel>
 
-            {/* Pattern Highlights */}
-            {userId === "anonymous" ? (
-              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
-                Please log in to generate your timeline automatically.
-              </div>
-            ) : isLoading ? (
-              <div className="space-y-4">
-                {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={index} className="h-24 rounded-xl border border-border bg-card animate-pulse" />
-                ))}
-              </div>
-            ) : isError ? (
-              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
-                Unable to load timeline right now. Try refreshing in a moment.
-              </div>
-            ) : filteredEvents.length > 0 ? (
-              <div className="space-y-4">
-                {filteredEvents.map((event) => (
-                  <PatternHighlight
-                    key={event.id}
-                    period={event.period}
-                    observation={event.observation}
-                    trend={event.trend}
-                    context={event.context}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="bg-card border border-border rounded-xl p-6 text-sm text-muted-foreground">
-                No timeline entries match your current filter.
-              </div>
-            )}
-
-            {/* Footer note */}
-            <div className="mt-8 text-center">
-              <p className="text-xs text-muted-foreground/60">
-                Patterns are observed across interactions, not individual sessions
-              </p>
-            </div>
+          <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+            <Panel title="How your persona moved" hint="hover to read a day">
+              <TraitRiver series={trait_series} height={220} />
+            </Panel>
+            <Panel title="Milestones">
+              {milestones.length ? (
+                <ul className="space-y-4">
+                  {milestones.slice(0, 7).map((milestone, i) => (
+                    <MilestoneRow key={`${milestone.date}-${i}`} milestone={milestone} />
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground">None yet.</p>
+              )}
+            </Panel>
           </div>
-        </div>
-      </ScrollArea>
-    </div>
+
+          <section aria-label="Days">
+            <p className="eyebrow mb-6">Day by day · newest first</p>
+            <ol className="relative space-y-10 before:absolute before:bottom-2 before:left-[4.5px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/60 before:via-white/10 before:to-transparent">
+              {days.map((day) => (
+                <DayCard key={day.date} day={day} peak={peak} />
+              ))}
+            </ol>
+          </section>
+        </>
+      )}
+    </PageShell>
   );
 }

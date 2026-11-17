@@ -1,142 +1,189 @@
-import { useState, useEffect } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Lightbulb, TrendingUp, Heart, Target, Calendar, Info } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ChevronDown, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { ErrorState, LoadingState, PageShell, Panel } from "@/components/portrait/PageShell";
+import { LooseEnds } from "@/components/portrait/LooseEnds";
+import { Reflection, formatDay, useGenerateReflections, useReflections } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { TimeRangeToggle } from "@/components/ui/TimeRangeToggle";
-import { useReflections } from "@/hooks/useAnalytics";
-import { formatDistanceToNow } from "date-fns";
 
-export function ReflectionsPage() {
-  const [userId, setUserId] = useState<string>("anonymous");
-  const [timeRange, setTimeRange] = useState<'1d' | '2d' | '3d' | '7d' | '30d' | '90d'>('30d');
+/**
+ * Reflections: patterns across your conversations, each one backed by things you
+ * actually said on at least two separate occasions. Quotes link to their conversation.
+ */
 
-  useEffect(() => {
-    const id = localStorage.getItem("user_id");
-    if (id) setUserId(id);
-  }, []);
+const THEME_COLOR: Record<string, string> = {
+  work: "hsl(var(--iris-cyan))",
+  habits: "hsl(var(--iris-violet))",
+  relationships: "hsl(var(--trait-empathetic))",
+  "self-image": "hsl(var(--iris-peach))",
+  emotions: "hsl(var(--trait-empathetic))",
+  health: "hsl(var(--trait-consistent))",
+  decisions: "hsl(var(--iris-violet))",
+  growth: "hsl(var(--trait-consistent))",
+  other: "hsl(var(--muted-foreground))",
+};
 
-  const { data: insightsData, isLoading } = useReflections(userId, timeRange);
-
-  const getRangeLabel = (range: string) => {
-    switch (range) {
-      case '1d': return "Past 24 hours";
-      case '2d': return "Past 48 hours";
-      case '3d': return "Past 3 days";
-      case '7d': return "This week";
-      case '30d': return "This month";
-      case '90d': return "Past 3 months";
-      default: return "Selected period";
-    }
-  };
+function ReflectionCard({ reflection, index, muted = false }: { reflection: Reflection; index: number; muted?: boolean }) {
+  const navigate = useNavigate();
+  const color = THEME_COLOR[reflection.theme] || THEME_COLOR.other;
+  const days = new Set(reflection.evidence.map((e) => e.date).filter(Boolean)).size;
 
   return (
-    <div className="h-screen flex flex-col">
-      <header className="px-8 py-6 border-b border-border">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold text-foreground">Reflections</h1>
-              <TooltipProvider delayDuration={200}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button className="p-1 rounded hover:bg-muted/50 transition-colors">
-                      <Info className="w-4 h-4 text-muted-foreground" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right" className="max-w-xs bg-card border border-border">
-                    <p className="text-xs text-muted-foreground">
-                      Observations about your communication patterns over time. These are not assessments or advice.
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+    <article className={cn("glass-panel fade-in rounded-3xl p-6 md:p-8", !muted && "iris-border", muted && "opacity-75")} style={{ animationDelay: `${index * 90}ms` }}>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="rounded-full px-3 py-1 font-mono text-[10px] uppercase tracking-widest" style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}>
+          {reflection.theme}
+        </span>
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          said on {days || 1} {days === 1 ? "day" : "different days"}
+          {reflection.confidence ? ` · ${Math.round(reflection.confidence * 100)}% sure` : ""}
+        </span>
+      </div>
+
+      <h2 className="mt-4 font-display text-[clamp(1.6rem,3vw,2.2rem)] leading-[1.1] text-balance">{reflection.title}</h2>
+      <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-foreground/80">{reflection.insight}</p>
+
+      <div className="mt-6 space-y-3">
+        <p className="eyebrow !text-[0.62rem]">In your words</p>
+        {reflection.evidence.map((evidence, i) => {
+          const body = (
+            <>
+              <span className="block text-[15px] italic leading-relaxed text-foreground/85">“{evidence.quote}”</span>
+              <span className="mt-1 block font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                {formatDay(evidence.date)}
+                {evidence.conversation_id ? " · open conversation" : ""}
+              </span>
+            </>
+          );
+          return evidence.conversation_id ? (
+            <button
+              key={i}
+              type="button"
+              onClick={() => navigate(`/app/chat?conversation_id=${evidence.conversation_id}`)}
+              className="block w-full border-l border-iris-peach/60 pl-4 text-left transition-colors hover:border-iris-peach"
+            >
+              {body}
+            </button>
+          ) : (
+            <div key={i} className="border-l border-iris-peach/60 pl-4">
+              {body}
             </div>
-            <p className="text-sm text-muted-foreground">Observed patterns from recent conversations</p>
+          );
+        })}
+      </div>
+    </article>
+  );
+}
+
+export function ReflectionsPage() {
+  const { data, isLoading, error, refetch } = useReflections();
+  const generate = useGenerateReflections();
+  const [showEarlier, setShowEarlier] = useState(false);
+  const autoStarted = useRef(false);
+
+  // First visit with enough conversation and nothing written yet: write them once.
+  const status = data?.status;
+  useEffect(() => {
+    if (!status || autoStarted.current) return;
+    if (!status.generated_at && status.can_generate) {
+      autoStarted.current = true;
+      generate.mutate(false);
+    }
+  }, [status, generate]);
+
+  if (isLoading) return <LoadingState label="Opening your reflections…" />;
+  if (error || !data || !status) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load your reflections."} onRetry={() => void refetch()} />;
+
+  const working = generate.isPending;
+  const hasAny = data.reflections.length > 0;
+  const canRefresh = status.can_generate && status.new_messages_since > 0;
+  // "Read again" re-reads the same messages; allowed whenever reflecting is possible at all.
+  const canRetry = hasAny && status.pattern_tracking && !working;
+
+  return (
+    <PageShell
+      eyebrow="Reflections"
+      title="What keeps"
+      accent="coming up."
+      subtitle="Patterns Reflectra has noticed across your conversations. Each one has to show up at least twice, in your own words, or it doesn't make the page."
+      actions={
+        hasAny ? (
+          <button
+            type="button"
+            className={cn(canRefresh ? "btn-mirror" : "btn-ghost-glass", "!py-2.5 disabled:cursor-not-allowed disabled:opacity-50")}
+            disabled={working || !(canRefresh || canRetry)}
+            onClick={() => generate.mutate(!canRefresh)}
+          >
+            {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {working ? "Reading…" : canRefresh ? `Reflect on ${status.new_messages_since} new` : "Read again"}
+          </button>
+        ) : null
+      }
+    >
+      <p className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
+        {status.generated_at
+          ? `Written ${formatDay(status.generated_at)} from your last ${status.messages_read} messages · ${status.new_messages_since} new since`
+          : `${status.messages_available} messages available to read`}
+      </p>
+
+      {generate.isError ? (
+        <Panel className="border-destructive/30">
+          <p className="text-sm text-destructive">{generate.error instanceof Error ? generate.error.message : "Couldn't write reflections right now."}</p>
+        </Panel>
+      ) : null}
+
+      {working && !hasAny ? (
+        <Panel className="iris-border">
+          <div className="flex flex-col items-center gap-4 py-14 text-center">
+            <Sparkles className="h-6 w-6 animate-pulse text-iris-violet" />
+            <p className="font-display text-2xl">Reading back through what you&apos;ve said…</p>
+            <p className="max-w-sm text-sm text-muted-foreground">This takes around ten seconds. It only keeps patterns it can back with your own quotes.</p>
           </div>
-          <TimeRangeToggle value={timeRange} onChange={setTimeRange} />
-        </div>
-      </header>
+        </Panel>
+      ) : null}
 
-      <ScrollArea className="flex-1">
-        <div className="p-8">
-          <div className="max-w-3xl mx-auto">
-            <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-2xl p-6 mb-8">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
-                  <Lightbulb className="w-6 h-6 text-primary" />
-                </div>
-                <div className="flex-1">
-                  <h2 className="font-medium text-foreground mb-2">About {getRangeLabel(timeRange)} Reflections</h2>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    These observations are based on patterns in your conversations over {timeRange === '1d' ? 'the past 24 hours' : timeRange === '2d' ? 'the past 48 hours' : timeRange === '3d' ? 'the past 3 days' : timeRange === '7d' ? 'the past 7 days' : timeRange === '30d' ? 'the past 30 days' : 'the past 90 days'}. They describe how you've been 
-                    communicating, not who you are. Patterns may shift over time as your context changes.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-6 min-h-[300px]">
-              {userId === "anonymous" ? (
-                <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-xl">
-                  Please log in to view your personalized reflections.
-                </div>
-              ) : isLoading ? (
-                <div className="space-y-4">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="h-32 animate-pulse bg-card border border-border rounded-xl w-full" />
-                  ))}
-                </div>
-              ) : !insightsData || insightsData.length === 0 ? (
-                 <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-xl">
-                  No reflections found for {getRangeLabel(timeRange).toLowerCase()}. Keep chatting to generate insights!
-                 </div>
-              ) : (
-                <div className="transition-opacity duration-300 space-y-4">
-                  {insightsData.map((insight, index) => (
-                    <div key={insight.id} className="bg-card border border-border rounded-xl p-6 transition-all hover:bg-muted/30 fade-in" style={{ animationDelay: `${index * 50}ms` }}>
-                      <div className="flex items-start gap-4">
-                        <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0", "bg-primary/10")}>
-                          <Target className={cn("w-5 h-5", "text-primary")} />
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-2">
-                            <h3 className="font-medium text-foreground">Behavioral Insight</h3>
-                            <span className="text-xs text-muted-foreground">{formatDistanceToNow(new Date(insight.created_at), { addSuffix: true })}</span>
-                          </div>
-                          
-                          {insight.tags && insight.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-2 mb-3">
-                               {insight.tags.map((tag) => (
-                                 <span key={tag} className={cn("px-2.5 py-1 rounded-full text-xs font-medium text-muted-foreground bg-muted/50 border border-border/50")}>
-                                   {tag}
-                                 </span>
-                               ))}
-                            </div>
-                          )}
-
-                          <p className="text-sm text-foreground leading-relaxed">{insight.text}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="mt-8 text-center">
-              <p className="text-xs text-muted-foreground/60">
-                Based on patterns across multiple conversations
-              </p>
-            </div>
+      {!working && !hasAny ? (
+        <Panel className="iris-border">
+          <div className="flex flex-col items-center gap-4 py-14 text-center">
+            <p className="font-display text-3xl">Nothing here yet.</p>
+            <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
+              {status.reason || "Reflectra can read your recent conversations and write down what it notices."}
+            </p>
+            {status.can_generate ? (
+              <button type="button" className="btn-mirror" onClick={() => generate.mutate(false)}>
+                <Sparkles className="h-4 w-4" /> Write my reflections
+              </button>
+            ) : null}
           </div>
-        </div>
-      </ScrollArea>
-    </div>
+        </Panel>
+      ) : null}
+
+      {data.reflections.map((reflection, index) => (
+        <ReflectionCard key={reflection.id} reflection={reflection} index={index} />
+      ))}
+
+      <LooseEnds />
+
+      {data.earlier.length ? (
+        <section>
+          <button
+            type="button"
+            onClick={() => setShowEarlier((open) => !open)}
+            aria-expanded={showEarlier}
+            className="flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ChevronDown className={cn("h-4 w-4 transition-transform", showEarlier && "rotate-180")} />
+            Earlier reflections ({data.earlier.length})
+          </button>
+          {showEarlier ? (
+            <div className="mt-6 space-y-6">
+              {data.earlier.map((reflection, index) => (
+                <ReflectionCard key={reflection.id} reflection={reflection} index={index} muted />
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </PageShell>
   );
 }

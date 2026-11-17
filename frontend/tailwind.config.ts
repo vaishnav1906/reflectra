@@ -15,6 +15,8 @@ export default {
     extend: {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['"Instrument Serif"', '"Times New Roman"', 'serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -59,6 +61,11 @@ export default {
           "accent-foreground": "hsl(var(--sidebar-accent-foreground))",
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
+        },
+        iris: {
+          violet: "hsl(var(--iris-violet))",
+          cyan: "hsl(var(--iris-cyan))",
+          peach: "hsl(var(--iris-peach))",
         },
         trait: {
           analytical: "hsl(var(--trait-analytical))",

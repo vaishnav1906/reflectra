@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "../.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8000", "--reload"],
+      "cwd": "backend",
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "8080", "--strictPort"],
+      "cwd": "frontend",
+      "port": 8080
+    }
+  ]
+}

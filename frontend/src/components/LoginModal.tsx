@@ -2,11 +2,14 @@ import { useState, FormEvent, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { X } from "lucide-react";
+import { MirrorMark } from "@/components/MirrorMark";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import { requestEntrance } from "@/components/transitions/EnterMirror";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -110,6 +113,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
           setNotice("Check your email to confirm your account, then sign in.");
           return;
         }
+        requestEntrance();
         navigate("/app/chat");
         return;
       }
@@ -119,6 +123,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
         password,
       });
       if (signInError) throw signInError;
+      requestEntrance();
       navigate("/app/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
@@ -137,11 +142,15 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
       onClick={onClose}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-background/80 backdrop-blur-md" />
+      <div className="absolute inset-0 bg-background/70 backdrop-blur-xl" />
 
       {/* Modal Card */}
       <Card
-        className="w-full max-w-md relative z-10 animate-in zoom-in-95 duration-200 shadow-2xl border-border/50"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Sign in to Reflectra"
+        data-lenis-prevent
+        className="glass-panel iris-border w-full max-w-md relative z-10 animate-in zoom-in-95 duration-200 rounded-3xl border-0 bg-transparent"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close button */}
@@ -155,13 +164,9 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
 
         <CardHeader>
           <div className="flex items-center gap-3 mb-4">
-            <img
-              src="/favicon.ico"
-              alt="Reflectra Logo"
-              className="w-10 h-10 rounded-xl"
-            />
+            <MirrorMark className="h-11 w-11" />
             <div>
-              <CardTitle>Welcome to Reflectra</CardTitle>
+              <CardTitle className="font-display text-3xl font-normal">Welcome to Reflectra</CardTitle>
               <CardDescription>{copy.description}</CardDescription>
             </div>
           </div>
@@ -199,9 +204,8 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
             {mode !== "forgot" && (
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
+                <PasswordInput
                   id="password"
-                  type="password"
                   autoComplete={mode === "signup" ? "new-password" : "current-password"}
                   placeholder="••••••••"
                   value={password}
@@ -214,7 +218,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             {notice && <p className="text-sm text-muted-foreground">{notice}</p>}
-            <Button type="submit" className="w-full" disabled={isLoading}>
+            <Button type="submit" className="btn-mirror w-full border-0" disabled={isLoading}>
               {isLoading ? copy.busy : copy.submit}
             </Button>
           </form>

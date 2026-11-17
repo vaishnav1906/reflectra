@@ -1,378 +1,322 @@
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { 
-  ArrowRight, 
-  MessageSquare, 
-  Scan, 
-  Brain, 
-  Box, 
-  Database, 
-  Wand2, 
-  Lightbulb, 
-  Eye,
-  Activity,
-  Layers
-} from "lucide-react";
+import { ReactNode, useMemo, useState } from "react";
+import { ErrorState, LoadingState, PageShell, Panel, Stat } from "@/components/portrait/PageShell";
+import { SystemFacts, TRAIT_COLOR, TRAIT_LABEL, useSystemFacts } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
-import { InfoTooltip } from "@/components/ui/InfoTooltip";
-import { MirrorTelemetryDashboard } from "@/components/insights/MirrorTelemetryDashboard";
-import { ConfidenceExplainabilityCard } from "@/components/insights/ConfidenceExplainabilityCard";
-import { useEffect, useState } from "react";
 
-interface PipelineBlock {
-  id: string;
-  name: string;
-  icon: typeof Brain;
-  description: string;
-  dataProcessed: string;
-  outputType: string;
-  color: string;
+/**
+ * How it works: the path one message takes through Reflectra.
+ * The rules shown are read from the backend's own constants, and the "you" figures
+ * are this account's live numbers, so nothing on this page is a marketing claim.
+ */
+
+const SOURCE_LABEL: Record<string, string> = {
+  traits: "How settled your traits are",
+  conversations: "How much you've said, over how many days",
+  voice: "How much of your writing it has",
+  reflections: "Patterns backed by your own quotes",
+};
+
+const TIER_LABEL: Record<string, string> = {
+  very_low: "Barely knows you",
+  partial: "Getting there",
+  moderate: "Knows you",
+  high: "Knows you well",
+};
+
+function Station({ step, title, children, aside }: { step: string; title: string; children: ReactNode; aside?: ReactNode }) {
+  return (
+    <section className="relative pl-10 md:pl-14">
+      <span className="absolute left-0 top-1 flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-background font-mono text-[10px] text-iris-cyan md:h-9 md:w-9 md:text-xs">
+        {step}
+      </span>
+      <div className={cn("grid gap-6", aside ? "lg:grid-cols-[1.05fr_0.95fr]" : "")}>
+        <div>
+          <h2 className="font-display text-[clamp(1.7rem,3vw,2.3rem)] leading-tight">{title}</h2>
+          <div className="mt-3 space-y-3 text-[15px] leading-relaxed text-foreground/75">{children}</div>
+        </div>
+        {aside}
+      </div>
+    </section>
+  );
 }
 
-const pipelineBlocks: PipelineBlock[] = [
-  {
-    id: "input",
-    name: "User Input Layer",
-    icon: MessageSquare,
-    description: "Natural language interface capturing user utterances, including textual content, temporal metadata, and session context markers.",
-    dataProcessed: "Raw text, timestamps, session IDs, interaction sequence",
-    outputType: "Structured interaction objects with metadata",
-    color: "text-muted-foreground",
-  },
-  {
-    id: "extraction",
-    name: "Feature Extraction Engine",
-    icon: Scan,
-    description: "Multi-modal feature extraction pipeline processing linguistic, semantic, and affective signals from raw input.",
-    dataProcessed: "Tokenized text, syntactic parse trees, sentiment vectors",
-    outputType: "Feature tensors for downstream inference",
-    color: "text-trait-analytical",
-  },
-  {
-    id: "inference",
-    name: "Personality Inference Engine",
-    icon: Brain,
-    description: "Bayesian inference module updating personality trait distributions based on extracted features and prior beliefs.",
-    dataProcessed: "Feature tensors, prior trait distributions, confidence intervals",
-    outputType: "Updated trait posteriors with uncertainty estimates",
-    color: "text-primary",
-  },
-  {
-    id: "representation",
-    name: "Structured Representation",
-    icon: Box,
-    description: "Formal personality model storing trait vectors, behavioral coefficients, and temporal dynamics.",
-    dataProcessed: "Trait posteriors, decay functions, temporal weights",
-    outputType: "Structured PersonalityModel object",
-    color: "text-trait-creative",
-  },
-  {
-    id: "memory",
-    name: "Memory Update Engine",
-    icon: Database,
-    description: "Episodic and semantic memory consolidation with significance scoring and cognitive type classification.",
-    dataProcessed: "Interaction content, significance scores, temporal context",
-    outputType: "Classified memory objects with retrieval indices",
-    color: "text-trait-consistent",
-  },
-  {
-    id: "response",
-    name: "Adaptive Response Generator",
-    icon: Wand2,
-    description: "Context-aware response synthesis adapting tone, depth, and content based on personality model and memory retrieval.",
-    dataProcessed: "Query context, personality model, retrieved memories",
-    outputType: "Personalized response with adaptation markers",
-    color: "text-trait-empathetic",
-  },
-  {
-    id: "reflection",
-    name: "Reflection Engine",
-    icon: Lightbulb,
-    description: "Longitudinal pattern detection and natural language synthesis for generating reflective insights.",
-    dataProcessed: "Aggregated behavioral data, trend vectors, pattern graphs",
-    outputType: "Natural language reflections with source attribution",
-    color: "text-accent",
-  },
-  {
-    id: "explainability",
-    name: "Explainability Layer",
-    icon: Eye,
-    description: "Transparent reasoning module providing inference justifications and source attribution for all system outputs.",
-    dataProcessed: "Inference traces, feature contributions, source weights",
-    outputType: "Human-readable explanations with confidence scores",
-    color: "text-trait-introspective",
-  },
-];
+function Fact({ value, label }: { value: ReactNode; label: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-white/5 py-2.5 last:border-0">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="shrink-0 font-mono text-sm text-foreground">{value}</span>
+    </div>
+  );
+}
 
-const learningLoopSteps = [
-  { label: "User Interaction", description: "Natural conversation input" },
-  { label: "Feature Extraction", description: "Signal processing" },
-  { label: "Model Update", description: "Bayesian inference" },
-  { label: "Response Adaptation", description: "Personalized output" },
-  { label: "User Feedback", description: "Implicit/explicit signals" },
-  { label: "Re-Learning", description: "Model refinement" },
-];
+/** Runs the real update rule in the browser so the "it learns slowly" claim can be tried. */
+function LearningSimulator({ rules }: { rules: SystemFacts["rules"]["traits"] }) {
+  const [signal, setSignal] = useState(85);
+  const [strength, setStrength] = useState(15);
+  const [count, setCount] = useState(30);
 
-export function ArchitecturePage() {
-  const [selectedBlock, setSelectedBlock] = useState<PipelineBlock | null>(null);
-  const [userId, setUserId] = useState<string>("anonymous");
-
-  useEffect(() => {
-    const id = localStorage.getItem("user_id");
-    if (id) {
-      setUserId(id);
+  const path = useMemo(() => {
+    let score = 0.5;
+    let confidence = 0.1;
+    const points = [{ score, confidence }];
+    const s = signal / 100;
+    const k = Math.min(strength / 100, rules.max_step_per_message);
+    for (let i = 0; i < count; i++) {
+      const distance = Math.abs(s - score);
+      const alpha = k * (1 - rules.inertia * confidence);
+      score = Math.max(0, Math.min(1, score + alpha * (s - score)));
+      if (distance <= rules.agree_within) confidence += rules.confidence_gain * k * (1 - confidence);
+      else if (distance >= rules.conflict_beyond) confidence -= rules.confidence_loss * k * confidence;
+      confidence = Math.max(rules.confidence_floor, Math.min(rules.confidence_ceiling, confidence));
+      points.push({ score, confidence });
     }
-  }, []);
+    return points;
+  }, [signal, strength, count, rules]);
+
+  const width = 520;
+  const height = 150;
+  const line = (key: "score" | "confidence") =>
+    path.map((p, i) => `${i ? "L" : "M"} ${((i / Math.max(path.length - 1, 1)) * width).toFixed(1)} ${(height - p[key] * height).toFixed(1)}`).join(" ");
+  const last = path[path.length - 1];
+  const first = path[1] ?? last;
 
   return (
-    <div className="h-screen flex flex-col">
-      <header className="px-8 py-6 border-b border-border">
-        <div className="flex items-center gap-2">
-          <Layers className="w-5 h-5 text-primary" />
-          <h1 className="text-xl font-semibold text-foreground">System Architecture</h1>
-          <InfoTooltip 
-            content="Interactive visualization of the cognitive pipeline and data flow architecture" 
-            side="right"
-          />
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Modular inference pipeline and learning loop visualization
-        </p>
-      </header>
+    <Panel title="Try it" hint="this runs the same rule the server uses">
+      <div className="space-y-4">
+        {[
+          { label: "What your messages show", value: signal, set: setSignal, min: 0, max: 100, suffix: "/100" },
+          { label: "How clear each message is", value: strength, set: setStrength, min: 2, max: Math.round(rules.max_step_per_message * 100), suffix: "%" },
+          { label: "Messages sent", value: count, set: setCount, min: 1, max: 80, suffix: "" },
+        ].map((control) => (
+          <label key={control.label} className="block">
+            <span className="flex justify-between text-xs text-muted-foreground">
+              {control.label}
+              <span className="font-mono text-foreground">
+                {control.value}
+                {control.suffix}
+              </span>
+            </span>
+            <input
+              type="range"
+              min={control.min}
+              max={control.max}
+              value={control.value}
+              onChange={(event) => control.set(Number(event.target.value))}
+              className="mt-2 w-full accent-[hsl(var(--iris-violet))]"
+            />
+          </label>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="mt-5 w-full" role="img" aria-label={`After ${count} messages the score is ${Math.round(last.score * 100)} and confidence is ${Math.round(last.confidence * 100)} percent`}>
+        <line x1="0" x2={width} y1={height / 2} y2={height / 2} stroke="hsl(0 0% 100% / 0.08)" strokeDasharray="3 5" />
+        <path d={line("confidence")} fill="none" stroke="hsl(var(--iris-peach))" strokeWidth="2" strokeDasharray="4 4" />
+        <path d={line("score")} fill="none" stroke="hsl(var(--iris-violet))" strokeWidth="2.5" />
+      </svg>
+      <div className="mt-4 grid grid-cols-3 gap-4">
+        <Stat value={Math.round(first.score * 100)} label="score after 1 message (starts at 50)" />
+        <Stat value={Math.round(last.score * 100)} label={`score after ${count}`} />
+        <Stat value={`${Math.round(last.confidence * 100)}%`} label="how sure it is by then" />
+      </div>
+    </Panel>
+  );
+}
 
-      <ScrollArea className="flex-1">
-        <div className="p-8">
-          <div className="max-w-6xl mx-auto space-y-12">
-            {/* Pipeline Header */}
-            <div className="bg-gradient-to-br from-primary/5 via-card to-transparent border border-border rounded-2xl p-8">
-              <div className="flex items-start gap-4">
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
-                  <Activity className="w-6 h-6 text-primary" />
-                </div>
-                <div>
-                  <h2 className="font-semibold text-foreground mb-2">Cognitive Processing Pipeline</h2>
-                  <p className="text-muted-foreground text-sm leading-relaxed">
-                    The Reflectra framework processes user interactions through a modular pipeline of specialized engines. 
-                    Each component performs a distinct cognitive function, transforming raw input into personalized, 
-                    explainable outputs. Click on any block to view detailed specifications.
-                  </p>
-                </div>
+export function ArchitecturePage() {
+  const { data, isLoading, error, refetch } = useSystemFacts();
+
+  if (isLoading) return <LoadingState label="Opening the hood…" />;
+  if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load this page."} onRetry={() => void refetch()} />;
+
+  const { rules, you } = data;
+  const confidence = you.confidence;
+  const tierIndex = rules.confidence.tiers.findIndex((t) => t.tier === confidence.tier);
+  const step = Math.round(rules.traits.max_step_per_message * 100);
+
+  return (
+    <PageShell
+      eyebrow="How it works"
+      title="What happens when"
+      accent="you hit send."
+      subtitle="The real path one message takes. The rules below are read from the code that runs them, and the numbers marked “you” are your account right now."
+    >
+      <div className="relative space-y-16 before:absolute before:bottom-4 before:left-[13px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/70 before:via-iris-cyan/30 before:to-transparent md:before:left-[17px]">
+        <Station
+          step="1"
+          title="You say something."
+          aside={
+            <Panel title="You">
+              <div className="grid grid-cols-2 gap-4">
+                <Stat value={you.messages.toLocaleString()} label="messages you've sent" />
+                <Stat value={you.conversations} label="conversations" />
               </div>
-            </div>
-            
-            <MirrorTelemetryDashboard userId={userId} />
+            </Panel>
+          }
+        >
+          <p>Your message is saved to your account so Reflectra can remember it later.</p>
+          <p>
+            With <span className="text-foreground">Incognito</span> on, nothing is saved at all: not the message, not the reply, and nothing is learned from it.
+          </p>
+        </Station>
 
-            {userId !== "anonymous" ? (
-              <ConfidenceExplainabilityCard userId={userId} />
-            ) : null}
+        <Station
+          step="2"
+          title="It remembers."
+          aside={
+            <Panel title="The rule">
+              <Fact label="Earlier messages it searches" value={`last ${rules.memory.messages_searched}`} />
+              <Fact label="Related past exchanges it recalls" value={`up to ${rules.memory.related_recalled}`} />
+              <Fact label="Most recent things you said, always included" value={rules.memory.recent_recalled} />
+              <Fact label="Turns of this chat it keeps in view" value={rules.memory.turns_in_context} />
+              {rules.memory.by_meaning && you.memory ? (
+                <Fact
+                  label="Your messages it can find by meaning (you)"
+                  value={`${you.memory.by_meaning.toLocaleString()} of ${you.memory.recallable.toLocaleString()}`}
+                />
+              ) : null}
+            </Panel>
+          }
+        >
+          <p>
+            Before replying it looks back through your earlier conversations for moments that share what you&apos;re talking about now, and favours rare, specific
+            words over common ones.
+          </p>
+          {rules.memory.by_meaning ? (
+            <p>
+              It also searches by meaning, so “finals are killing me” finds the time you said “the last days of the semester kill me”. A match has to be close
+              (similarity over {rules.memory.meaning_min_similarity}) and stand out from how alike all your messages are
+              ({rules.memory.meaning_min_standout} deviations above your average), so it doesn&apos;t drag up random old chats.
+            </p>
+          ) : null}
+          <p>That is how it can say “isn&apos;t this the phone thing from April?” instead of treating every chat as the first.</p>
+        </Station>
 
-            {/* Pipeline Visualization */}
-            <div className="relative">
-              <h3 className="text-sm font-medium text-foreground mb-6 flex items-center gap-2">
-                <span>Data Flow Pipeline</span>
-                <InfoTooltip content="Sequential processing stages from input to explainable output" />
-              </h3>
-              
-              <div className="grid grid-cols-4 gap-4">
-                {pipelineBlocks.map((block, index) => (
-                  <div key={block.id} className="relative">
-                    <button
-                      onClick={() => setSelectedBlock(selectedBlock?.id === block.id ? null : block)}
-                      className={cn(
-                        "w-full p-4 bg-card border rounded-xl transition-all duration-200 text-left",
-                        selectedBlock?.id === block.id 
-                          ? "border-primary ring-1 ring-primary/20" 
-                          : "border-border hover:border-primary/50"
-                      )}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <block.icon className={cn("w-4 h-4", block.color)} />
-                        <span className="text-xs font-medium text-muted-foreground">
-                          {String(index + 1).padStart(2, '0')}
+        <Station
+          step="3"
+          title="It answers."
+          aside={
+            <Panel title="You" hint={you.mirror.replies_measured ? `measured over ${you.mirror.replies_measured} Mirror replies` : undefined}>
+              <Fact label="Model writing your replies" value={rules.ai.reply_model ?? "none configured"} />
+              {rules.ai.fast_model ? <Fact label={`Backup if that takes over ${rules.ai.hedge_seconds}s`} value={rules.ai.fast_model} /> : null}
+              <Fact label="Samples of your writing Mirror can copy" value={`${you.voice_samples_available} of ${rules.mirror.voice_samples}`} />
+              <Fact label="Average Mirror reply time" value={you.mirror.avg_seconds != null ? `${you.mirror.avg_seconds}s` : "not measured yet"} />
+              <Fact label="Mirror replies that needed the simpler fallback" value={you.mirror.fallback_rate != null ? `${Math.round(you.mirror.fallback_rate * 100)}%` : "–"} />
+            </Panel>
+          }
+        >
+          <p>
+            <span className="text-foreground">Reflection</span> replies like a friend who notices things: it matches your length, picks up specifics, and is not allowed to
+            invent history you never told it.
+          </p>
+          <p>
+            <span className="text-foreground">Mirror</span> replies as you. It is shown real messages you wrote and copies their casing, punctuation and rhythm. A draft that
+            sounds like a chatbot is thrown away and rewritten once.
+          </p>
+        </Station>
+
+        <Station step="4" title="It learns, slowly." aside={<LearningSimulator rules={rules.traits} />}>
+          <p>
+            Each message is read for four traits. One message can move a trait at most <span className="text-foreground">{step}%</span> of the way toward what it shows,
+            and less once Reflectra is confident, so a single bad day can&apos;t rewrite you.
+          </p>
+          <p>Confidence rises when new messages agree with what it already believes and falls when they contradict it.</p>
+          {rules.bootstrap.counts_as_messages ? (
+            <p>
+              A description you import in Settings is hearsay, so it is capped: even its strongest claim counts like{" "}
+              <span className="text-foreground">{rules.bootstrap.counts_as_messages.strong} of your own messages</span>. It decides things on day one and
+              barely moves them after a hundred.
+            </p>
+          ) : null}
+          <div className="!mt-5 rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+            {you.traits.length ? (
+              you.traits.map((trait) => (
+                <div key={trait.key} className="flex items-center gap-3 py-1.5 text-sm">
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: TRAIT_COLOR[trait.key] }} />
+                  <span className="flex-1 text-foreground/85">{TRAIT_LABEL[trait.key]?.name ?? trait.key}</span>
+                  <span className="font-mono text-foreground">{Math.round(trait.score * 100)}</span>
+                  <span className="w-20 text-right font-mono text-xs text-muted-foreground">{Math.round(trait.confidence * 100)}% sure</span>
+                  <span className="hidden w-24 text-right font-mono text-xs text-muted-foreground sm:block">{trait.evidence_count} signals</span>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">No traits yet. They appear after your first few messages.</p>
+            )}
+          </div>
+        </Station>
+
+        <Station
+          step="5"
+          title="It knows how sure it is."
+          aside={
+            <Panel title="You" hint={`overall ${Math.round(confidence.center * 100)}, likely between ${Math.round(confidence.interval.lower * 100)} and ${Math.round(confidence.interval.upper * 100)}`}>
+              <div className="space-y-3">
+                {Object.entries(rules.confidence.source_weights).map(([source, weight]) => {
+                  const score = confidence.source_scores[source] ?? 0;
+                  return (
+                    <div key={source}>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-foreground/80">{SOURCE_LABEL[source] ?? source}</span>
+                        <span className="font-mono text-muted-foreground">
+                          {score ? Math.round(score * 100) : "none yet"} · counts {Math.round(weight * 100)}%
                         </span>
                       </div>
-                      <h4 className="text-sm font-medium text-foreground mb-1">{block.name}</h4>
-                      <p className="text-xs text-muted-foreground line-clamp-2">{block.description}</p>
-                    </button>
-                    
-                    {/* Arrow connector */}
-                    {index < pipelineBlocks.length - 1 && (index + 1) % 4 !== 0 && (
-                      <ArrowRight className="absolute -right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/30 z-10" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Selected Block Details */}
-            {selectedBlock && (
-              <div className="bg-card border border-primary/30 rounded-xl p-6 fade-in">
-                <div className="flex items-start gap-4">
-                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                    <selectedBlock.icon className={cn("w-5 h-5", selectedBlock.color)} />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-foreground mb-2">{selectedBlock.name}</h3>
-                    <p className="text-sm text-muted-foreground mb-4">{selectedBlock.description}</p>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="p-3 bg-muted/30 rounded-lg border border-border/50">
-                        <p className="text-xs font-medium text-foreground mb-1">Input Data</p>
-                        <p className="text-xs text-muted-foreground">{selectedBlock.dataProcessed}</p>
-                      </div>
-                      <div className="p-3 bg-muted/30 rounded-lg border border-border/50">
-                        <p className="text-xs font-medium text-foreground mb-1">Output Type</p>
-                        <p className="text-xs text-muted-foreground">{selectedBlock.outputType}</p>
+                      <div className="mt-1.5 h-1 rounded-full bg-white/[0.06]">
+                        <div className="h-full rounded-full bg-gradient-to-r from-iris-violet to-iris-cyan" style={{ width: `${Math.round(score * 100)}%` }} />
                       </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })}
               </div>
-            )}
-
-            {/* Learning Loop */}
-            <div>
-              <h3 className="text-sm font-medium text-foreground mb-6 flex items-center gap-2">
-                <span>Continuous Learning Loop</span>
-                <InfoTooltip content="Recursive adaptation cycle demonstrating how feedback influences model evolution" />
-              </h3>
-              
-              <div className="relative p-8 bg-card border border-border rounded-2xl">
-                <div className="flex items-center justify-center">
-                  <div className="relative">
-                    {/* Circular layout */}
-                    <div className="w-80 h-80 relative">
-                      {learningLoopSteps.map((step, index) => {
-                        const angle = (index * 60 - 90) * (Math.PI / 180);
-                        const radius = 130;
-                        const x = Math.cos(angle) * radius;
-                        const y = Math.sin(angle) * radius;
-                        
-                        return (
-                          <div
-                            key={step.label}
-                            className="absolute w-24 text-center"
-                            style={{
-                              left: `calc(50% + ${x}px - 48px)`,
-                              top: `calc(50% + ${y}px - 32px)`,
-                            }}
-                          >
-                            <div className="p-3 bg-muted/50 border border-border rounded-lg">
-                              <p className="text-xs font-medium text-foreground">{step.label}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">{step.description}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      
-                      {/* Center */}
-                      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center">
-                        <Brain className="w-8 h-8 text-primary" />
-                      </div>
-                      
-                      {/* Circular arrows SVG */}
-                      <svg className="absolute inset-0 w-full h-full" viewBox="0 0 320 320">
-                        <circle
-                          cx="160"
-                          cy="160"
-                          r="100"
-                          fill="none"
-                          stroke="hsl(var(--border))"
-                          strokeWidth="1"
-                          strokeDasharray="8 4"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="text-center mt-4">
-                  <p className="text-xs text-muted-foreground">
-                    Continuous adaptation cycle • Model refinement occurs with each interaction
-                  </p>
-                </div>
+              <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+                The range is wide when there is little to go on or when these four disagree, and narrows as you talk. A source with nothing in it is left out
+                rather than counted as zero. Going quiet for more than a month slowly lowers it.
+              </p>
+            </Panel>
+          }
+        >
+          <p>
+            Reflectra combines four kinds of evidence into one confidence range, then acts on the <span className="text-foreground">cautious end</span> of it. That places you in
+            one of four levels, which decide how boldly Mirror imitates you.
+          </p>
+          <div className="!mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {rules.confidence.tiers.map((tier, i) => (
+              <div
+                key={tier.tier}
+                className={cn("rounded-2xl border p-3", i === tierIndex ? "iris-border border-transparent bg-white/[0.05]" : "border-white/8 bg-white/[0.02] opacity-70")}
+              >
+                <p className="text-sm font-medium text-foreground">{TIER_LABEL[tier.tier] ?? tier.tier}</p>
+                <p className="mt-0.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">up to {tier.up_to}</p>
+                <p className="mt-2 text-xs leading-snug text-muted-foreground">Copies your style at {Math.round(tier.style_enforcement_intensity * 100)}% strength</p>
+                {i === tierIndex ? <p className="mt-2 font-mono text-[10px] uppercase tracking-widest text-iris-cyan">you are here</p> : null}
               </div>
-            </div>
-
-            {/* Data Model Specification */}
-            <div>
-              <h3 className="text-sm font-medium text-foreground mb-6 flex items-center gap-2">
-                <span>Internal Data Models</span>
-                <InfoTooltip content="Structured representations used by the cognitive framework" />
-              </h3>
-              
-              <div className="grid grid-cols-2 gap-6">
-                {/* PersonalityModel */}
-                <div className="bg-card border border-border rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Box className="w-4 h-4 text-primary" />
-                    <span className="text-sm font-medium text-foreground">PersonalityModel</span>
-                    <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">object</span>
-                  </div>
-                  <div className="space-y-2 font-mono text-xs">
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-analytical">traits</span>: TraitVector[]
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-analytical">confidence</span>: Float [0,1]
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-analytical">timestamp</span>: DateTime
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-analytical">decayFunction</span>: Exponential
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-analytical">version</span>: String
-                    </div>
-                  </div>
-                </div>
-
-                {/* MemoryObject */}
-                <div className="bg-card border border-border rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Database className="w-4 h-4 text-trait-consistent" />
-                    <span className="text-sm font-medium text-foreground">MemoryObject</span>
-                    <span className="text-xs px-2 py-0.5 bg-trait-consistent/10 text-trait-consistent rounded">object</span>
-                  </div>
-                  <div className="space-y-2 font-mono text-xs">
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-consistent">category</span>: CognitiveType
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-consistent">content</span>: String
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-consistent">emotionalWeight</span>: Float
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-consistent">temporalRelevance</span>: Float
-                    </div>
-                    <div className="p-2 bg-muted/30 rounded">
-                      <span className="text-trait-consistent">sourceInteraction</span>: UUID
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Module Status */}
-            <div className="bg-muted/30 border border-border rounded-xl p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Architecture Version 2.4.1</p>
-                  <p className="text-xs text-muted-foreground">
-                    8 active modules • Pipeline latency: 45ms avg • Memory efficiency: 94%
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500" />
-                  <span className="text-xs text-muted-foreground">All Systems Operational</span>
-                </div>
-              </div>
-            </div>
+            ))}
           </div>
-        </div>
-      </ScrollArea>
-    </div>
+        </Station>
+
+        <Station
+          step="6"
+          title="It reflects."
+          aside={
+            <Panel title="The rule">
+              <Fact label="Messages it reads each time" value={`your last ${rules.reflections.messages_read}`} />
+              <Fact label="Messages needed before it will try" value={rules.reflections.min_messages} />
+              <Fact label="Separate quotes each pattern must have" value={`at least ${rules.reflections.min_quotes}`} />
+              <Fact label="Reflections on your page now" value={you.reflections} />
+            </Panel>
+          }
+        >
+          <p>
+            On the Reflections page it reads back through what you&apos;ve said and writes down patterns. Every quote it cites is checked against your actual messages, word
+            for word.
+          </p>
+          <p>A pattern with a quote you never said, or one that only happened once, is thrown out before you see it.</p>
+        </Station>
+
+        <Station step="7" title="It stays yours.">
+          <p>Every request carries your login, and the server works out who you are from that, never from an id the browser sends.</p>
+          <p>The database itself refuses to hand your rows to anyone else, including through Supabase&apos;s public API.</p>
+          <p>Clearing your data or deleting your account erases your conversations, traits and reflections with it.</p>
+        </Station>
+      </div>
+    </PageShell>
   );
 }

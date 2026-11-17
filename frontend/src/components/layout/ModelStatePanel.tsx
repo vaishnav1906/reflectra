@@ -1,10 +1,4 @@
 import { useState, useEffect } from "react";
-import { 
-  Database, 
-  RefreshCw, 
-  Gauge, 
-  CircleDot 
-} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { toast } from "@/components/ui/sonner";
@@ -18,6 +12,9 @@ interface SystemState {
   confidence: number;
   learning_active: boolean;
   cycle_days: number;
+  messages?: number;
+  confidence_range?: [number, number];
+  learning_enabled?: boolean;
 }
 
 function formatTimeAgo(isoTimestamp: string | null): string {
@@ -67,7 +64,7 @@ export function ModelStatePanel() {
           const alreadyWarned = sessionStorage.getItem(warningKey) === "1";
           if (data.confidence <= 10 && !alreadyWarned) {
             toast.warning(
-              "Confidence is low right now. Persona Mirror may not fully reflect your persona yet - chat in Reflection Mode more to improve it.",
+              "Reflectra barely knows you yet, so Mirror mode won't sound much like you. A few Reflection chats will fix that.",
             );
             sessionStorage.setItem(warningKey, "1");
           }
@@ -94,84 +91,49 @@ export function ModelStatePanel() {
     };
   }, []);
   
-  const lastInferenceDisplay = loading ? "..." : formatTimeAgo(systemState?.last_inference || null);
-  const memoryCountDisplay = loading ? "..." : systemState?.memory_count?.toString() || "--";
-  const confidenceDisplay = loading ? "..." : systemState ? `${systemState.confidence.toFixed(1)}%` : "--";
-  const learningStatus = systemState?.learning_active ? "Active" : "Inactive";
-  const learningStatusColor = systemState?.learning_active ? "text-primary" : "text-muted-foreground";
+  const paused = systemState ? systemState.learning_enabled === false : false;
+  const messages = systemState?.messages;
+  const rows: { label: string; value: string; hint: string }[] = [
+    {
+      label: "Messages read",
+      value: loading ? "…" : messages != null ? messages.toLocaleString() : "–",
+      hint: "How many of your messages Reflectra has learned from.",
+    },
+    {
+      label: "How sure it is",
+      value: loading ? "…" : systemState ? `${Math.round(systemState.confidence)}%` : "–",
+      hint: systemState?.confidence_range
+        ? `Overall confidence, likely between ${systemState.confidence_range[0]} and ${systemState.confidence_range[1]}. It combines how settled your traits are, how much you've talked and over how many days, how much of your writing it has, and your reflections. "How it works" shows the breakdown.`
+        : "Overall confidence that Reflectra knows you.",
+    },
+    {
+      label: "Last learned",
+      value: loading ? "…" : formatTimeAgo(systemState?.last_inference || null),
+      hint: "The last time a message of yours changed a trait.",
+    },
+  ];
 
   return (
-    <div className="bg-card/30 border border-border rounded-xl p-4 space-y-4">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <CircleDot className="w-4 h-4 text-primary" />
-          <h3 className="text-sm font-medium text-foreground">System State</h3>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className={cn(
-            "w-2 h-2 rounded-full",
-            systemState?.learning_active ? "bg-green-500 animate-pulse" : "bg-muted-foreground"
-          )} />
-          <span className="text-xs text-muted-foreground">
-            {loading ? "..." : learningStatus}
-          </span>
-        </div>
+        <h3 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">What it knows</h3>
+        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className={cn("h-1.5 w-1.5 rounded-full", paused ? "bg-iris-peach" : "bg-iris-cyan")} />
+          {loading ? "…" : paused ? "Learning paused" : "Learning"}
+        </span>
       </div>
 
-      <div className="space-y-3">
-        <div className="flex items-center justify-between py-2 border-b border-border/50">
-          <div className="flex items-center gap-2">
-            <RefreshCw className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Last Inference</span>
-            <InfoTooltip 
-              content="Time since the last personality trait inference update" 
-              side="right" 
-            />
+      <dl className="mt-3 space-y-2.5">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-2">
+            <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              {row.label}
+              <InfoTooltip content={row.hint} side="right" />
+            </dt>
+            <dd className="font-mono text-xs text-foreground">{row.value}</dd>
           </div>
-          <span className="text-xs font-medium text-foreground">{lastInferenceDisplay}</span>
-        </div>
-        
-        <div className="flex items-center justify-between py-2 border-b border-border/50">
-          <div className="flex items-center gap-2">
-            <Database className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Memory Count</span>
-            <InfoTooltip 
-              content="Total number of stored memory entries across all cognitive types" 
-              side="right" 
-            />
-          </div>
-          <span className="text-xs font-medium text-foreground">{memoryCountDisplay}</span>
-        </div>
-        
-        <div className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
-          <div className="flex items-center gap-2">
-            <Gauge className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Confidence</span>
-            <InfoTooltip 
-              content="Overall model confidence based on interaction volume and consistency" 
-              side="right" 
-            />
-          </div>
-          <span className="text-xs font-medium text-foreground">{confidenceDisplay}</span>
-        </div>
-      </div>
-
-      <div className="pt-2 border-t border-border">
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="flex items-center justify-between p-2 bg-muted/30 rounded-lg">
-            <span className="text-muted-foreground">Learning</span>
-            <span className={cn("font-medium", learningStatusColor)}>
-              {loading ? "..." : learningStatus}
-            </span>
-          </div>
-          <div className="flex items-center justify-between p-2 bg-muted/30 rounded-lg">
-            <span className="text-muted-foreground">Cycle</span>
-            <span className="text-foreground font-medium">
-              {loading ? "..." : `${systemState?.cycle_days || 7}d`}
-            </span>
-          </div>
-        </div>
-      </div>
+        ))}
+      </dl>
     </div>
   );
 }
