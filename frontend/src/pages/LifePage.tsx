@@ -5,6 +5,7 @@ import { ErrorState, LoadingState, PageShell, Panel } from "@/components/portrai
 import { LifeFact, LifeKind, formatDay, useLifeActions, useLifeMemory } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { learnNow } from "@/lib/learnNow";
 
 /**
  * Your life: the lasting picture Reflectra keeps of you (what you do, what's going on,
@@ -141,6 +142,13 @@ export function LifePage() {
     if (reading) setFinished(null);
     wasReading.current = reading;
   }, [reading, found]);
+  // Reading past chats is a chain of background jobs: keep them moving while it's on.
+  useEffect(() => {
+    if (!reading) return;
+    learnNow();
+    const timer = window.setInterval(learnNow, 15000);
+    return () => window.clearInterval(timer);
+  }, [reading]);
 
   if (isLoading) return <LoadingState label="Remembering…" />;
   if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load this."} onRetry={() => void refetch()} />;

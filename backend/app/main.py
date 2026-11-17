@@ -15,6 +15,7 @@ from app.api.auth import router as auth_router  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.dbms import router as db_router  # noqa: E402
 from app.api.feedback import router as feedback_router  # noqa: E402
+from app.api.jobs import internal_router, router as jobs_router  # noqa: E402
 from app.api.life import router as life_router  # noqa: E402
 from app.api.deps import require_user_scope  # noqa: E402
 from app.api.mirror import router as mirror_router  # noqa: E402
@@ -78,6 +79,8 @@ app.include_router(analytics_router, prefix="/analytics", tags=["analytics"], de
 app.include_router(transcribe_router, dependencies=protected)
 app.include_router(feedback_router, dependencies=protected)
 app.include_router(people_router, dependencies=protected)
+app.include_router(jobs_router, dependencies=protected)
+app.include_router(internal_router)  # authenticated by CRON_SECRET, not a user
 app.include_router(life_router, dependencies=protected)
 app.include_router(notifications_router, dependencies=protected)
 

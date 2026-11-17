@@ -55,6 +55,9 @@ def vapid_keys() -> Tuple[str, str]:
         stored = json.loads(KEY_FILE.read_text(encoding="utf-8"))
         _keys = (stored["public"], stored["private"])
         return _keys
+    if os.getenv("VERCEL"):
+        # Read-only disk, and a new key per instance would break every subscription.
+        raise RuntimeError("Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to send notifications")
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 

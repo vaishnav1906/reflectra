@@ -20,6 +20,8 @@ import { useTypewriter } from "@/hooks/useTypewriter";
 import { useAuth } from "@/contexts/AuthContext";
 import { MirrorMark } from "@/components/MirrorMark";
 import { TypedInMessage } from "@/components/chat/TypedInMessage";
+import { learnNow } from "@/lib/learnNow";
+import { InstallNudge } from "@/components/pwa/InstallApp";
 const API_BASE = "/api";
 // Prefix for the "AI is rate-limited, try again" notice (excluded from conversation context).
 const BUSY_PREFIX = "⏳";
@@ -250,6 +252,8 @@ export function ChatPage() {
         setStreamedId(aiMessage.id);
       }
       setMessages((prev) => [...prev, aiMessage]);
+      // What this exchange taught Reflectra gets learned now, not on the next scheduled run.
+      if (!isIncognito) learnNow();
     } catch (err) {
       if (err instanceof ChatError && err.status === 429) {
         // The AI is briefly rate-limited. Nothing was saved, so the user can resend.
@@ -366,6 +370,9 @@ export function ChatPage() {
           </div>
         </header>
 
+        {/* Phones only, until installed or dismissed. */}
+        <InstallNudge />
+
         {incognitoFeedback && (
           <div className="mx-8 mt-3">
             <div
@@ -472,7 +479,7 @@ export function ChatPage() {
           </div>
         </ScrollArea>
 
-        <div className="px-4 pb-5 pt-3 md:px-8">
+        <div className="px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-3 md:px-8">
           <div className="max-w-3xl mx-auto">
             <ChatInput onSend={handleSend} isLoading={isTyping} />
           </div>

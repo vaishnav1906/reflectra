@@ -31,7 +31,10 @@ class UnsubscribeIn(BaseModel):
 @router.get("/vapid-key")
 async def vapid_key():
     """The public key a browser needs to subscribe to Web Push."""
-    return {"public_key": push_service.vapid_keys()[0]}
+    try:
+        return {"public_key": push_service.vapid_keys()[0]}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Notifications aren't set up on this server yet.") from exc
 
 
 @router.post("/subscribe")

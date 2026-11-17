@@ -11,6 +11,10 @@ indexing, follow-ups, People) is queued here as a job and run by the worker
     other's trait updates;
   - requeues jobs a crashed worker left half-done.
 
+Where nothing can run in the background (serverless hosting such as Vercel), the same
+jobs are run by drain(): right after a reply for that user (POST /jobs/run-mine) and
+every few minutes for everyone (POST /internal/tick, called by a scheduled workflow).
+
 Handlers are registered by name with @handler("kind").
 """
 
@@ -101,9 +105,27 @@ REQUEUE_STALE_SQL = text(
 )
 
 
-async def claim(db: AsyncSession, limit: int = CLAIM_BATCH) -> List[dict]:
+CLAIM_USER_SQL = text(
+    """
+    UPDATE jobs SET status = 'running', attempts = attempts + 1, started_at = now(), updated_at = now()
+    WHERE id IN (
+        SELECT id FROM jobs
+        WHERE status = 'queued' AND run_after <= now() AND user_id = :user_id
+        ORDER BY run_after
+        LIMIT :limit
+        FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id, user_id, kind, payload, attempts
+    """
+)
+
+
+async def claim(db: AsyncSession, limit: int = CLAIM_BATCH, user_id: Optional[UUID] = None) -> List[dict]:
     await db.execute(REQUEUE_STALE_SQL, {"before": datetime.now(timezone.utc) - STALE_AFTER})
-    rows = (await db.execute(CLAIM_SQL, {"limit": limit})).mappings().all()
+    if user_id is None:
+        rows = (await db.execute(CLAIM_SQL, {"limit": limit})).mappings().all()
+    else:
+        rows = (await db.execute(CLAIM_USER_SQL, {"limit": limit, "user_id": user_id})).mappings().all()
     await db.commit()
     return [dict(r) for r in rows]
 
@@ -224,8 +246,37 @@ async def worker_loop(session_factory, stop: asyncio.Event, ticks: Optional[List
     logger.info("Job worker stopped")
 
 
+def serverless() -> bool:
+    """On Vercel, nothing may run after a response, so there is no worker loop."""
+    return bool(os.getenv("VERCEL"))
+
+
 def worker_enabled() -> bool:
-    return os.getenv("REFLECTRA_WORKER", "1").strip().lower() not in ("0", "false", "off", "no")
+    default = "0" if serverless() else "1"
+    return os.getenv("REFLECTRA_WORKER", default).strip().lower() not in ("0", "false", "off", "no")
+
+
+async def drain(session_factory, user_id: Optional[UUID] = None, budget_seconds: float = 25.0) -> int:
+    """Run due jobs (everyone's, or one user's) until none are left or the time budget
+    is spent; jobs already started are always finished. Returns how many ran."""
+    import_handlers()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget_seconds
+    semaphore = asyncio.Semaphore(CONCURRENCY)
+    ran = 0
+    while loop.time() < deadline:
+        async with session_factory() as db:
+            jobs = await claim(db, CLAIM_BATCH, user_id)
+        if not jobs:
+            break
+
+        async def guarded(job: dict) -> None:
+            async with semaphore:
+                await run_one(job, session_factory)
+
+        await asyncio.gather(*(guarded(job) for job in jobs))
+        ran += len(jobs)
+    return ran
 
 
 def import_handlers() -> None:

@@ -15,3 +15,7 @@ data/
 *.log
 venv/
 dist/
+# Never upload local keys or data
+**/.vapid.json
+*.db
+scripts/

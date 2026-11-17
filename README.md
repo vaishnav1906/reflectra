@@ -326,6 +326,8 @@ cd reflectra
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r backend/requirements.txt
+# optional, several GB: server-side voice typing with Whisper
+# pip install -r backend/requirements-voice.txt
 cd backend
 alembic upgrade head
 uvicorn app.main:app --reload --port 8000
@@ -338,6 +340,8 @@ cd frontend
 npm install
 npm run dev                        # http://localhost:8080, proxies /api to :8000
 ```
+
+> **Deploying for free?** [DEPLOY.md](DEPLOY.md) walks through hosting everything on Vercel, Supabase and Gemini free tiers, with no payment method, and installing it on Android and iPhone as an app.
 
 ### Configuration
 

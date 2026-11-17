@@ -5,6 +5,7 @@ import { AppSidebar } from "./AppSidebar";
 import { MirrorMark } from "@/components/MirrorMark";
 import { EnterMirror, clearEntranceRequest, entranceRequested } from "@/components/transitions/EnterMirror";
 import { useThemeSync } from "@/hooks/useThemeSync";
+import { OfflineBanner } from "@/components/pwa/InstallApp";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -41,7 +42,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <div className="app-shell grain flex min-h-screen w-full gradient-mesh">
-      <header className="app-topbar fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 px-4 md:hidden">
+      <header className="app-topbar fixed inset-x-0 top-0 z-30 flex items-center gap-3 px-4 md:hidden">
         <button
           type="button"
           onClick={() => setMenuOpen((open) => !open)}
@@ -76,13 +77,14 @@ export function AppLayout({ children }: AppLayoutProps) {
         <AppSidebar />
       </div>
 
-      <main className="app-main min-w-0 flex-1 overflow-hidden pt-14 md:pt-0">
+      <main className="app-main min-w-0 flex-1 overflow-hidden pt-[calc(3.5rem+env(safe-area-inset-top))] md:pt-0">
         {/* Keyed by page, so each page fades in when you arrive (not on every chat message). */}
         <div key={location.pathname} className="page-enter">
           {children}
         </div>
       </main>
 
+      <OfflineBanner />
       {entering ? <EnterMirror onDone={() => setEntering(false)} /> : null}
     </div>
   );

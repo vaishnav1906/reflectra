@@ -14,8 +14,5 @@ pgvector>=0.2.5
 asyncpg>=0.29.0
 alembic>=1.13.1
 supabase>=2.0.0
-openai-whisper>=20240930
-torch>=2.2.0
-ffmpeg-python>=0.2.0
 reportlab>=4.2.0
 pywebpush==2.5.0

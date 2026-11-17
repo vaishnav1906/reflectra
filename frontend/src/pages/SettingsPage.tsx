@@ -21,6 +21,7 @@ import { PageShell, Panel } from "@/components/portrait/PageShell";
 import { ExportPortraitButton } from "@/components/transitions/PortraitPrint";
 import { VoiceImportRow } from "@/components/settings/VoiceImport";
 import { AboutYou, useProfile } from "@/components/settings/AboutYou";
+import { InstallCard } from "@/components/pwa/InstallApp";
 import { ColourWheel } from "@/components/settings/ColourWheel";
 
 /** The wheel starts from the colour saved on your account (falls back to this device). */
@@ -232,6 +233,8 @@ export function SettingsPage() {
       <AboutYou />
 
       <ColourWheelFromProfile />
+
+      <InstallCard />
 
       <Panel title="How Reflectra behaves" hint={saving ? "saving…" : loading ? "loading…" : undefined}>
         <Row

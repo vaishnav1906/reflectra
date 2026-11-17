@@ -1,0 +1,36 @@
+# Runs Reflectra's background work on serverless hosting (Vercel), where nothing can
+# run between requests: queued learning jobs, reminders and cleanup.
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions):
+#   APP_URL       your deployment, e.g. https://reflectra.vercel.app
+#   CRON_SECRET   the same value as the CRON_SECRET environment variable on Vercel
+#
+# Free for public repositories. GitHub may start scheduled runs a few minutes late;
+# reminders allow for that (they have windows, not exact minutes).
+
+name: Background tick
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run due jobs and reminders
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL or CRON_SECRET isn't set yet; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 150 \
+            -X POST "${APP_URL%/}/api/internal/tick" \
+            -H "Authorization: Bearer $CRON_SECRET"

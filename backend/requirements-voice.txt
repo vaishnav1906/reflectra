@@ -1,0 +1,6 @@
+# Optional: server-side voice typing (POST /transcribe) with Whisper.
+# Several GB, so it isn't part of the Vercel deployment; without it /transcribe
+# answers 503 and everything else works.  pip install -r requirements-voice.txt
+openai-whisper>=20240930
+torch>=2.2.0
+ffmpeg-python>=0.2.0
