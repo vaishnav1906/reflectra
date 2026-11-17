@@ -8,7 +8,7 @@ from their browser (Android: Chrome; iPhone/iPad: Safari), so there are no app-s
 | App + API | **Vercel** Hobby, one project with two [Services](https://vercel.com/docs/services) (in beta): the Vite frontend and the FastAPI backend | Your address is `https://<name>.vercel.app` (a custom domain costs money). |
 | Database + sign-in | **Supabase** Free | A project pauses after about a week with no database activity; the background tick below keeps it active. Keep your own backups. |
 | AI | **Gemini** with an AI Studio key | Low rate limits. On the free tier Google may use prompts and replies to improve its products, so tell your users. |
-| Background work | **GitHub Actions**, every 10 minutes | Free for public repositories. |
+| Background work | **Vercel Cron**, once a day (plus an optional faster scheduler) | Hobby allows daily jobs, run some time within the chosen hour. |
 | Notifications | Web Push (VAPID) | Android: works in Chrome. iPhone/iPad: iOS 16.4+, only after *Add to Home Screen*, opened from the icon. |
 
 ## How it runs on Vercel
@@ -23,8 +23,13 @@ normally happens in the background runs two ways instead:
 
 - **Right after each reply** the app calls `POST /api/jobs/run-mine`, which runs that
   person's queued jobs (traits, memory, People, life facts) within seconds.
-- **Every 10 minutes** `.github/workflows/tick.yml` calls `POST /api/internal/tick` with a
-  secret. It runs everyone's leftover jobs, sends reminders and cleans up.
+- **Once a day** Vercel's cron (`crons` in `vercel.json`, 13:00 UTC, which is about 7 pm in
+  India) calls `/api/internal/tick`, sending `CRON_SECRET` itself. It runs everyone's leftover
+  jobs, sends reminders and cleans up, and keeps Supabase from pausing.
+- **Optionally, more often:** `.github/workflows/tick.yml` (every 10 minutes, free for public
+  repositories) or any free scheduler such as [cron-job.org](https://cron-job.org) can POST to
+  the same endpoint with `Authorization: Bearer <CRON_SECRET>`. That makes a daily check-in at
+  a time you pick work; with only the daily cron, reminders arrive around the cron's hour.
 
 Voice typing (`/transcribe`, Whisper) is left out because it is several GB. On Vercel it
 answers "not available" and everything else works. To keep it, run the backend from
@@ -84,7 +89,7 @@ Push to `main` (or run `vercel --prod`). Then check:
 
 - `https://<name>.vercel.app/api/health` returns `{"status": ...}`
 - Signing in works, and a chat reply streams in
-- GitHub → Actions → **Background tick** → *Run workflow*: it should finish green
+- Vercel → your project → Settings → **Cron Jobs** lists `/api/internal/tick`
 
 ### 6. Install it on your phone
 
@@ -94,8 +99,9 @@ Push to `main` (or run `vercel --prod`). Then check:
 
 ## Keeping it free and healthy
 
-- The 10-minute tick keeps Supabase from pausing. If the repository has no commits for
-  60 days, GitHub pauses scheduled workflows: re-enable it from the Actions tab.
+- The daily cron keeps Supabase from pausing. If you also use the GitHub workflow: GitHub
+  pauses scheduled workflows after 60 days without commits, and doesn't run any while an
+  account has a billing lock.
 - Gemini free-tier limits are low. When they're hit, Reflectra says it's catching its
   breath and you can resend, and background jobs retry by themselves.
 - Database migrations aren't run on deploy. After pulling new ones, run

@@ -2,8 +2,10 @@
 
   POST /jobs/run-mine    the signed-in user's queued jobs, called by the app right
                          after a reply so what it learned lands within seconds
-  POST /internal/tick    everyone's due jobs plus reminders; called every few
-                         minutes by a scheduled workflow with the CRON_SECRET
+  GET|POST /internal/tick
+                         everyone's due jobs plus reminders, with the CRON_SECRET:
+                         Vercel's cron calls it daily (GET, sending the secret itself),
+                         and any other scheduler can call it more often
 
 With a long-running server the in-process worker does all of this already, and these
 endpoints simply find nothing left to do.
@@ -41,7 +43,7 @@ def _authorized(authorization: str | None) -> bool:
     return hmac.compare_digest(authorization[len("Bearer "):].strip(), secret)
 
 
-@internal_router.post("/tick")
+@internal_router.api_route("/tick", methods=["GET", "POST"])
 async def tick(authorization: str | None = Header(default=None)):
     if not _authorized(authorization):
         # Indistinguishable from a route that doesn't exist.

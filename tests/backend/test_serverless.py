@@ -85,6 +85,19 @@ class TickAuthTests(unittest.TestCase):
             self.assertFalse(_authorized("Bearer "))  # unset secret never opens it
 
 
+class CronTests(unittest.TestCase):
+    def test_vercel_cron_can_reach_the_tick(self):
+        import json
+        from pathlib import Path
+
+        from app.api.jobs import internal_router
+
+        methods = {m for route in internal_router.routes if route.path.endswith("/tick") for m in route.methods}
+        self.assertTrue({"GET", "POST"} <= methods)  # Vercel's cron uses GET
+        config = json.loads((Path(__file__).resolve().parents[2] / "vercel.json").read_text(encoding="utf-8"))
+        self.assertIn({"path": "/api/internal/tick", "schedule": "0 13 * * *"}, config["crons"])
+
+
 class PushKeyTests(unittest.TestCase):
     def test_on_vercel_keys_must_come_from_the_environment(self):
         from app.services import push_service as ps
