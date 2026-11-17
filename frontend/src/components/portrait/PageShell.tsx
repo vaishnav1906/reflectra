@@ -61,10 +61,29 @@ export function Stat({ value, label, className }: { value: ReactNode; label: str
   );
 }
 
+/** Loading: light sweeping across a small mirror, like the entrance. */
 export function LoadingState({ label = "Loading…" }: { label?: string }) {
   return (
-    <div className="flex h-screen items-center justify-center text-sm text-muted-foreground" role="status">
-      {label}
+    <div className="flex h-screen flex-col items-center justify-center gap-5 text-sm text-muted-foreground" role="status">
+      <div className="glass-loader" aria-hidden="true">
+        <svg viewBox="0 0 64 86">
+          <defs>
+            <linearGradient id="glass-loader-ring" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="hsl(var(--iris-violet))" />
+              <stop offset="50%" stopColor="hsl(var(--iris-cyan))" />
+              <stop offset="100%" stopColor="hsl(var(--iris-peach))" />
+            </linearGradient>
+            <radialGradient id="glass-loader-fill" cx="50%" cy="36%" r="65%">
+              <stop offset="0%" stopColor="hsl(var(--iris-violet))" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="hsl(var(--iris-violet))" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <ellipse cx="32" cy="43" rx="30" ry="41" fill="url(#glass-loader-fill)" />
+          <ellipse cx="32" cy="43" rx="30" ry="41" fill="none" stroke="url(#glass-loader-ring)" strokeWidth="1.5" />
+        </svg>
+        <div className="glass-loader-sheen" />
+      </div>
+      <span className="glass-loader-label">{label}</span>
     </div>
   );
 }

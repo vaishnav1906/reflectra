@@ -1,4 +1,5 @@
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useMemo, useRef, useState } from "react";
+import { useScrollLight } from "@/hooks/useScrollLight";
 import { ErrorState, LoadingState, PageShell, Panel, Stat } from "@/components/portrait/PageShell";
 import { SystemFacts, TRAIT_COLOR, TRAIT_LABEL, useSystemFacts } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
@@ -25,8 +26,8 @@ const TIER_LABEL: Record<string, string> = {
 
 function Station({ step, title, children, aside }: { step: string; title: string; children: ReactNode; aside?: ReactNode }) {
   return (
-    <section className="relative pl-10 md:pl-14">
-      <span className="absolute left-0 top-1 flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-background font-mono text-[10px] text-iris-cyan md:h-9 md:w-9 md:text-xs">
+    <section className="relative pl-10 md:pl-14" data-thread-stop data-step={step}>
+      <span className="station-badge absolute left-0 top-1 flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-background font-mono text-[10px] text-iris-cyan md:h-9 md:w-9 md:text-xs">
         {step}
       </span>
       <div className={cn("grid gap-6", aside ? "lg:grid-cols-[1.05fr_0.95fr]" : "")}>
@@ -121,8 +122,18 @@ function LearningSimulator({ rules }: { rules: SystemFacts["rules"]["traits"] })
   );
 }
 
+/** "7 of 9 (78%)" from your own ratings, or a note that there are none yet. */
+function rated(yes = 0, no = 0) {
+  const total = yes + no;
+  return total ? `${yes} of ${total} (${Math.round((yes / total) * 100)}%)` : "not rated yet";
+}
+
 export function ArchitecturePage() {
   const { data, isLoading, error, refetch } = useSystemFacts();
+  // A dot of light travels down the steps as you scroll; after "It answers" it splits,
+  // because the learning happens in the background while you keep talking.
+  const steps = useRef<HTMLDivElement>(null);
+  useScrollLight(steps, [Boolean(data)]);
 
   if (isLoading) return <LoadingState label="Opening the hood…" />;
   if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load this page."} onRetry={() => void refetch()} />;
@@ -139,7 +150,7 @@ export function ArchitecturePage() {
       accent="you hit send."
       subtitle="The real path one message takes. The rules below are read from the code that runs them, and the numbers marked “you” are your account right now."
     >
-      <div className="relative space-y-16 before:absolute before:bottom-4 before:left-[13px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/70 before:via-iris-cyan/30 before:to-transparent md:before:left-[17px]">
+      <div ref={steps} className="steps-thread relative space-y-16 before:absolute before:bottom-4 before:left-[13px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/70 before:via-iris-cyan/30 before:to-transparent md:before:left-[17px]">
         <Station
           step="1"
           title="You say something."
@@ -200,6 +211,8 @@ export function ArchitecturePage() {
               <Fact label="Samples of your writing Mirror can copy" value={`${you.voice_samples_available} of ${rules.mirror.voice_samples}`} />
               <Fact label="Average Mirror reply time" value={you.mirror.avg_seconds != null ? `${you.mirror.avg_seconds}s` : "not measured yet"} />
               <Fact label="Mirror replies that needed the simpler fallback" value={you.mirror.fallback_rate != null ? `${Math.round(you.mirror.fallback_rate * 100)}%` : "–"} />
+              <Fact label="Reflection replies you rated good" value={rated(you.feedback?.replies.reflection?.up, you.feedback?.replies.reflection?.down)} />
+              <Fact label="Mirror replies you said sound like you" value={rated(you.feedback?.replies.mirror?.up, you.feedback?.replies.mirror?.down)} />
             </Panel>
           }
         >
@@ -240,6 +253,10 @@ export function ArchitecturePage() {
             ) : (
               <p className="text-sm text-muted-foreground">No traits yet. They appear after your first few messages.</p>
             )}
+            <p className="mt-3 border-t border-white/5 pt-3 text-xs text-muted-foreground">
+              Readings you agreed with: <span className="font-mono text-foreground">{rated(you.feedback?.traits.agree, you.feedback?.traits.disagree)}</span>.
+              Say yes or correct one on your Persona page; a correction counts like 15 of your messages.
+            </p>
           </div>
         </Station>
 
@@ -301,6 +318,7 @@ export function ArchitecturePage() {
               <Fact label="Messages needed before it will try" value={rules.reflections.min_messages} />
               <Fact label="Separate quotes each pattern must have" value={`at least ${rules.reflections.min_quotes}`} />
               <Fact label="Reflections on your page now" value={you.reflections} />
+              <Fact label="Reflections you said were spot on" value={rated(you.feedback?.reflections.agree, you.feedback?.reflections.disagree)} />
             </Panel>
           }
         >
@@ -316,6 +334,10 @@ export function ArchitecturePage() {
           <p>The database itself refuses to hand your rows to anyone else, including through Supabase&apos;s public API.</p>
           <p>Clearing your data or deleting your account erases your conversations, traits and reflections with it.</p>
         </Station>
+        <span className="steps-track" aria-hidden="true">
+          <span className="steps-light" />
+          <span className="steps-head" />
+        </span>
       </div>
     </PageShell>
   );

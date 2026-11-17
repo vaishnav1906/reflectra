@@ -3,8 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { ChevronDown, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { ErrorState, LoadingState, PageShell, Panel } from "@/components/portrait/PageShell";
 import { LooseEnds } from "@/components/portrait/LooseEnds";
+import { ReflectionCheck } from "@/components/portrait/ReflectionCheck";
 import { Reflection, formatDay, useGenerateReflections, useReflections } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
+import { markShared, sharedWords } from "@/lib/sharedWords";
 
 /**
  * Reflections: patterns across your conversations, each one backed by things you
@@ -23,13 +25,38 @@ const THEME_COLOR: Record<string, string> = {
   other: "hsl(var(--muted-foreground))",
 };
 
-function ReflectionCard({ reflection, index, muted = false }: { reflection: Reflection; index: number; muted?: boolean }) {
+// Where each quote drifts in from when a new reflection assembles itself.
+const SCATTER = [
+  { x: -70, y: -34, r: -6 },
+  { x: 80, y: 26, r: 5 },
+  { x: -46, y: 48, r: -3 },
+  { x: 58, y: -28, r: 4 },
+];
+
+/** Seen reflections, so only new ones assemble (once). */
+function seenKey() {
+  return `reflectra-seen-reflections:${localStorage.getItem("user_id") || ""}`;
+}
+function loadSeen(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(seenKey()) || "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function ReflectionCard({ reflection, index, muted = false, assemble = false }: { reflection: Reflection; index: number; muted?: boolean; assemble?: boolean }) {
   const navigate = useNavigate();
   const color = THEME_COLOR[reflection.theme] || THEME_COLOR.other;
   const days = new Set(reflection.evidence.map((e) => e.date).filter(Boolean)).size;
+  // The words your quotes share: what makes it a pattern.
+  const shared = sharedWords(reflection.evidence.map((e) => e.quote));
 
   return (
-    <article className={cn("glass-panel fade-in rounded-3xl p-6 md:p-8", !muted && "iris-border", muted && "opacity-75")} style={{ animationDelay: `${index * 90}ms` }}>
+    <article
+      className={cn("glass-panel fade-in rounded-3xl p-6 md:p-8", !muted && "iris-border", muted && "opacity-75", assemble && "is-assembling")}
+      style={{ animationDelay: `${index * 90}ms` }}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <span className="rounded-full px-3 py-1 font-mono text-[10px] uppercase tracking-widest" style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}>
           {reflection.theme}
@@ -46,9 +73,25 @@ function ReflectionCard({ reflection, index, muted = false }: { reflection: Refl
       <div className="mt-6 space-y-3">
         <p className="eyebrow !text-[0.62rem]">In your words</p>
         {reflection.evidence.map((evidence, i) => {
+          const from = SCATTER[i % SCATTER.length];
+          const assembleStyle = assemble
+            ? ({ "--sx": `${from.x}px`, "--sy": `${from.y}px`, "--sr": `${from.r}deg`, animationDelay: `${0.35 + index * 0.09 + i * 0.16}s` } as React.CSSProperties)
+            : undefined;
           const body = (
             <>
-              <span className="block text-[15px] italic leading-relaxed text-foreground/85">“{evidence.quote}”</span>
+              <span className="block text-[15px] italic leading-relaxed text-foreground/85">
+                “
+                {markShared(evidence.quote, shared).map((part, j) =>
+                  part.shared ? (
+                    <mark key={j} className="shared-word" title="You said this more than once">
+                      {part.text}
+                    </mark>
+                  ) : (
+                    part.text
+                  ),
+                )}
+                ”
+              </span>
               <span className="mt-1 block font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
                 {formatDay(evidence.date)}
                 {evidence.conversation_id ? " · open conversation" : ""}
@@ -60,17 +103,20 @@ function ReflectionCard({ reflection, index, muted = false }: { reflection: Refl
               key={i}
               type="button"
               onClick={() => navigate(`/app/chat?conversation_id=${evidence.conversation_id}`)}
-              className="block w-full border-l border-iris-peach/60 pl-4 text-left transition-colors hover:border-iris-peach"
+              className={cn("block w-full border-l border-iris-peach/60 pl-4 text-left transition-colors hover:border-iris-peach", assemble && "quote-assemble")}
+              style={assembleStyle}
             >
               {body}
             </button>
           ) : (
-            <div key={i} className="border-l border-iris-peach/60 pl-4">
+            <div key={i} className={cn("border-l border-iris-peach/60 pl-4", assemble && "quote-assemble")} style={assembleStyle}>
               {body}
             </div>
           );
         })}
       </div>
+
+      {!muted ? <ReflectionCheck id={reflection.id} initial={reflection.feedback ?? null} /> : null}
     </article>
   );
 }
@@ -80,6 +126,18 @@ export function ReflectionsPage() {
   const generate = useGenerateReflections();
   const [showEarlier, setShowEarlier] = useState(false);
   const autoStarted = useRef(false);
+  // What you'd already seen when you arrived: anything else is new and assembles itself.
+  const seenAtStart = useRef<Set<string> | null>(null);
+  if (seenAtStart.current === null && data) seenAtStart.current = loadSeen();
+  useEffect(() => {
+    if (!data?.reflections.length) return;
+    try {
+      const all = new Set([...loadSeen(), ...data.reflections.map((r) => r.id)]);
+      localStorage.setItem(seenKey(), JSON.stringify([...all].slice(-200)));
+    } catch {
+      /* private mode: they'll just assemble again */
+    }
+  }, [data?.reflections]);
 
   // First visit with enough conversation and nothing written yet: write them once.
   const status = data?.status;
@@ -159,7 +217,7 @@ export function ReflectionsPage() {
       ) : null}
 
       {data.reflections.map((reflection, index) => (
-        <ReflectionCard key={reflection.id} reflection={reflection} index={index} />
+        <ReflectionCard key={reflection.id} reflection={reflection} index={index} assemble={!seenAtStart.current?.has(reflection.id)} />
       ))}
 
       <LooseEnds />

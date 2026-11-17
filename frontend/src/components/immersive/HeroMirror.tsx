@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ArrowDown } from "lucide-react";
 import { clamp, easeInOut, easeOut, prefersReducedMotion, span, useScrollScene } from "./scroll";
+import { themeRgb } from "@/lib/theme";
 
 /**
  * Scene 1: "Thoughts become a mirror".
@@ -19,7 +20,7 @@ const THOUGHTS = [
   { text: "who am i when no one's watching", x: 24, y: 40 },
 ];
 
-const STOPS: [number, number, number][] = [
+let STOPS: [number, number, number][] = [
   [196, 186, 255], // iris violet
   [150, 232, 245], // ice cyan
   [255, 205, 176], // peach
@@ -42,6 +43,7 @@ type Particle = {
 };
 
 function makeParticles(count: number): Particle[] {
+  STOPS = themeRgb(); // your colour on the landing page too
   let seed = 7;
   const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   const gauss = () => {
@@ -207,7 +209,7 @@ export function HeroMirror({ onStart }: { onStart: () => void }) {
         className="hero-stage sticky top-0 h-[100svh] overflow-hidden"
         style={{
           background:
-            "radial-gradient(70% 60% at 50% 42%, hsl(252 40% 12%) 0%, hsl(240 22% 5%) 55%, hsl(240 18% 3%) 100%)",
+            "radial-gradient(70% 60% at 50% 42%, hsl(calc(var(--ink-h) + 7) calc(40% * var(--ink-k)) 12%) 0%, hsl(calc(var(--ink-h) + -5) calc(22% * var(--ink-k)) 5%) 55%, hsl(calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 3%) 100%)",
         }}
       >
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" aria-hidden="true" />

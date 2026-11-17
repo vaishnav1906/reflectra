@@ -14,6 +14,20 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  /** The stored message's id, for rating a reply (absent in incognito). */
+  serverId?: string;
+  feedback?: "up" | "down" | null;
+  feedbackReasons?: string[];
+  /** People whose card the reply drew on. */
+  peopleUsed?: { id: string; name: string }[];
+  /** Past messages the reply visibly drew on. */
+  remembered?: RememberedMoment[];
+}
+
+export interface RememberedMoment {
+  said: string;
+  when: string;
+  conversation_id: string;
 }
 
 interface ChatContextType {
@@ -159,8 +173,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
 
         const data = await res.json();
-        const loadedMessages: Message[] = (data || []).map((msg: any) => ({
+        const loadedMessages: Message[] = (data || []).map((msg: { id: string; role: "user" | "assistant"; content: string; created_at: string; feedback?: "up" | "down" | null; feedback_reasons?: string[] }) => ({
           id: msg.id,
+          serverId: msg.id,
+          feedback: msg.feedback ?? null,
+          feedbackReasons: msg.feedback_reasons ?? [],
           role: msg.role,
           content: msg.content,
           timestamp: new Date(msg.created_at).toLocaleTimeString([], {

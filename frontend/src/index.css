@@ -13,34 +13,40 @@
 
 @layer base {
   :root {
-    --background: 240 18% 4%;
-    --foreground: 250 20% 94%;
+    /* The ink: every dark surface takes its hue from --ink-h (your colour, see
+       src/lib/theme.ts) and its tint strength from --ink-k. 245 / 1 is the default. */
+    --ink-h: 245;
+    --ink-k: 1;
+    --glow-k: 1;
 
-    --card: 245 16% 7%;
-    --card-foreground: 250 20% 94%;
+    --background: calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 4%;
+    --foreground: calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 94%;
 
-    --popover: 245 18% 8%;
-    --popover-foreground: 250 20% 94%;
+    --card: var(--ink-h) calc(16% * var(--ink-k)) 7%;
+    --card-foreground: calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 94%;
+
+    --popover: var(--ink-h) calc(18% * var(--ink-k)) 8%;
+    --popover-foreground: calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 94%;
 
     /* Primary: soft iris lavender */
     --primary: 252 92% 82%;
-    --primary-foreground: 245 30% 8%;
+    --primary-foreground: var(--ink-h) calc(30% * var(--ink-k)) 8%;
 
-    --secondary: 245 14% 12%;
-    --secondary-foreground: 250 18% 88%;
+    --secondary: var(--ink-h) calc(14% * var(--ink-k)) 12%;
+    --secondary-foreground: calc(var(--ink-h) + 5) calc(18% * var(--ink-k)) 88%;
 
-    --muted: 245 12% 11%;
-    --muted-foreground: 245 9% 62%;
+    --muted: var(--ink-h) calc(12% * var(--ink-k)) 11%;
+    --muted-foreground: var(--ink-h) calc(9% * var(--ink-k)) 62%;
 
     /* Accent: warm peach, the human side of the mirror */
     --accent: 22 100% 82%;
-    --accent-foreground: 245 30% 8%;
+    --accent-foreground: var(--ink-h) calc(30% * var(--ink-k)) 8%;
 
     --destructive: 356 72% 62%;
     --destructive-foreground: 250 20% 98%;
 
-    --border: 245 12% 15%;
-    --input: 245 12% 14%;
+    --border: var(--ink-h) calc(12% * var(--ink-k)) 15%;
+    --input: var(--ink-h) calc(12% * var(--ink-k)) 14%;
     --ring: 252 92% 82%;
 
     --radius: 1rem;
@@ -52,8 +58,8 @@
 
     --glow-primary: 252 92% 82%;
     --glow-accent: 22 100% 82%;
-    --surface-elevated: 245 16% 9%;
-    --surface-subtle: 240 18% 5%;
+    --surface-elevated: var(--ink-h) calc(16% * var(--ink-k)) 9%;
+    --surface-subtle: calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 5%;
 
     /* Trait colors, tuned to the palette */
     --trait-analytical: 210 80% 76%;
@@ -63,13 +69,13 @@
     --trait-introspective: 252 92% 82%;
 
     /* Sidebar */
-    --sidebar-background: 240 18% 3.5%;
-    --sidebar-foreground: 250 14% 80%;
+    --sidebar-background: calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 3.5%;
+    --sidebar-foreground: calc(var(--ink-h) + 5) calc(14% * var(--ink-k)) 80%;
     --sidebar-primary: 252 92% 82%;
-    --sidebar-primary-foreground: 245 30% 8%;
-    --sidebar-accent: 245 14% 10%;
-    --sidebar-accent-foreground: 250 20% 96%;
-    --sidebar-border: 245 12% 12%;
+    --sidebar-primary-foreground: var(--ink-h) calc(30% * var(--ink-k)) 8%;
+    --sidebar-accent: var(--ink-h) calc(14% * var(--ink-k)) 10%;
+    --sidebar-accent-foreground: calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 96%;
+    --sidebar-border: var(--ink-h) calc(12% * var(--ink-k)) 12%;
     --sidebar-ring: 252 92% 82%;
   }
 
@@ -102,6 +108,10 @@
   html {
     -webkit-text-size-adjust: 100%;
   }
+
+  /* Any built-in browser menu (select options) stays dark and readable too. */
+  :root { color-scheme: dark; }
+  select option { background-color: hsl(var(--popover)); color: hsl(var(--popover-foreground)); }
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
@@ -227,9 +237,9 @@
 
   .gradient-mesh {
     background:
-      radial-gradient(60% 50% at 15% 0%, hsl(var(--iris-violet) / 0.10) 0%, transparent 60%),
-      radial-gradient(50% 45% at 90% 10%, hsl(var(--iris-cyan) / 0.06) 0%, transparent 60%),
-      radial-gradient(60% 50% at 70% 100%, hsl(var(--iris-peach) / 0.06) 0%, transparent 60%),
+      radial-gradient(60% 50% at 15% 0%, hsl(var(--iris-violet) / calc(0.10 * var(--glow-k))) 0%, transparent 60%),
+      radial-gradient(50% 45% at 90% 10%, hsl(var(--iris-cyan) / calc(0.06 * var(--glow-k))) 0%, transparent 60%),
+      radial-gradient(60% 50% at 70% 100%, hsl(var(--iris-peach) / calc(0.06 * var(--glow-k))) 0%, transparent 60%),
       hsl(var(--background));
   }
 
@@ -383,7 +393,7 @@
    Signed-in app shell
    ========================================================================== */
 .app-sidebar {
-  background: linear-gradient(180deg, hsl(245 18% 5% / 0.9), hsl(240 18% 3.5% / 0.9));
+  background: linear-gradient(180deg, hsl(var(--ink-h) calc(18% * var(--ink-k)) 5% / 0.9), hsl(calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 3.5% / 0.9));
   border-right: 1px solid hsl(0 0% 100% / 0.06);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -392,7 +402,7 @@
 /* Phones: a top bar replaces the always-visible sidebar, so full-height pages
    give up its 3.5rem and the drawer is as tall as the visible screen. */
 .app-topbar {
-  background: hsl(240 18% 4% / 0.85);
+  background: hsl(calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 4% / 0.85);
   border-bottom: 1px solid hsl(0 0% 100% / 0.06);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
@@ -400,24 +410,11 @@
 .app-sidebar { height: 100dvh; }
 @media (max-width: 767px) {
   .app-main .h-screen { height: calc(100dvh - 3.5rem); }
-  .app-sidebar { background: hsl(240 18% 4%); }
+  .app-sidebar { background: hsl(calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 4%); }
 }
 
 .app-nav-item { position: relative; }
-.app-nav-item.is-active {
-  background: linear-gradient(90deg, hsl(var(--iris-violet) / 0.14), hsl(var(--iris-cyan) / 0.04) 70%, transparent);
-}
-.app-nav-item.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 22%;
-  bottom: 22%;
-  width: 2px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, hsl(var(--iris-violet)), hsl(var(--iris-cyan)), hsl(var(--iris-peach)));
-  box-shadow: 0 0 12px hsl(var(--iris-violet) / 0.8);
-}
+/* The active page's highlight is one sliding element: .app-nav-indicator (styles/motion.css). */
 
 /* Editorial page titles across the app */
 .app-shell main h1 {
@@ -476,3 +473,173 @@
 }
 @keyframes caret-blink { to { visibility: hidden; } }
 @media (prefers-reduced-motion: reduce) { .stream-caret { animation: none; } }
+
+/* ==========================================================================
+   Rating a reply
+   ========================================================================== */
+.reply-feedback-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground) / 0.7);
+  transition: color 0.2s, background-color 0.2s, opacity 0.2s;
+}
+.reply-feedback-btn:hover { color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); }
+.reply-feedback-btn.is-on { color: hsl(var(--iris-cyan)); background: hsl(var(--iris-cyan) / 0.12); }
+/* Quiet until you look at the reply (always visible on touch screens). */
+@media (hover: hover) {
+  .chat-ai-row .reply-feedback-btn:not(.is-on) { opacity: 0; }
+  .chat-ai-row:hover .reply-feedback-btn,
+  .chat-ai-row:focus-within .reply-feedback-btn { opacity: 1; }
+}
+.reply-feedback { position: relative; }
+/* Floats below the thumbs so the timestamp row doesn't move. */
+.reply-feedback-panel {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: -0.5rem;
+  z-index: 20;
+  width: min(24rem, 78vw);
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.8);
+  padding: 0.85rem;
+  border-radius: 1rem;
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  background: hsl(calc(var(--ink-h) + -5) calc(20% * var(--ink-k)) 7% / 0.92);
+  backdrop-filter: blur(14px);
+}
+.reply-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  font-size: 0.75rem;
+  color: hsl(var(--foreground) / 0.8);
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.reply-reason:hover { border-color: hsl(0 0% 100% / 0.25); }
+.reply-reason.is-on { border-color: hsl(var(--iris-violet) / 0.7); background: hsl(var(--iris-violet) / 0.15); color: hsl(var(--foreground)); }
+
+/* "Is this you?" on trait cards */
+.trait-check-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  background: hsl(0 0% 100% / 0.03);
+  font-size: 0.75rem;
+  color: hsl(var(--foreground) / 0.85);
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.trait-check-btn:hover { border-color: hsl(0 0% 100% / 0.25); background: hsl(0 0% 100% / 0.07); }
+.trait-slider { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; background: hsl(0 0% 100% / 0.08); }
+.trait-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--trait);
+  box-shadow: 0 0 14px var(--trait);
+  cursor: grab;
+}
+.trait-slider::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 999px; background: var(--trait); cursor: grab; }
+.trait-slider:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 4px; }
+
+/* ==========================================================================
+   People orbit
+   ========================================================================== */
+.people-node { cursor: pointer; outline: none; animation: people-float 7s ease-in-out infinite; animation-delay: var(--float-delay, 0s); }
+.people-node:hover circle:nth-of-type(2), .people-node:focus-visible circle:nth-of-type(2) { stroke-width: 2.2; }
+.people-node:focus-visible text:last-of-type { text-decoration: underline; }
+.people-node-halo { animation: people-halo 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.people-you { animation: mirror-breathe 5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes people-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes people-halo { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 0.9; transform: scale(1.08); } }
+@media (prefers-reduced-motion: reduce) { .people-node, .people-node-halo, .people-you { animation: none; } }
+
+.people-field { display: flex; flex-direction: column; gap: 0.4rem; }
+.people-field > span { font-size: 0.75rem; color: hsl(var(--muted-foreground)); }
+.people-field input {
+  border-radius: 0.75rem;
+  border: 1px solid hsl(0 0% 100% / 0.1);
+  background: hsl(0 0% 100% / 0.03);
+  padding: 0.55rem 0.8rem;
+  font-size: 0.9rem;
+  color: hsl(var(--foreground));
+  outline: none;
+  color-scheme: dark;
+}
+.people-field input:focus { border-color: hsl(var(--iris-violet) / 0.6); }
+.people-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--iris-cyan) / 0.25);
+  background: hsl(var(--iris-cyan) / 0.06);
+  font-size: 0.68rem;
+  color: hsl(var(--iris-cyan));
+  transition: background-color 0.2s;
+}
+.people-chip:hover { background: hsl(var(--iris-cyan) / 0.14); }
+
+/* The emoji picker, in Reflectra's colours */
+.reflectra-emoji.EmojiPickerReact {
+  --epr-bg-color: hsl(calc(var(--ink-h) + -5) calc(20% * var(--ink-k)) 7%);
+  --epr-category-label-bg-color: hsl(calc(var(--ink-h) + -5) calc(20% * var(--ink-k)) 7% / 0.94);
+  --epr-picker-border-color: transparent;
+  --epr-hover-bg-color: hsl(0 0% 100% / 0.07);
+  --epr-focus-bg-color: hsl(var(--iris-violet) / 0.2);
+  --epr-highlight-color: hsl(var(--iris-violet));
+  --epr-search-input-bg-color: hsl(0 0% 100% / 0.05);
+  --epr-search-input-bg-color-active: hsl(0 0% 100% / 0.08);
+  --epr-search-border-color: hsl(var(--iris-violet) / 0.5);
+  --epr-text-color: hsl(var(--foreground));
+  --epr-category-icon-active-color: hsl(var(--iris-cyan));
+  --epr-skin-tone-picker-menu-color: hsl(calc(var(--ink-h) + -5) calc(20% * var(--ink-k)) 9%);
+  --epr-emoji-size: 26px;
+  border: 0 !important;
+  border-radius: 0 !important;
+  font-family: inherit;
+}
+
+.life-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  transition: color 0.2s, background-color 0.2s;
+}
+.life-icon-btn:hover { color: hsl(var(--foreground)); background: hsl(0 0% 100% / 0.06); }
+
+/* Your colour: hue around the wheel, intensity outward from the centre */
+.colour-wheel {
+  border-radius: 999px;
+  cursor: crosshair;
+  background:
+    radial-gradient(circle closest-side, hsl(240 10% 82%) 0%, hsl(240 10% 82% / 0.55) 22%, transparent 75%),
+    conic-gradient(
+      hsl(0 92% 72%), hsl(30 92% 72%), hsl(60 92% 72%), hsl(90 92% 72%), hsl(120 92% 72%), hsl(150 92% 72%),
+      hsl(180 92% 72%), hsl(210 92% 72%), hsl(240 92% 72%), hsl(270 92% 72%), hsl(300 92% 72%), hsl(330 92% 72%), hsl(360 92% 72%)
+    );
+  box-shadow: 0 0 0 1px hsl(0 0% 100% / 0.1), 0 30px 60px -30px hsl(var(--iris-violet) / 0.6);
+}
+.colour-wheel:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 4px; }
+.colour-wheel-knob {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}

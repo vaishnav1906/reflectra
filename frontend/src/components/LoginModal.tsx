@@ -150,9 +150,11 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
         aria-modal="true"
         aria-label="Sign in to Reflectra"
         data-lenis-prevent
-        className="glass-panel iris-border w-full max-w-md relative z-10 animate-in zoom-in-95 duration-200 rounded-3xl border-0 bg-transparent"
+        className="glass-panel iris-border fog-card w-full max-w-md relative z-10 rounded-3xl border-0 bg-transparent"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* The card condenses out of a mist that clears as it settles. */}
+        <div className="fog-mist" aria-hidden="true" />
         {/* Close button */}
         <button
           onClick={onClose}

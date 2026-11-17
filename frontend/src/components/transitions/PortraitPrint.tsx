@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePortrait } from "@/hooks/useReflectra";
 import { TraitShape } from "@/components/portrait/TraitShape";
+import { themeRgb } from "@/lib/theme";
 import "./transitions.css";
 
 /**
@@ -38,7 +39,7 @@ function burstConfetti(canvas: HTMLCanvasElement | null) {
   canvas.width = window.innerWidth * dpr;
   canvas.height = window.innerHeight * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const colors = ["#c4baff", "#96e8f5", "#ffcdb0", "#ffffff"];
+  const colors = [...themeRgb().map(([r, g, b]) => `rgb(${r}, ${g}, ${b})`), "#ffffff"];
   const cx = window.innerWidth / 2;
   const cy = window.innerHeight / 2;
   const bits = Array.from({ length: 90 }, () => {

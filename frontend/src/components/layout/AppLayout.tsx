@@ -4,6 +4,7 @@ import { Menu, X } from "lucide-react";
 import { AppSidebar } from "./AppSidebar";
 import { MirrorMark } from "@/components/MirrorMark";
 import { EnterMirror, clearEntranceRequest, entranceRequested } from "@/components/transitions/EnterMirror";
+import { useThemeSync } from "@/hooks/useThemeSync";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -17,6 +18,7 @@ interface AppLayoutProps {
 export function AppLayout({ children }: AppLayoutProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  useThemeSync();
   // The "step through the mirror" intro, when arriving from the landing page or sign-in.
   const [entering, setEntering] = useState(entranceRequested);
   useEffect(() => {
@@ -74,7 +76,12 @@ export function AppLayout({ children }: AppLayoutProps) {
         <AppSidebar />
       </div>
 
-      <main className="app-main min-w-0 flex-1 overflow-hidden pt-14 md:pt-0">{children}</main>
+      <main className="app-main min-w-0 flex-1 overflow-hidden pt-14 md:pt-0">
+        {/* Keyed by page, so each page fades in when you arrive (not on every chat message). */}
+        <div key={location.pathname} className="page-enter">
+          {children}
+        </div>
+      </main>
 
       {entering ? <EnterMirror onDone={() => setEntering(false)} /> : null}
     </div>

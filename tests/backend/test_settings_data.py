@@ -21,8 +21,8 @@ def test_erase_covers_every_per_user_table():
     assert missing == [], f"Erase leaves these tables behind: {missing}"
 
 
-def test_erase_keeps_only_settings():
-    assert [model.__name__ for model in KEPT_ON_ERASE] == ["UserSettings"]
+def test_erase_keeps_only_preferences():
+    assert [model.__name__ for model in KEPT_ON_ERASE] == ["UserSettings", "PushSubscription"]
     assert not set(ERASABLE_MODELS) & set(KEPT_ON_ERASE)
 
 

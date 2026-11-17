@@ -70,6 +70,22 @@ If the messages are small talk with no real pattern, return fewer reflections or
 Return ONLY JSON: {{"reflections": [{{"title": "", "insight": "", "theme": "", "quotes": [{{"id": 0, "text": ""}}]}}]}}"""
 
 
+def feedback_instructions(guidance: Dict[str, List[str]]) -> str:
+    """What the person said about earlier reflections, for the next rewrite."""
+    parts = []
+    if guidance.get("rejected"):
+        parts.append(
+            "\n\nThey said these earlier reflections were wrong about them. Do not repeat them or say "
+            "the same thing in other words:\n" + "\n".join(f"- {item}" for item in guidance["rejected"])
+        )
+    if guidance.get("confirmed"):
+        parts.append(
+            "\n\nThey said these earlier reflections were spot on. Keep them (same title) if the messages "
+            "still support them:\n" + "\n".join(f"- {item}" for item in guidance["confirmed"])
+        )
+    return "".join(parts)
+
+
 def _normalize(text: str) -> str:
     text = (text or "").lower()
     text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
@@ -219,6 +235,9 @@ async def get_reflections(db: AsyncSession, user_id: UUID) -> Dict[str, object]:
     ).scalars().all()
     current = [r for r in rows if r.kind == KIND_CURRENT]
     earlier = [r for r in rows if r.kind == KIND_ARCHIVE][:20]
+    from app.services.feedback_service import reflection_verdicts
+
+    verdicts = await reflection_verdicts(db, user_id)
     generated_at = max((r.created_at for r in current), default=None)
 
     substantial_filter = func.array_length(func.string_to_array(func.btrim(Message.content), " "), 1) >= MIN_WORDS_PER_MESSAGE
@@ -247,8 +266,8 @@ async def get_reflections(db: AsyncSession, user_id: UUID) -> Dict[str, object]:
         reason = "These are up to date. New reflections appear after you've talked some more."
 
     return {
-        "reflections": [_serialize(r) for r in current],
-        "earlier": [_serialize(r) for r in earlier],
+        "reflections": [{**_serialize(r), "feedback": verdicts.get(str(r.id))} for r in current],
+        "earlier": [{**_serialize(r), "feedback": verdicts.get(str(r.id))} for r in earlier],
         "status": {
             "generated_at": generated_at.isoformat() if generated_at else None,
             "messages_available": total_messages,
@@ -278,8 +297,10 @@ async def generate_reflections(db: AsyncSession, user_id: UUID, force: bool = Fa
         raise ReflectionUnavailable(str(status["reason"]))
 
     messages = await _load_source_messages(db, user_id)
+    from app.services.feedback_service import reflection_guidance
+
     prompt_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + feedback_instructions(await reflection_guidance(db, user_id))},
         {"role": "user", "content": f"<messages>\n{_format_messages(messages)}\n</messages>"},
     ]
 

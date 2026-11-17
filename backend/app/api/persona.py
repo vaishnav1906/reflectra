@@ -378,6 +378,9 @@ async def get_portrait(
     payload["generated_at"] = data.generated_at.isoformat()
     payload["headline"] = headline(data.traits)
     payload["adaptation"] = adaptation_lines(data.traits, data.voice)
+    from app.services.feedback_service import trait_verdicts
+
+    verdicts = await trait_verdicts(db, user_uuid)
     payload["traits"] = [
         {
             "key": t.key,
@@ -389,6 +392,7 @@ async def get_portrait(
             "confidence_label": confidence_label(t.confidence),
             "evidence_count": t.evidence_count,
             "reading": TRAIT_META[t.key][f"read_{side(t.score)}"],
+            "feedback": verdicts.get(t.key),
         }
         for t in data.traits
     ]

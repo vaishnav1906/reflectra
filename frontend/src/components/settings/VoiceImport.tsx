@@ -8,6 +8,9 @@ import { apiFetch } from "@/lib/api";
 import { isZip, readChatFromZip } from "@/lib/unzip";
 import { formatDay } from "@/hooks/useReflectra";
 import { cn } from "@/lib/utils";
+import { MirrorMark } from "@/components/MirrorMark";
+import { CountUp } from "@/components/motion/CountUp";
+import { TypeOut } from "@/components/motion/TypeOut";
 
 /**
  * "Teach Mirror how you text": import a chat export so Mirror sounds like you from
@@ -335,9 +338,20 @@ function VoiceImportDialog({ onClose }: { onClose: () => void }) {
           </div>
         ) : (
           <div className="space-y-5">
+            {/* Your messages drift into the mirror, the way Mirror takes them in. */}
+            <div className="voice-stream" aria-hidden="true">
+              {(preview.examples?.length ? preview.examples : ["…", "…", "…"]).slice(0, 6).map((line, i) => (
+                <span key={i} className="voice-stream-bubble" style={{ animationDelay: `${i * 0.45}s`, top: `${18 + ((i * 29) % 64)}%` }}>
+                  {line.length > 26 ? `${line.slice(0, 25)}…` : line}
+                </span>
+              ))}
+              <span className="voice-stream-mirror">
+                <MirrorMark className="h-14 w-14" breathing />
+              </span>
+            </div>
             <div className="grid grid-cols-3 gap-3">
               {[
-                { value: preview.samples ?? 0, label: "of your messages" },
+                { value: <CountUp value={preview.samples ?? 0} />, label: "of your messages" },
                 { value: preview.avg_words ?? "–", label: "words in a typical one" },
                 { value: `${Math.round((preview.lowercase_share ?? 0) * 100)}%`, label: "all lowercase" },
               ].map((stat) => (
@@ -353,9 +367,9 @@ function VoiceImportDialog({ onClose }: { onClose: () => void }) {
             {preview.examples?.length ? (
               <div className="space-y-2">
                 <p className="eyebrow !text-[0.62rem]">Lines Mirror will copy the feel of</p>
-                {preview.examples.map((example) => (
+                {preview.examples.map((example, i) => (
                   <p key={example} className="border-l border-iris-peach/60 pl-3 text-sm italic text-muted-foreground">
-                    “{example}”
+                    “<TypeOut text={example} delay={600 + i * 700} />”
                   </p>
                 ))}
               </div>

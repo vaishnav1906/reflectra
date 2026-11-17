@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -55,6 +56,11 @@ class MomentContext:
     related_memories: List[str] = field(default_factory=list)  # past exchanges relevant to now
     background_notes: List[str] = field(default_factory=list)  # facts from an imported description
     follow_ups: List[str] = field(default_factory=list)       # things they said they'd do, now due
+    reply_feedback: List[str] = field(default_factory=list)   # what their thumbs-down said to change
+    people: List[str] = field(default_factory=list)           # briefings on people they're talking about
+    people_ids: List[str] = field(default_factory=list)
+    about: List[str] = field(default_factory=list)            # their age, and a birthday on the day
+    life: List[str] = field(default_factory=list)             # lasting facts about their life
 
 
 @dataclass
@@ -127,6 +133,41 @@ def _memory_tokens(text: str) -> List[str]:
 
 
 RECENT_SHARE_WINDOW = timedelta(days=3)
+
+# The past messages the latest reply was given to remember, so the chat can show
+# "remembered: ..." under a reply that actually drew on one. Set per request.
+recalled_moments: ContextVar[tuple] = ContextVar("recalled_moments", default=())
+
+
+def moments_used(reply: str, now_text: str, limit: int = 2) -> List[Dict[str, str]]:
+    """Which recalled past messages the reply visibly drew on.
+
+    A memory counts when the reply shares content words with it that are not just
+    echoes of what they said now: two such words, or one long, specific one
+    ("interview", "physics"). Better to miss a subtle callback than to claim one.
+    """
+    reply_words = set(_memory_tokens(reply))
+    now_words = set(_memory_tokens(now_text))
+    used: List[Dict[str, str]] = []
+    seen = set()
+    for moment in recalled_moments.get():
+        said = str(moment.get("said") or "")
+        shared = (set(_memory_tokens(said)) - now_words) & reply_words
+        if len(shared) >= 2 or any(len(word) >= 7 for word in shared):
+            key = said.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            used.append(
+                {
+                    "said": said[:140] + ("…" if len(said) > 140 else ""),
+                    "when": str(moment.get("when") or "earlier"),
+                    "conversation_id": str(moment.get("conversation_id") or ""),
+                }
+            )
+            if len(used) >= limit:
+                break
+    return used
 
 
 def _aware(value: Optional[datetime]) -> datetime:
@@ -289,6 +330,14 @@ async def load_background_notes(db: AsyncSession, user_id: UUID) -> List[str]:
     return [str(note)[:200] for note in (notes or []) if note][:6]
 
 
+def _about(user, client_local_time: Optional[str] = None) -> List[str]:
+    """Age, and a birthday greeting on the day (by the server's date; close enough)."""
+    from app.services.notification_prefs import about_lines
+
+    birth = getattr(user, "birth_date", None) if user else None
+    return about_lines(birth, datetime.now(timezone.utc).date())
+
+
 async def load_moment_context(
     db: AsyncSession,
     user_id: UUID,
@@ -373,6 +422,19 @@ async def load_moment_context(
         if query_vector:
             similarities = await embedding_service.semantic_matches(db, user_id, query_vector, current_conversation_id)
     related = [e for e in rank_memories(query_text, exchanges, similarities=similarities) if e not in recent]
+    recalled_moments.set(
+        tuple(
+            {"said": e["user"], "when": _when(e["created_at"]), "conversation_id": e["conversation_id"]}
+            for e in [*related, *reversed(recent)]
+        )
+    )
+
+    from app.services import people_service
+
+    people_lines, mentioned = await people_service.briefings_for_user(db, user_id, query_text)
+    from app.services import life_memory_service
+
+    life_lines = await life_memory_service.prompt_lines(db, user_id, query_text)
 
     follow_ups: List[str] = []
     if follow_up_tz is not None:
@@ -391,6 +453,10 @@ async def load_moment_context(
         related_memories=[_format_memory(e) for e in related],
         background_notes=background_notes,
         follow_ups=follow_ups,
+        people=people_lines,
+        about=_about(user, client_local_time),
+        life=life_lines,
+        people_ids=[str(p.id) for p in mentioned],
     )
 
 
@@ -434,12 +500,17 @@ def format_moment_block(ctx: MomentContext, schedule_lines: Optional[List[str]] 
     lines: List[str] = []
     if ctx.display_name:
         lines.append(f"- Their name is {ctx.display_name} (use it rarely, like a friend would).")
+    for line in ctx.about:
+        lines.append(f"- {line}")
     if ctx.local_time:
         lines.append(f"- It's {ctx.local_time} where they are.")
     if ctx.gap_note:
         lines.append(f"- {ctx.gap_note}")
     for line in schedule_lines or []:
         lines.append(f"- {line}")
+    if ctx.life:
+        lines.append("- What you know about their life (from things they've told you; it can be out of date):")
+        lines.extend(f"    {fact}" for fact in ctx.life)
     if ctx.background_notes:
         lines.append("- Background they've shared about themselves:")
         lines.extend(f"    {note}" for note in ctx.background_notes)
@@ -452,6 +523,16 @@ def format_moment_block(ctx: MomentContext, schedule_lines: Optional[List[str]] 
             "don't bring any of it up unless they do or it plainly connects):"
         )
         lines.extend(f"    {share}" for share in ctx.earlier_shares)
+    if ctx.people:
+        lines.append(
+            "- People they're talking about, as they've described them. Use it like a friend who knows "
+            "them would; it's their side of things, so don't judge or take shots at anyone:"
+        )
+        for card in ctx.people:
+            lines.extend(f"    {line}" for line in card.splitlines())
+    if ctx.reply_feedback:
+        lines.append("- They rated some of your recent replies. Take it on board:")
+        lines.extend(f"    {line}" for line in ctx.reply_feedback)
     if ctx.follow_ups:
         lines.append(
             "- Something to follow up on. Unless they've come with something heavy, ask how ONE of these went, "

@@ -37,6 +37,7 @@ export interface PortraitTrait {
   confidence_label: string;
   evidence_count: number;
   reading: string;
+  feedback?: { verdict: "agree" | "disagree"; self_score: number | null; on: string | null } | null;
 }
 
 export type TraitPoint = { date: string; stability?: number | null } & Partial<Record<TraitKey, number | null>>;
@@ -55,6 +56,7 @@ export interface Reflection {
   evidence: Evidence[];
   confidence: number | null;
   created_at: string | null;
+  feedback?: "agree" | "disagree" | null;
 }
 
 export interface Milestone {
@@ -172,6 +174,12 @@ export interface SystemFacts {
     messages: number;
     conversations: number;
     memory?: { by_meaning: number; recallable: number };
+    feedback?: {
+      replies: Record<string, { up: number; down: number }>;
+      reasons: { reason: string; label: string; count: number }[];
+      traits: { agree: number; disagree: number };
+      reflections: { agree: number; disagree: number };
+    };
     traits: { key: TraitKey; score: number; confidence: number; evidence_count: number }[];
     confidence: {
       center: number;
@@ -310,4 +318,138 @@ export function useSetFollowUp() {
     },
     onSuccess: (data) => queryClient.setQueryData(["followups", userId], data),
   });
+}
+
+export type PersonGroup = "family" | "partner" | "friends" | "work" | "other";
+
+export interface PersonNote {
+  id: string;
+  text: string;
+  quote: string | null;
+  date: string | null;
+  conversation_id: string | null;
+  source: "chat" | "you";
+}
+
+export interface Person {
+  id: string;
+  name: string;
+  aliases: string[];
+  relationship: string | null;
+  group: PersonGroup;
+  description: string | null;
+  birthday: string | null;
+  birthday_note: string | null;
+  notes: PersonNote[];
+  status: "active" | "suggested" | "dismissed";
+  mention_count: number;
+  last_mentioned_at: string | null;
+  created_at: string | null;
+}
+
+export interface PersonFields {
+  name?: string;
+  relationship?: string | null;
+  description?: string | null;
+  aliases?: string[];
+  birthday?: string | null;
+}
+
+export function usePeople() {
+  const userId = useUserId();
+  return useQuery({
+    queryKey: ["people", userId],
+    enabled: Boolean(userId),
+    staleTime: 15_000,
+    queryFn: () => getJson<{ people: Person[]; suggestions: Person[] }>("/api/people"),
+  });
+}
+
+async function sendJson<T>(url: string, method: string, body?: unknown): Promise<T> {
+  const res = await apiFetch(url, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "Couldn't save that.");
+  return data as T;
+}
+
+/** Every change to People goes through here and refreshes the list. */
+export function usePeopleActions() {
+  const userId = useUserId();
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["people", userId] });
+  const wrap = <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    async (...args: A) => {
+      const result = await fn(...args);
+      await refresh();
+      return result;
+    };
+  return {
+    add: wrap((fields: PersonFields) => sendJson<Person>("/api/people", "POST", fields)),
+    edit: wrap((id: string, fields: PersonFields) => sendJson<Person>(`/api/people/${id}`, "PATCH", fields)),
+    accept: wrap((id: string, fields: PersonFields = {}) => sendJson<Person>(`/api/people/${id}/accept`, "POST", fields)),
+    dismiss: wrap((id: string) => sendJson(`/api/people/${id}/dismiss`, "POST")),
+    remove: wrap((id: string) => sendJson(`/api/people/${id}`, "DELETE")),
+    addNote: wrap((id: string, text: string) => sendJson<Person>(`/api/people/${id}/notes`, "POST", { text })),
+    removeNote: wrap((id: string, noteId: string) => sendJson<Person>(`/api/people/${id}/notes/${noteId}`, "DELETE")),
+  };
+}
+
+export type LifeKind = "about" | "situation" | "goal" | "preference" | "routine" | "place";
+
+export interface LifeFact {
+  id: string;
+  kind: LifeKind;
+  kind_label: string;
+  text: string;
+  quote: string | null;
+  source: "chat" | "you";
+  status: "active" | "resolved" | "outdated";
+  pinned: boolean;
+  mention_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  conversation_id: string | null;
+}
+
+export interface LifeMemory {
+  facts: LifeFact[];
+  kinds: { kind: LifeKind; label: string }[];
+  in_replies: string[];
+  reading_history: boolean;
+}
+
+export function useLifeMemory() {
+  const userId = useUserId();
+  return useQuery({
+    queryKey: ["life", userId],
+    enabled: Boolean(userId),
+    staleTime: 10_000,
+    // While past chats are being read in the background, check back every few seconds.
+    refetchInterval: (query) => ((query.state.data as LifeMemory | undefined)?.reading_history ? 4000 : false),
+    queryFn: () => getJson<LifeMemory>("/api/life"),
+  });
+}
+
+export function useLifeActions() {
+  const userId = useUserId();
+  const queryClient = useQueryClient();
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["life", userId] });
+  const wrap = <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    async (...args: A) => {
+      const result = await fn(...args);
+      await refresh();
+      return result;
+    };
+  return {
+    add: wrap((kind: LifeKind, text: string) => sendJson<LifeFact>("/api/life", "POST", { kind, text })),
+    edit: wrap((id: string, fields: Partial<Pick<LifeFact, "kind" | "text" | "status" | "pinned">>) =>
+      sendJson<LifeFact>(`/api/life/${id}`, "PATCH", fields),
+    ),
+    remove: wrap((id: string) => sendJson(`/api/life/${id}`, "DELETE")),
+    readHistory: wrap(() => sendJson<{ queued: boolean }>("/api/life/read-history", "POST")),
+  };
 }

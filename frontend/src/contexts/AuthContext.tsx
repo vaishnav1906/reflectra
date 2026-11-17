@@ -17,6 +17,7 @@ interface AuthContextValue {
   /** Set when the session exists but the backend refused it (e.g. unconfirmed email). */
   authError: string | null;
   signOut: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -101,9 +102,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     storeProfile(null);
   }, []);
 
+  /** Reload the account (after changing your name in Settings). */
+  const refreshUser = useCallback(async () => {
+    await loadAppUser(session);
+  }, [loadAppUser, session]);
+
   const value = useMemo(
-    () => ({ session, user, loading, authError, signOut }),
-    [session, user, loading, authError, signOut],
+    () => ({ session, user, loading, authError, signOut, refreshUser }),
+    [session, user, loading, authError, signOut, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

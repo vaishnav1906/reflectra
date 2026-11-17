@@ -21,6 +21,9 @@ export interface ChatResult {
   assistant_task_type?: string | null;
   active_mirror_style?: string | null;
   detected_emotion?: string | null;
+  message_id?: string | null;
+  people_used?: { id: string; name: string }[];
+  remembered?: { said: string; when: string; conversation_id: string }[];
   [key: string]: unknown;
 }
 

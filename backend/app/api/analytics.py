@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db.models import Message
-from app.services import followup_service
+from app.services import feedback_service, followup_service
 from app.services.confidence_interval_service import build_confidence_explainability
 from app.services.reflection_service import ReflectionUnavailable, generate_reflections, get_reflections
 from app.services.timeline_service import build_timeline
@@ -194,7 +194,7 @@ async def get_activity_heatmap(
     }
 
 
-TIMELINE_RANGES = {"30d": 30, "90d": 90, "1y": 365, "all": None}
+TIMELINE_RANGES = {"7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None}
 
 
 @router.get("/timeline/{user_id}")
@@ -362,6 +362,7 @@ async def get_system_facts(user_id: UUID, db: AsyncSession = Depends(get_db)):
             "messages": message_count,
             "conversations": conversation_count,
             "memory": {"by_meaning": remembered_by_meaning, "recallable": recallable},
+            "feedback": await feedback_service.summary(db, user_id),
             "traits": [
                 {
                     "key": m.trait_name,

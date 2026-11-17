@@ -39,6 +39,7 @@ from app.services.conversation_craft import (
     reply_budget,
     voice_stats,
 )
+from app.services import feedback_service
 from app.services.llm import LLMRateLimited, chat_complete, chat_complete_streaming, llm_available, stream_sink
 
 logger = logging.getLogger(__name__)
@@ -449,6 +450,12 @@ async def generate_mirror_response(
         )
     
     voice_samples = await load_voice_samples(db, user_id, exclude_text=message)
+    # Mirror replies they rated up are, in their words, what they sound like.
+    approved = await feedback_service.approved_mirror_replies(db, user_id)
+    if approved:
+        seen = {sample.lower() for sample in voice_samples}
+        voice_samples = [a for a in approved if a.lower() not in seen] + voice_samples[: max(0, 12 - len(approved))]
+    mirror_feedback = await feedback_service.reply_guidance(db, user_id, "mirror")
     stats = voice_stats(voice_samples)
     budget = reply_budget(message, "mirror")
     if task_execution_mode:
@@ -492,6 +499,10 @@ async def generate_mirror_response(
             *moment.earlier_shares,
             # You are them, so this is them remembering their own loose end.
             *(f"Loose end: {item}. If it fits, nudge yourself about it once, casually." for item in moment.follow_ups),
+            *(f"Feedback on your recent replies: {line}" for line in mirror_feedback),
+            # You are them: these are people in your own life.
+            *(f"Someone in your life: {card}" for card in moment.people),
+            *(f"Your life: {fact}" for fact in moment.life),
         ],
         length_hint=length_hint,
     )

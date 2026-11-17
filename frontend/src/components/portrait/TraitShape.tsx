@@ -46,14 +46,17 @@ function shape(values: number[]): [number, number][] {
   return points;
 }
 
-export function TraitShape({ traits }: { traits: PortraitTrait[] }) {
+export function TraitShape({ traits, preview }: { traits: PortraitTrait[]; preview?: { key: string; score: number } | null }) {
   const id = useId();
   const grow = useGrow();
 
   const ordered = traits.slice(0, 4);
   if (ordered.length < 4) return null;
   // Starts as a neutral circle (all 50) and settles into the person's shape.
-  const values = ordered.map((t) => 0.5 + (t.score - 0.5) * grow);
+  const settled = ordered.map((t) => 0.5 + (t.score - 0.5) * grow);
+  // While you drag "Not quite", the shape follows your slider; the old one stays as a ghost.
+  const previewing = preview ? ordered.findIndex((t) => t.key === preview.key) : -1;
+  const values = settled.map((v, i) => (i === previewing && preview ? preview.score : v));
   const halo = ordered.map((t, i) => Math.min(1, values[i] + (1 - t.confidence) * 0.22));
 
   const labelAnchor = ["middle", "start", "middle", "end"] as const;
@@ -94,20 +97,24 @@ export function TraitShape({ traits }: { traits: PortraitTrait[] }) {
       {/* uncertainty halo, glow, then the shape itself */}
       <path d={smoothPath(shape(halo))} fill={`url(#${id}-fill)`} opacity="0.22" />
       <path d={smoothPath(shape(values))} fill={`url(#${id}-fill)`} filter={`url(#${id}-glow)`} opacity="0.7" />
-      <path d={smoothPath(shape(values))} fill={`url(#${id}-fill)`} stroke={`url(#${id}-stroke)`} strokeWidth="1.6" />
+      <path d={smoothPath(shape(values))} fill={`url(#${id}-fill)`} stroke={`url(#${id}-stroke)`} strokeWidth="1.6" className="trait-shape-path" />
+      {previewing >= 0 ? (
+        <path d={smoothPath(shape(settled))} fill="none" stroke="hsl(0 0% 100% / 0.45)" strokeWidth="1.2" strokeDasharray="4 5" className="trait-shape-ghost" />
+      ) : null}
 
       {ordered.map((trait, i) => {
         const [x, y] = point(ANGLES[i], values[i]);
         const [lx, ly] = point(ANGLES[i], 1);
+        const shown = i === previewing && preview ? preview.score : trait.score;
         return (
-          <g key={trait.key}>
+          <g key={trait.key} className={i === previewing ? "trait-shape-live" : undefined}>
             <circle cx={x} cy={y} r={5} fill={TRAIT_COLOR[trait.key]} />
             <circle cx={x} cy={y} r={11} fill={TRAIT_COLOR[trait.key]} opacity="0.18" />
             <text x={lx + labelOffset[i][0]} y={ly + labelOffset[i][1]} textAnchor={labelAnchor[i]} className="fill-foreground text-[13px] font-medium">
               {trait.name.replace("Emotional expressiveness", "Expressiveness")}
             </text>
             <text x={lx + labelOffset[i][0]} y={ly + labelOffset[i][1] + 16} textAnchor={labelAnchor[i]} className="fill-muted-foreground font-mono text-[10px] uppercase tracking-widest">
-              {Math.round(trait.score * 100)} · {trait.score >= 0.5 ? trait.high : trait.low}
+              {Math.round(shown * 100)} · {shown >= 0.5 ? trait.high : trait.low}
             </text>
           </g>
         );

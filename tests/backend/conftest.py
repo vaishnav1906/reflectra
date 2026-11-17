@@ -1,6 +1,11 @@
 """Pytest configuration for backend tests."""
 
 import os
+import sys
+from pathlib import Path
+
+# Tests import the backend as `app`, whichever test file is collected first.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 # Unit tests never touch a real database, but importing the app needs a URL.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")

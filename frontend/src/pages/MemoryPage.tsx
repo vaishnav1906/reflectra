@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useScrollLight } from "@/hooks/useScrollLight";
 import { useNavigate } from "react-router-dom";
 import { Flag, Sparkles, TrendingUp, Upload, Zap } from "lucide-react";
 import { ErrorState, LoadingState, PageShell, Panel, Stat } from "@/components/portrait/PageShell";
@@ -38,8 +39,8 @@ function DayCard({ day, peak }: { day: TimelineDay; peak: number }) {
   const navigate = useNavigate();
   const mood = moodLabel(day.mood);
   return (
-    <li className="relative pl-8">
-      <span className="absolute left-0 top-2 h-2.5 w-2.5 rounded-full bg-iris-violet shadow-[0_0_14px_hsl(var(--iris-violet))]" />
+    <li className="relative pl-8" data-thread-stop>
+      <span className="thread-dot absolute left-0 top-2 h-2.5 w-2.5 rounded-full bg-iris-violet" />
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <h3 className="font-display text-2xl">{formatDay(day.date, { weekday: "long", day: "numeric", month: "long" })}</h3>
         <span className="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
@@ -99,6 +100,9 @@ function MilestoneRow({ milestone }: { milestone: Milestone }) {
 export function MemoryPage() {
   const [range, setRange] = useState("all");
   const { data, isLoading, error, refetch } = useTimeline(range);
+  // Light runs down the thread as you scroll, lighting each day it reaches.
+  const thread = useRef<HTMLOListElement>(null);
+  useScrollLight(thread, [data?.days.length, range]);
 
   if (isLoading && !data) return <LoadingState label="Laying out your timeline…" />;
   if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load your timeline."} onRetry={() => void refetch()} />;
@@ -169,7 +173,7 @@ export function MemoryPage() {
 
           <section aria-label="Days">
             <p className="eyebrow mb-6">Day by day · newest first</p>
-            <ol className="relative space-y-10 before:absolute before:bottom-2 before:left-[4.5px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/60 before:via-white/10 before:to-transparent">
+            <ol ref={thread} className="thread-list relative space-y-10 before:absolute before:bottom-2 before:left-[4.5px] before:top-3 before:w-px before:bg-gradient-to-b before:from-iris-violet/60 before:via-white/10 before:to-transparent">
               {days.map((day) => (
                 <DayCard key={day.date} day={day} peak={peak} />
               ))}

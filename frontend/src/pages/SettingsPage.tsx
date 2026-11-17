@@ -20,10 +20,19 @@ import {
 import { PageShell, Panel } from "@/components/portrait/PageShell";
 import { ExportPortraitButton } from "@/components/transitions/PortraitPrint";
 import { VoiceImportRow } from "@/components/settings/VoiceImport";
+import { AboutYou, useProfile } from "@/components/settings/AboutYou";
+import { ColourWheel } from "@/components/settings/ColourWheel";
+
+/** The wheel starts from the colour saved on your account (falls back to this device). */
+function ColourWheelFromProfile() {
+  const { data } = useProfile();
+  return <ColourWheel saved={data?.theme ?? null} />;
+}
 import { TRAIT_COLOR, TRAIT_LABEL, TraitKey } from "@/hooks/useReflectra";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { playEraseFog } from "@/lib/motion";
 
 /**
  * Settings. Every control here changes real behaviour on the server:
@@ -200,6 +209,7 @@ export function SettingsPage() {
       if (confirm === "clear") {
         queryClient.clear();
         setConfirm(null);
+        await playEraseFog(); // the mirror fogs over and wipes clean before you leave
         toast.success("Your conversations and everything learned from them were erased.");
         navigate("/app/chat");
       } else {
@@ -219,6 +229,10 @@ export function SettingsPage() {
 
   return (
     <PageShell eyebrow="Settings" title="Make it" accent="yours." subtitle="Each switch here changes what Reflectra actually does on the server, not just what this page shows.">
+      <AboutYou />
+
+      <ColourWheelFromProfile />
+
       <Panel title="How Reflectra behaves" hint={saving ? "saving…" : loading ? "loading…" : undefined}>
         <Row
           title="Mirror my voice"

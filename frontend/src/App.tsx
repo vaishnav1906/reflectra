@@ -12,6 +12,10 @@ import { ChatProvider } from "@/contexts/ChatContext";
 import { LandingPage } from "./pages/LandingPage";
 import { ChatPage } from "./pages/ChatPage";
 import { PersonalityPage } from "./pages/PersonalityPage";
+import { PeoplePage } from "./pages/PeoplePage";
+import { LifePage } from "./pages/LifePage";
+import { WeekPage } from "./pages/WeekPage";
+import { OpenNudgePage } from "./pages/OpenNudgePage";
 import { MemoryPage } from "./pages/MemoryPage";
 import { ReflectionsPage } from "./pages/ReflectionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -54,6 +58,10 @@ const App = () => {
                 <Route path="/app/chat" element={<ProtectedRoute><AppLayout><ChatPage /></AppLayout></ProtectedRoute>} />
                 <Route path="/app/architecture" element={<ProtectedRoute><AppLayout><ArchitecturePage /></AppLayout></ProtectedRoute>} />
                 <Route path="/app/personality" element={<ProtectedRoute><AppLayout><PersonalityPage /></AppLayout></ProtectedRoute>} />
+                <Route path="/app/people" element={<ProtectedRoute><AppLayout><PeoplePage /></AppLayout></ProtectedRoute>} />
+                <Route path="/app/life" element={<ProtectedRoute><AppLayout><LifePage /></AppLayout></ProtectedRoute>} />
+                <Route path="/app/week" element={<ProtectedRoute><AppLayout><WeekPage /></AppLayout></ProtectedRoute>} />
+                <Route path="/app/open/:id" element={<ProtectedRoute><AppLayout><OpenNudgePage /></AppLayout></ProtectedRoute>} />
                 <Route path="/app/memory" element={<ProtectedRoute><AppLayout><MemoryPage /></AppLayout></ProtectedRoute>} />
                 <Route path="/app/reflections" element={<ProtectedRoute><AppLayout><ReflectionsPage /></AppLayout></ProtectedRoute>} />
                 <Route path="/app/settings" element={<ProtectedRoute><AppLayout><SettingsPage /></AppLayout></ProtectedRoute>} />

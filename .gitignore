@@ -64,3 +64,5 @@ Thumbs.db
 *.tmp
 *.temp
 .cache/
+# Web Push signing keys generated on first run (keep private)
+backend/.vapid.json

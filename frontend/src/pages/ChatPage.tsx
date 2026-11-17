@@ -19,6 +19,7 @@ import { ChatError, sendChat } from "@/lib/chatStream";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { useAuth } from "@/contexts/AuthContext";
 import { MirrorMark } from "@/components/MirrorMark";
+import { TypedInMessage } from "@/components/chat/TypedInMessage";
 const API_BASE = "/api";
 // Prefix for the "AI is rate-limited, try again" notice (excluded from conversation context).
 const BUSY_PREFIX = "⏳";
@@ -38,6 +39,10 @@ export function ChatPage() {
   const [backendStatus, setBackendStatus] = useState<"checking" | "connected" | "disconnected">("checking");
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [incognitoFeedback, setIncognitoFeedback] = useState<"enabled" | "disabled" | null>(null);
+  // Switching mode flips the mirror over (only after a switch, not on arrival).
+  const [modeFlips, setModeFlips] = useState(0);
+  // The opener you came for from a notification types itself in.
+  const [typeInId, setTypeInId] = useState<string | null>(null);
   
   // Get chat state from context (persists across navigation)
   const {
@@ -115,10 +120,20 @@ export function ChatPage() {
     console.log(`🔄 Mode change: ${mode} → ${newMode}`);
     
     // Start new conversation when switching modes
+    setModeFlips((n) => n + 1);
     startNewConversation();
     setAssistantTaskType(null);
     setSearchParams({ mode: newMode });
   };
+
+  // Arrived from a notification: once its conversation has loaded, Reflectra's opener types itself in.
+  useEffect(() => {
+    if (searchParams.get("from") !== "nudge" || loadingMessages || messages.length === 0) return;
+    if (messages.length === 1 && messages[0].role === "assistant") setTypeInId(messages[0].id);
+    const next = new URLSearchParams(searchParams);
+    next.delete("from");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, loadingMessages, messages]);
 
   const handleIncognitoChange = (enabled: boolean) => {
     setIncognitoFeedback(enabled ? "enabled" : "disabled");
@@ -212,6 +227,10 @@ export function ChatPage() {
 
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
+        serverId: typeof data.message_id === "string" ? data.message_id : undefined,
+        peopleUsed: Array.isArray(data.people_used) ? data.people_used : [],
+        remembered: Array.isArray(data.remembered) ? data.remembered : [],
+        feedback: null,
         role: "assistant",
         content: data.reply,
         timestamp: new Date().toLocaleTimeString([], {
@@ -383,8 +402,13 @@ export function ChatPage() {
             )}
 
             {messages.length === 0 && !isTyping && !loadingMessages && (
-              <div className="chat-empty flex flex-col items-center px-4 pt-[12vh] text-center">
-                <MirrorMark className="h-20 w-20" breathing />
+              <div
+                key={`${mode}-${modeFlips}`}
+                className={cn("chat-empty flex flex-col items-center px-4 pt-[12vh] text-center", modeFlips > 0 && "mode-flip")}
+              >
+                <span className="mode-flip-mark">
+                  <MirrorMark className="h-20 w-20" breathing />
+                </span>
                 {activeConversationId ? (
                   <>
                     <h2 className="mt-8 font-display text-4xl">Nothing here yet.</h2>
@@ -406,9 +430,38 @@ export function ChatPage() {
                 )}
               </div>
             )}
-            {messages.map((msg) => (
-              <ChatMessage key={msg.id} {...msg} noFade={msg.id === streamedId} />
-            ))}
+            {messages.map((msg) => {
+              if (msg.id === typeInId) {
+                return (
+                  <TypedInMessage key={msg.id} role={msg.role} content={msg.content} timestamp={msg.timestamp} onDone={() => setTypeInId(null)} />
+                );
+              }
+              return (
+              <ChatMessage
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                timestamp={msg.timestamp}
+                noFade={msg.id === streamedId}
+                peopleUsed={msg.peopleUsed}
+                remembered={msg.remembered}
+                rating={
+                  msg.role === "assistant" && msg.serverId && !isIncognito
+                    ? {
+                        messageId: msg.serverId,
+                        mode,
+                        initial: msg.feedback ?? null,
+                        initialReasons: msg.feedbackReasons ?? [],
+                        onChange: (verdict, reasons) =>
+                          setMessages((prev) =>
+                            prev.map((m) => (m.id === msg.id ? { ...m, feedback: verdict, feedbackReasons: reasons } : m)),
+                          ),
+                      }
+                    : undefined
+                }
+              />
+              );
+            })}
             {isTyping && streamingText && typedText ? (
               <ChatMessage role="assistant" content={typedText} timestamp="" streaming />
             ) : isTyping ? (

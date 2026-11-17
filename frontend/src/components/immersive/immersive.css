@@ -10,7 +10,7 @@
   border-bottom: 1px solid transparent;
 }
 .immersive-nav.is-solid {
-  background: hsl(240 18% 4% / 0.62);
+  background: hsl(calc(var(--ink-h) + -5) calc(18% * var(--ink-k)) 4% / 0.62);
   border-color: hsl(0 0% 100% / 0.06);
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
@@ -23,7 +23,7 @@
   transform: translate(-50%, -50%) scale(calc(1 - var(--pull, 0) * 0.55));
   white-space: nowrap;
   font-size: clamp(0.95rem, 1.6vw, 1.35rem);
-  color: hsl(250 20% 92% / 0.55);
+  color: hsl(calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 92% / 0.55);
   opacity: var(--thoughts, 1);
   filter: blur(calc(var(--pull, 0) * 3px));
 }
@@ -46,7 +46,7 @@
   letter-spacing: -0.035em;
   transform: translateY(calc((1 - var(--title, 0)) * 60px));
   filter: blur(calc((1 - var(--title, 0)) * 14px));
-  background: linear-gradient(180deg, hsl(250 30% 98%) 0%, hsl(252 60% 86%) 55%, hsl(188 60% 78%) 100%);
+  background: linear-gradient(180deg, hsl(var(--ink-h) 30% 98%) 0%, hsl(var(--iris-violet)) 55%, hsl(var(--iris-cyan)) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -57,7 +57,7 @@
   letter-spacing: -0.035em;
   transform: scaleY(-1) translateY(calc(-0.06em + (1 - var(--reflect, 0)) * -30px));
   opacity: calc(var(--reflect, 0) * 0.5);
-  background: linear-gradient(180deg, hsl(252 70% 85%) 0%, hsl(188 70% 78%) 100%);
+  background: linear-gradient(180deg, hsl(var(--iris-violet)) 0%, hsl(var(--iris-cyan)) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

@@ -48,6 +48,16 @@ vi.mock("@/lib/api", () => ({
         stats: { done: 3, dropped: 1, follow_through: 0.75 },
       });
     }
+    if (url.includes("/user/profile")) {
+      return json({
+        display_name: "Sam",
+        email: "sam@example.com",
+        birth_date: "2004-03-14",
+        age: 22,
+        notifications: { enabled: false, follow_ups: true, weekly_digest: true, daily_check_in: false, check_in_time: "21:00", birthdays: true, quiet_start: "22:30", quiet_end: "08:00" },
+        member_since: null,
+      });
+    }
     if (url.includes("/persona/voice-import")) return json(call.method === "GET" ? { imported: null } : {});
     if (url.includes("/schedule-context/")) {
       return json({
@@ -148,6 +158,13 @@ describe("signed-in pages render real payloads", () => {
 });
 
 describe("Settings", () => {
+  it("shows About you with the age worked out from the birth date", async () => {
+    show(<SettingsPage />);
+    expect(await screen.findByText(/you're 22/)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Notifications" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "Follow-ups" })).toBeDisabled(); // off until notifications are on
+  });
+
   it("offers the voice import and the animated PDF export", async () => {
     show(<SettingsPage />);
     expect(await screen.findByText("Teach Mirror how you text")).toBeInTheDocument();

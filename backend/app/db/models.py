@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -25,6 +26,7 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     email = Column(String(320), unique=True, nullable=False, index=True)
     display_name = Column(Text)
+    birth_date = Column(Date)  # optional; age is worked out from it
     # Supabase Auth user id (auth.users.id); set on first authenticated sign-in.
     auth_user_id = Column(UUID(as_uuid=True), unique=True, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -40,6 +42,8 @@ class User(Base):
     reaction_patterns = relationship("ReactionPattern", back_populates="user", cascade="all, delete-orphan")
     mirror_response_memories = relationship("MirrorResponseMemory", back_populates="user", cascade="all, delete-orphan")
     external_inputs = relationship("ExternalInput", back_populates="user", cascade="all, delete-orphan")
+    feedback = relationship("Feedback", back_populates="user", cascade="all, delete-orphan")
+    people = relationship("Person", back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -195,6 +199,9 @@ class UserSettings(Base):
     twin_autonomy_mode = Column(String(32), nullable=False, server_default=text("'draft_only'"))
     twin_mirror_intensity = Column(Float, nullable=False, server_default=text("0.8"))
     twin_require_approval = Column(Boolean, nullable=False, server_default=text("true"))
+    # Which reminders the user wants, and when (see app.services.notification_prefs).
+    notifications = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    theme = Column(JSONB)  # {"hue": 0-359, "saturation": 30-100}; None = the default violet
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="user_settings")
@@ -283,3 +290,135 @@ class ExternalInput(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="external_inputs")
+
+
+class Feedback(Base):
+    """What the user said about something Reflectra produced: a reply, a trait reading
+    or a reflection. One row per thing; changing your mind updates it."""
+
+    __tablename__ = "feedback"
+    __table_args__ = (UniqueConstraint("user_id", "target_type", "target_id", name="uq_feedback_target"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_type = Column(String(16), nullable=False)  # "reply" | "trait" | "reflection"
+    target_id = Column(String(64), nullable=False)  # message id, trait key or reflection id
+    verdict = Column(String(16), nullable=False)  # "up" / "down" for replies, "agree" / "disagree" otherwise
+    reasons = Column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    note = Column(Text)
+    value = Column(Float)  # a trait: where the user would put themselves (0-1)
+    details = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))  # mode, titles, before/after values
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="feedback")
+
+
+class Person(Base):
+    """Someone in the user's life, as the user describes them.
+
+    status: "active" (the user added or confirmed them), "suggested" (Reflectra
+    noticed the name and is asking), "dismissed" (the user said no; never suggested
+    again under this name).
+    notes: what came up about them in chats, each with the user's exact words:
+    [{"id", "text", "quote", "date", "conversation_id", "source": "chat" | "you"}]
+    """
+
+    __tablename__ = "people"
+    __table_args__ = (UniqueConstraint("user_id", "name_key", name="uq_people_user_name"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(80), nullable=False)
+    name_key = Column(String(80), nullable=False)  # lowercased name, for uniqueness
+    aliases = Column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    relationship_label = Column(String(80))  # "best friend", "mom", "manager"
+    description = Column(Text)  # in the user's words
+    birthday = Column(String(10))  # "MM-DD" or "YYYY-MM-DD"
+    notes = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    status = Column(String(16), nullable=False, server_default=text("'active'"))
+    mention_count = Column(Integer, nullable=False, server_default=text("0"))
+    last_mentioned_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="people")
+
+
+class Job(Base):
+    """Background work queued by a request and run by the worker (app.worker)."""
+
+    __tablename__ = "jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(40), nullable=False)
+    payload = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    status = Column(String(12), nullable=False, server_default=text("'queued'"))  # queued | running | done | failed
+    attempts = Column(Integer, nullable=False, server_default=text("0"))
+    dedupe_key = Column(String(120))
+    last_error = Column(Text)
+    run_after = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    started_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class LifeFact(Base):
+    """Something lasting about the user's life, in their own words: what they do, what's
+    going on, what they're working toward. They can edit, pin or delete any of it."""
+
+    __tablename__ = "life_facts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(16), nullable=False)  # about | situation | goal | preference | routine | place
+    statement = Column("text", Text, nullable=False)  # the fact itself
+    quote = Column(Text)  # their exact words it came from (None when they typed it in themselves)
+    source = Column(String(8), nullable=False, server_default=text("'chat'"))  # chat | you
+    status = Column(String(12), nullable=False, server_default=text("'active'"))  # active | resolved | outdated
+    pinned = Column(Boolean, nullable=False, server_default=text("false"))
+    mention_count = Column(Integer, nullable=False, server_default=text("1"))
+    first_seen = Column(String(10))  # YYYY-MM-DD, the user's local date
+    last_seen = Column(String(10))
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PushSubscription(Base):
+    """Where to deliver a notification: a browser (Web Push) now, phone apps later."""
+
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (UniqueConstraint("endpoint", name="uq_push_endpoint"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(12), nullable=False, server_default=text("'web'"))  # web | android | ios
+    endpoint = Column(Text, nullable=False)  # Web Push endpoint, or an FCM/APNs device token
+    keys = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))  # p256dh / auth for Web Push
+    user_agent = Column(String(200))
+    failures = Column(Integer, nullable=False, server_default=text("0"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_sent_at = Column(DateTime(timezone=True))
+
+
+class NotificationSent(Base):
+    """A nudge that went out: what it was about, and the question it opens with."""
+
+    __tablename__ = "notifications_sent"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(20), nullable=False)  # follow_up | birthday | weekly_digest | check_in | test
+    ref = Column(String(64))  # the follow-up / person it's about, or the ISO week
+    local_date = Column(String(10), nullable=False)
+    title = Column(Text, nullable=False)
+    body = Column(Text, nullable=False)
+    opener = Column(Text)  # what Reflectra says first when the nudge is opened
+    url = Column(Text)
+    delivered = Column(Integer, nullable=False, server_default=text("0"))  # devices it reached
+    opened_at = Column(DateTime(timezone=True))
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+

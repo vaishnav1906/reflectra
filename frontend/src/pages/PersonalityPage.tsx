@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { ErrorState, LoadingState, PageShell, Panel, Stat } from "@/components/portrait/PageShell";
 import { TraitShape } from "@/components/portrait/TraitShape";
+import { TraitCheck } from "@/components/portrait/TraitCheck";
 import { RhythmClock, TraitRiver, TraitSpectrum, WeekBars } from "@/components/portrait/Charts";
 import { TimetableSection } from "@/components/timetable/TimetableSection";
 import { ExportPortraitButton } from "@/components/transitions/PortraitPrint";
@@ -13,6 +15,8 @@ import { formatDay, pct, usePortrait } from "@/hooks/useReflectra";
  */
 export function PersonalityPage() {
   const { data, isLoading, error, refetch } = usePortrait();
+  // A trait you're correcting: the shape reshapes as you drag.
+  const [preview, setPreview] = useState<{ key: string; score: number } | null>(null);
 
   if (isLoading) return <LoadingState label="Drawing your portrait…" />;
   if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load your persona."} onRetry={() => void refetch()} />;
@@ -47,7 +51,9 @@ export function PersonalityPage() {
           {/* The shape */}
           <Panel className="iris-border overflow-hidden">
             <div className="grid items-center gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-              <TraitShape traits={data.traits} />
+              <div className="lg:sticky lg:top-6">
+                <TraitShape traits={data.traits} preview={preview} />
+              </div>
               <div>
                 <p className="eyebrow mb-4">How to read it</p>
                 <p className="text-[15px] leading-relaxed text-foreground/80">
@@ -71,6 +77,16 @@ export function PersonalityPage() {
             {data.traits.map((trait) => (
               <Panel key={trait.key}>
                 <TraitSpectrum trait={trait} />
+                {/* Below desktop width the big shape is off-screen while you drag: show a small one here. */}
+                {preview?.key === trait.key ? (
+                  <div className="mx-auto mt-4 max-w-[260px] fade-in lg:hidden">
+                    <TraitShape traits={data.traits} preview={preview} />
+                  </div>
+                ) : null}
+                <TraitCheck
+                  trait={trait}
+                  onPreview={(score) => setPreview((current) => (score === null ? (current?.key === trait.key ? null : current) : { key: trait.key, score }))}
+                />
               </Panel>
             ))}
           </div>

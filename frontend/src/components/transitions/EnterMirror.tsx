@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { themeRgb } from "@/lib/theme";
 import "./transitions.css";
 
 /**
@@ -29,11 +30,13 @@ const THOUGHTS = [
   "ok but why tho",
 ];
 
-const IRIS: [number, number, number][] = [
+const DEFAULT_IRIS: [number, number, number][] = [
   [196, 186, 255],
   [150, 232, 245],
   [255, 205, 176],
 ];
+
+let IRIS = DEFAULT_IRIS;
 
 function iris(t: number) {
   const x = ((t % 1) + 1) % 1;
@@ -58,6 +61,7 @@ function useParticleCanvas(ref: React.RefObject<HTMLCanvasElement>, leaving: boo
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    IRIS = themeRgb(); // your colour, not always violet
     let seed = 11;
     const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     const particles = Array.from({ length: 170 }, () => ({

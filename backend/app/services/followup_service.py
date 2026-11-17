@@ -380,6 +380,23 @@ async def due_for_asking(
     return lines
 
 
+async def mark_asked(db: AsyncSession, user_id: UUID, followup_id: str, local_date: str) -> None:
+    """Record that a reminder asked about this (it counts toward the two asks)."""
+    try:
+        target = UUID(str(followup_id))
+    except ValueError:
+        return
+    row = (
+        await db.execute(select(BehavioralInsight).where(BehavioralInsight.id == target, BehavioralInsight.user_id == user_id))
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    meta = _meta(row)
+    meta.update({"asked_at": local_date, "asked_count": int(meta.get("asked_count") or 0) + 1})
+    row.evidence = [meta]
+    await db.flush()
+
+
 async def list_followups(db: AsyncSession, user_id: UUID, tz_offset_minutes: int = 0) -> Dict[str, object]:
     """Open follow-ups, recently closed ones, and how often the user follows through."""
     today = local_today(tz_offset_minutes)

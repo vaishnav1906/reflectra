@@ -15,7 +15,7 @@
   place-items: center;
   overflow: hidden;
   background:
-    radial-gradient(60% 50% at 50% 50%, hsl(258 40% 10%) 0%, hsl(245 30% 4%) 60%, hsl(240 25% 2%) 100%);
+    radial-gradient(60% 50% at 50% 50%, hsl(calc(var(--ink-h) + 13) calc(40% * var(--ink-k)) 10%) 0%, hsl(var(--ink-h) calc(30% * var(--ink-k)) 4%) 60%, hsl(calc(var(--ink-h) + -5) calc(25% * var(--ink-k)) 2%) 100%);
   cursor: pointer;
   --hole: 0%;
 }
@@ -167,7 +167,7 @@
   display: grid;
   place-items: center;
   padding: 1rem;
-  background: hsl(240 25% 3% / 0.78);
+  background: hsl(calc(var(--ink-h) + -5) calc(25% * var(--ink-k)) 3% / 0.78);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   animation: print-fade 0.35s ease-out both;
@@ -190,7 +190,7 @@
   position: absolute;
   inset: 0;
   border-radius: 10px;
-  background: linear-gradient(180deg, hsl(250 20% 13%), hsl(248 22% 8%));
+  background: linear-gradient(180deg, hsl(calc(var(--ink-h) + 5) calc(20% * var(--ink-k)) 13%), hsl(calc(var(--ink-h) + 3) calc(22% * var(--ink-k)) 8%));
   border: 1px solid hsl(0 0% 100% / 0.1);
   box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.9);
 }
@@ -208,7 +208,7 @@
   overflow: hidden;
   padding: 18px 16px;
   border-radius: 10px;
-  background: linear-gradient(180deg, hsl(250 22% 14%), hsl(248 24% 8%));
+  background: linear-gradient(180deg, hsl(calc(var(--ink-h) + 5) calc(22% * var(--ink-k)) 14%), hsl(calc(var(--ink-h) + 3) calc(24% * var(--ink-k)) 8%));
   border: 1px solid hsl(0 0% 100% / 0.14);
   box-shadow: 0 40px 90px -30px hsl(var(--iris-violet) / 0.45);
   animation: print-feed 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -296,7 +296,7 @@
 .print-step.is-done .print-dot {
   border-color: transparent;
   background: linear-gradient(135deg, hsl(var(--iris-violet)), hsl(var(--iris-cyan)));
-  color: hsl(240 25% 6%);
+  color: hsl(calc(var(--ink-h) + -5) calc(25% * var(--ink-k)) 6%);
 }
 
 .print-tray {

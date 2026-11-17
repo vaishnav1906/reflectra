@@ -18,3 +18,4 @@ openai-whisper>=20240930
 torch>=2.2.0
 ffmpeg-python>=0.2.0
 reportlab>=4.2.0
+pywebpush==2.5.0

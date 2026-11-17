@@ -26,6 +26,12 @@ from app.db.models import (
     LinguisticFingerprint,
     ReactionPattern,
     ExternalInput,
+    Feedback,
+    Person,
+    Job,
+    LifeFact,
+    NotificationSent,
+    PushSubscription,
 )
 from app.services.auth_service import delete_supabase_auth_user
 from app.services.twin_policy import (
@@ -41,6 +47,7 @@ logger = logging.getLogger(__name__)
 # (messages before conversations). A new per-user table must be added here;
 # tests/backend/test_settings_data.py fails if one is missing.
 ERASABLE_MODELS = (
+    Job,  # first: queued learning must not run again after an erase
     Message,
     MirrorResponseMemory,
     MirrorLog,
@@ -53,9 +60,14 @@ ERASABLE_MODELS = (
     ReflectionLog,
     LinguisticFingerprint,
     ExternalInput,
+    Feedback,
+    Person,
+    LifeFact,
+    NotificationSent,
     ScheduleContext,
 )
-KEPT_ON_ERASE = (UserSettings,)
+# Devices stay subscribed (a preference, like settings); the record of what was sent is erased.
+KEPT_ON_ERASE = (UserSettings, PushSubscription)
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -361,3 +373,80 @@ async def delete_user_account(request: UserRequest, current_user: CurrentUser, d
         await db.rollback()
         logger.exception("delete-account failed")
         raise HTTPException(status_code=500, detail="Couldn't delete your account. Nothing was changed.")
+
+
+# --------------------------------------------------------------------------- About you
+
+
+class ProfilePatch(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=60)
+    birth_date: Optional[str] = Field(default=None, max_length=10)  # "" clears it
+    notifications: Optional[dict] = None
+    theme: Optional[dict] = None  # {"hue", "saturation"}; {} resets to the default
+
+
+async def _profile(db: AsyncSession, user: User, tz_offset_minutes: int = 0) -> dict:
+    from app.services.notification_prefs import age_on, merged_prefs
+
+    settings_row = (await db.execute(select(UserSettings).where(UserSettings.user_id == user.id))).scalar_one_or_none()
+    today = (datetime.now(timezone.utc) + timedelta(minutes=tz_offset_minutes)).date()
+    return {
+        "display_name": user.display_name or user.email.split("@", 1)[0],
+        "email": user.email,
+        "birth_date": user.birth_date.isoformat() if user.birth_date else None,
+        "age": age_on(user.birth_date, today),
+        "notifications": merged_prefs(settings_row.notifications if settings_row else None),
+        "theme": (settings_row.theme if settings_row else None) or None,
+        "member_since": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+@router.get("/profile")
+async def get_profile(
+    current_user: CurrentUser,
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    db: AsyncSession = Depends(get_db),
+):
+    """Name, date of birth (and the age it gives) and notification switches."""
+    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    return await _profile(db, user, tz_offset_minutes)
+
+
+@router.patch("/profile")
+async def update_profile(
+    body: ProfilePatch,
+    current_user: CurrentUser,
+    tz_offset_minutes: int = Query(0, ge=-840, le=840),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services import notification_prefs as prefs
+
+    user = (await db.execute(select(User).where(User.id == current_user.id))).scalar_one()
+    today = (datetime.now(timezone.utc) + timedelta(minutes=tz_offset_minutes)).date()
+    fields = body.model_dump(exclude_unset=True)
+    try:
+        if "display_name" in fields and fields["display_name"] is not None:
+            user.display_name = prefs.clean_display_name(fields["display_name"])
+        if "birth_date" in fields:
+            user.birth_date = prefs.clean_birth_date(fields["birth_date"], today)
+        if fields.get("theme") is not None:
+            theme_row = (await db.execute(select(UserSettings).where(UserSettings.user_id == user.id))).scalar_one_or_none()
+            if theme_row is None:
+                theme_row = UserSettings(user_id=user.id)
+                db.add(theme_row)
+            theme_row.theme = prefs.clean_theme(fields["theme"]) if fields["theme"] else None
+        if fields.get("notifications") is not None:
+            settings_row = (
+                await db.execute(select(UserSettings).where(UserSettings.user_id == user.id))
+            ).scalar_one_or_none()
+            if settings_row is None:
+                settings_row = UserSettings(user_id=user.id)
+                db.add(settings_row)
+            settings_row.notifications = prefs.clean_prefs(fields["notifications"], settings_row.notifications)
+            # Reminders go out by the user's own clock, so remember where that is.
+            settings_row.notifications = {**settings_row.notifications, "tz_offset_minutes": tz_offset_minutes}
+    except prefs.ProfileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await db.commit()
+    await db.refresh(user)
+    return await _profile(db, user, tz_offset_minutes)

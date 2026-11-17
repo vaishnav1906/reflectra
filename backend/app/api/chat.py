@@ -26,10 +26,12 @@ from app.services.conversation_craft import (
     format_moment_block,
     has_assistant_tells,
     load_moment_context,
+    moments_used,
+    recalled_moments,
     reply_budget,
 )
-from app.services import followup_service
-from app.services.embedding_service import schedule_backfill
+from app.services import feedback_service, followup_service, people_service
+from app.services.learning_jobs import queue_learning
 from app.services.llm import (
     LLMRateLimited,
     StreamSink,
@@ -107,6 +109,9 @@ class ChatResponse(BaseModel):
     confidence_interval: Optional[Dict[str, float]] = None
     style_strength: Optional[float] = None
     reaction_source: Optional[str] = None
+    message_id: Optional[str] = None  # the stored reply, so it can be rated (None in incognito)
+    people_used: List[Dict[str, str]] = Field(default_factory=list)  # whose People card informed the reply
+    remembered: List[Dict[str, str]] = Field(default_factory=list)  # past messages the reply drew on
 
 
 # ============================================================================
@@ -751,6 +756,7 @@ async def generate_reflection_reply(
         message_text=message_text,
         follow_up_tz=tz_offset_minutes if opening else None,
     )
+    moment.reply_feedback = await feedback_service.reply_guidance(db, user_id, "reflection")
     budget = reply_budget(message_text, "reflection")
     system_prompt = build_reflection_system_prompt(
         personality_profile, schedule_context, moment, str(budget["hint"])
@@ -990,6 +996,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     concurrently; conversation history and profile context come from the database.
     """
     effective_mode = normalize_interaction_mode(request.mode)
+    recalled_moments.set(())  # filled in when memory is loaded for this reply
     logger.info(
         "💬 /chat payload received: user_id=%s conversation_id=%s requested_mode=%s effective_mode=%s message_len=%s",
         request.user_id,
@@ -1089,9 +1096,10 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
     from app.services.snapshot_service import generate_persona_snapshot
 
     if effective_mode == "reflection":
-        # Reply and trait extraction are independent LLM calls: run them together.
-        reply_result, traits_result = await asyncio.gather(
-            generate_reflection_reply(
+        # Only the reply happens here. What Reflectra learns from the message is
+        # queued after both messages are saved (app.services.learning_jobs).
+        try:
+            reply = await generate_reflection_reply(
                 db,
                 user_id_uuid,
                 conversation_id_uuid,
@@ -1100,46 +1108,9 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 message_text,
                 request.client_local_time,
                 request.tz_offset_minutes,
-            ),
-            maybe_extract_traits(message_text),
-            return_exceptions=True,
-        )
-        if isinstance(reply_result, LLMRateLimited):
-            await _raise_busy(db, created_conversation_id, title_task)
-        if isinstance(reply_result, BaseException):
-            raise reply_result
-        reply = reply_result
-        extracted_traits = traits_result if isinstance(traits_result, list) else []
-        update_personality_profile(personality_profile, message_text, reply)
-
-        try:
-            await save_personality_profile(db, user_id_uuid, personality_profile)
-            db.add(
-                ReflectionLog(
-                    user_id=user_id_uuid,
-                    conversation_id=conversation_id_uuid,
-                    prompt=message_text,
-                    response=reply,
-                    sentiment=simple_sentiment(message_text),
-                )
             )
-            await db.commit()
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to persist reflection profile/log: {e}")
-            await db.rollback()
-
-        try:
-            if not extracted_traits:
-                extracted_traits = derive_fallback_traits(message_text)
-                logger.info(f"🔁 Using fallback trait extraction: {len(extracted_traits)} traits")
-
-            if learning_enabled:
-                await update_traits(db, user_id_uuid, extracted_traits)
-                await generate_persona_snapshot(db, user_id_uuid)
-            logger.info("✅ Persona updated from reflection message")
-        except Exception as e:
-            logger.error(f"⚠️ Failed to update persona: {e}")
-            await db.rollback()
+        except LLMRateLimited:
+            await _raise_busy(db, created_conversation_id, title_task)
 
     else:
         # MIRROR MODE: Always keep full assistant capability while preserving mirror style.
@@ -1168,10 +1139,9 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
         settings_record = settings_result.scalar_one_or_none()
         twin_policy = resolve_twin_settings(settings_record)
 
-        # The mirror reply and trait extraction run concurrently. Trait extraction
-        # does not touch the DB session, so sharing it with the mirror engine is safe.
-        mirror_result, traits_result = await asyncio.gather(
-            generate_mirror_response(
+        # Only the reply happens here; learning is queued after the messages are saved.
+        try:
+            mirror_result = await generate_mirror_response(
                 db,
                 user_id_uuid,
                 message_text,
@@ -1182,11 +1152,9 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 active_mirror_style=active_mirror_style,
                 conversation_id=conversation_id_uuid,
                 tz_offset_minutes=request.tz_offset_minutes,
-            ),
-            maybe_extract_traits(message_text),
-            return_exceptions=True,
-        )
-        extracted_traits = traits_result if isinstance(traits_result, list) else []
+            )
+        except Exception as exc:  # LLMRateLimited and failures are handled just below
+            mirror_result = exc
 
         if isinstance(mirror_result, LLMRateLimited):
             await _raise_busy(db, created_conversation_id, title_task)
@@ -1234,33 +1202,12 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 inference_duration_ms,
             )
 
-        # Never overwrite a valid mirror reply due to recalibration failures.
-        try:
-            await check_and_recalibrate_drift(db, user_id_uuid)
-        except Exception:
-            logger.exception("⚠️ Drift recalibration failed; keeping generated mirror reply")
-            await db.rollback()
-
         if not reply:
             if assistant_task_type:
                 reply = build_assistant_fallback_reply(message_text, assistant_task_type)
             else:
                 reply = MIRROR_FALLBACK_REPLY
             fallback_triggered = True
-
-        # Mirror messages also grow persona confidence.
-        try:
-            if not extracted_traits:
-                extracted_traits = derive_fallback_traits(message_text)
-                logger.info(f"🔁 Using fallback trait extraction (mirror): {len(extracted_traits)} traits")
-
-            if extracted_traits and learning_enabled:
-                await update_traits(db, user_id_uuid, extracted_traits)
-                await generate_persona_snapshot(db, user_id_uuid)
-                logger.info("✅ Persona updated from mirror message")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to update persona from mirror message: {e}")
-            await db.rollback()
 
         if request.external_input_text:
             from app.db.models import ExternalInput
@@ -1282,7 +1229,7 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
                 await db.rollback()
 
     # Store user message (with per-message analytics) in database
-    metrics = compute_message_metrics(message_text, extracted_traits)
+    metrics = compute_message_metrics(message_text, [])  # refined by the learning job
     try:
         user_message = await crud.create_message(
             db=db,
@@ -1300,21 +1247,6 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
         logger.error(f"❌ Failed to store user message: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store user message: {str(e)}")
 
-    try:
-        from app.services.behavioral_memory_service import (
-            record_user_reaction,
-            update_linguistic_fingerprint,
-        )
-
-        if learning_enabled:
-            await update_linguistic_fingerprint(db, user_id_uuid, message_text)
-            await record_user_reaction(db, user_id_uuid, message_text)
-            await db.commit()
-    except Exception as fingerprint_err:
-        # Behavioral memory persistence is optional and should not break main chat flow.
-        logger.warning("⚠️ Skipping behavioral memory update: %s", fingerprint_err)
-        await db.rollback()
-
     # Store AI response in database
     try:
         assistant_message = await crud.create_message(
@@ -1331,13 +1263,40 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
         logger.error(f"❌ Failed to store assistant message: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store assistant message: {str(e)}")
 
-    # Older messages get their meaning vectors a batch at a time, off the reply path.
-    if learning_enabled:
-        schedule_backfill(user_id_uuid)
-        # Things they said they'd do are noted (and finished ones closed) after the reply is out.
-        followup_service.schedule_processing(
-            user_id_uuid, conversation_id_uuid, message_text, request.tz_offset_minutes
+    # Everything Reflectra learns from this exchange runs in the background
+    # (traits, writing style, memory, follow-ups, People, life memory).
+    try:
+        await queue_learning(
+            db,
+            user_id_uuid,
+            conversation_id=conversation_id_uuid,
+            user_message_id=user_message.id,
+            message=message_text,
+            reply=reply,
+            mode=effective_mode,
+            tz=request.tz_offset_minutes,
+            learning=learning_enabled,
         )
+    except Exception:
+        logger.exception("Couldn't queue learning for this message")
+        await db.rollback()
+
+    # Whose People card the reply could draw on (shown as a small chip under it).
+    people_used: List[Dict[str, str]] = []
+    try:
+        recent_text = " ".join([t["content"] for t in history if t.get("role") == "user"][-3:])
+        _, briefed = await people_service.briefings_for_user(db, user_id_uuid, recent_text)
+        people_used = [{"id": str(p.id), "name": p.name} for p in briefed]
+    except Exception:
+        await db.rollback()
+
+    # Past messages the reply visibly drew on (shown as "remembered" under it).
+    try:
+        now_text = " ".join([t["content"] for t in history if t.get("role") == "user"][-3:] + [message_text])
+        remembered = moments_used(reply, now_text)
+    except Exception:
+        logger.exception("Couldn't work out which memories the reply used")
+        remembered = []
 
     # Log mirror telemetry in a best-effort manner so missing optional schema never breaks chat.
     if effective_mode == "mirror":
@@ -1392,6 +1351,9 @@ async def chat(request: ChatRequest, current_user: CurrentUser, db: AsyncSession
         confidence_interval=confidence_interval,
         style_strength=style_strength,
         reaction_source=reaction_source,
+        message_id=str(assistant_message.id),
+        people_used=people_used,
+        remembered=remembered,
     )
 
 
@@ -1515,12 +1477,22 @@ async def list_conversations(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/conversations/{conversation_id}/messages", response_model=List[MessageOut])
+class ChatHistoryMessage(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    created_at: datetime
+    feedback: Optional[str] = None  # "up" / "down" if the user rated this reply
+    feedback_reasons: List[str] = Field(default_factory=list)
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[ChatHistoryMessage])
 async def get_conversation_messages(
     conversation_id: str,
     user_id: str,
     db: AsyncSession = Depends(get_db)
-) -> List[MessageOut]:
+) -> List["ChatHistoryMessage"]:
     """Get all messages for a specific conversation"""
     logger.info(f"📨 Fetching messages for conversation {conversation_id}")
     
@@ -1545,7 +1517,22 @@ async def get_conversation_messages(
         )
         
         logger.info(f"✅ Found {len(messages)} messages")
-        return messages
+        ratings = await feedback_service.reply_verdicts(
+            db, user_id_uuid, [m.id for m in messages if m.role == "assistant"]
+        )
+        # No embeddings: they are for recall, and would add ~1,000 numbers per message.
+        return [
+            ChatHistoryMessage(
+                id=str(m.id),
+                conversation_id=str(m.conversation_id),
+                role=m.role,
+                content=m.content,
+                created_at=m.created_at,
+                feedback=(ratings.get(str(m.id)) or {}).get("verdict"),
+                feedback_reasons=(ratings.get(str(m.id)) or {}).get("reasons") or [],
+            )
+            for m in messages
+        ]
     
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid UUID format")

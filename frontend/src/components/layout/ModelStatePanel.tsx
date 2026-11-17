@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { toast } from "@/components/ui/sonner";
+import { CountUp } from "@/components/motion/CountUp";
 
 import { apiFetch } from "@/lib/api";
 const API_BASE = "/api";
@@ -15,6 +16,33 @@ interface SystemState {
   messages?: number;
   confidence_range?: [number, number];
   learning_enabled?: boolean;
+  confidence_tier?: string;
+}
+
+/** How well Reflectra knows you, lowest first. Moving up a step is a small moment. */
+const TIERS = ["very_low", "partial", "moderate", "high"];
+const TIER_NEWS: Record<string, string> = {
+  partial: "Reflectra is starting to know you.",
+  moderate: "Reflectra knows you fairly well now.",
+  high: "Reflectra knows you well now.",
+};
+export const MILESTONE_EVENT = "reflectra:milestone";
+
+/** Celebrate once when the tier goes up (never on the first visit, never twice). */
+function noticeMilestone(userId: string, tier: string | undefined) {
+  if (!tier || !TIERS.includes(tier)) return;
+  const key = `reflectra-tier:${userId}`;
+  let before: string | null = null;
+  try {
+    before = localStorage.getItem(key);
+    localStorage.setItem(key, tier);
+  } catch {
+    return;
+  }
+  if (before && TIERS.indexOf(tier) > TIERS.indexOf(before) && TIER_NEWS[tier]) {
+    window.dispatchEvent(new CustomEvent(MILESTONE_EVENT, { detail: TIER_NEWS[tier] }));
+    toast.success(TIER_NEWS[tier]);
+  }
 }
 
 function formatTimeAgo(isoTimestamp: string | null): string {
@@ -59,6 +87,7 @@ export function ModelStatePanel() {
         const data: SystemState = await response.json();
         if (isMounted) {
           setSystemState(data);
+          noticeMilestone(userId, data.confidence_tier);
 
           const warningKey = `mirror-low-confidence-warning:${userId}`;
           const alreadyWarned = sessionStorage.getItem(warningKey) === "1";
@@ -93,15 +122,15 @@ export function ModelStatePanel() {
   
   const paused = systemState ? systemState.learning_enabled === false : false;
   const messages = systemState?.messages;
-  const rows: { label: string; value: string; hint: string }[] = [
+  const rows: { label: string; value: React.ReactNode; hint: string }[] = [
     {
       label: "Messages read",
-      value: loading ? "…" : messages != null ? messages.toLocaleString() : "–",
+      value: loading ? "…" : messages != null ? <CountUp value={messages} /> : "–",
       hint: "How many of your messages Reflectra has learned from.",
     },
     {
       label: "How sure it is",
-      value: loading ? "…" : systemState ? `${Math.round(systemState.confidence)}%` : "–",
+      value: loading ? "…" : systemState ? <CountUp value={Math.round(systemState.confidence)} suffix="%" /> : "–",
       hint: systemState?.confidence_range
         ? `Overall confidence, likely between ${systemState.confidence_range[0]} and ${systemState.confidence_range[1]}. It combines how settled your traits are, how much you've talked and over how many days, how much of your writing it has, and your reflections. "How it works" shows the breakdown.`
         : "Overall confidence that Reflectra knows you.",

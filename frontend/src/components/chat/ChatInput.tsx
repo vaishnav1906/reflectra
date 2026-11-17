@@ -3,6 +3,7 @@ import { Loader2, Mic, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { apiFetch } from "@/lib/api";
+import { EmojiPicker } from "@/components/chat/EmojiPicker";
 interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading?: boolean;
@@ -30,6 +31,34 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const silenceStartRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Where the next emoji goes. Kept while the picker has focus (its search box), so
+  // several emoji in a row land one after another.
+  const caretRef = useRef<number | null>(null);
+
+  /** Put an emoji where the cursor was (or at the end). The picker stays open. */
+  const insertEmoji = (emoji: string) => {
+    const box = textareaRef.current;
+    setMessage((current) => {
+      const start = Math.min(caretRef.current ?? box?.selectionStart ?? current.length, current.length);
+      const end = caretRef.current !== null ? start : Math.min(box?.selectionEnd ?? start, current.length);
+      caretRef.current = start + emoji.length;
+      return current.slice(0, start) + emoji + current.slice(end);
+    });
+  };
+
+  /** Back to typing: focus the box with the cursor after the last emoji. */
+  const resumeTyping = () => {
+    const box = textareaRef.current;
+    const caret = caretRef.current;
+    caretRef.current = null;
+    requestAnimationFrame(() => {
+      if (!box) return;
+      box.focus();
+      if (caret !== null) box.setSelectionRange(caret, caret);
+    });
+  };
 
   const clearTimers = () => {
     if (maxDurationTimeoutRef.current) {
@@ -294,12 +323,13 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
     <form onSubmit={handleSubmit} className="relative">
       <div className="chat-input-shell relative overflow-hidden rounded-[1.75rem] transition-all duration-300">
         <textarea
+          ref={textareaRef}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="What's on your mind?"
           rows={1}
           aria-label="Message"
-          className="w-full bg-transparent px-6 py-[1.05rem] pr-28 text-[15px] resize-none focus:outline-none placeholder:text-muted-foreground/45"
+          className="w-full bg-transparent px-6 py-[1.05rem] pr-36 text-[15px] resize-none focus:outline-none placeholder:text-muted-foreground/45"
           disabled={inputDisabled}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -309,7 +339,8 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
           }}
         />
         
-        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+          <EmojiPicker onPick={insertEmoji} onClose={resumeTyping} disabled={inputDisabled} />
           <button
             type="button"
             onClick={handleMicClick}
@@ -322,6 +353,7 @@ export function ChatInput({ onSend, isLoading }: ChatInputProps) {
               (isLoading || isTranscribing) && "opacity-50 cursor-not-allowed"
             )}
             title={isRecording ? "Stop recording" : "Record voice message"}
+            aria-label={isRecording ? "Stop recording" : "Record voice message"}
           >
             {isTranscribing ? (
               <Loader2 className="w-4 h-4 animate-spin" />
