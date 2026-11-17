@@ -79,11 +79,22 @@ function burstConfetti(canvas: HTMLCanvasElement | null) {
   requestAnimationFrame(step);
 }
 
+/** How many pages the PDF has (its page objects), or 0 if it can't be read. */
+async function countPages(blob: Blob): Promise<number> {
+  try {
+    const text = typeof blob.text === "function" ? await blob.text() : "";
+    return (text.match(/\/Type\s*\/Page(?![a-zA-Z])/g) || []).length;
+  } catch {
+    return 0;
+  }
+}
+
 function PrintOverlay({
   stage,
   step,
   steps,
   size,
+  pages,
   error,
   onClose,
   onRetry,
@@ -92,6 +103,8 @@ function PrintOverlay({
   step: number;
   steps: string[];
   size: number;
+  /** Pages in the file that was actually made (0 until it exists). */
+  pages: number;
   error: string | null;
   onClose: () => void;
   onRetry: () => void;
@@ -201,7 +214,7 @@ function PrintOverlay({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-foreground">{FILE_NAME}</p>
                 <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {PAGES} pages · {readableSize(size)} · saved to your downloads
+                  {pages || PAGES} pages · {readableSize(size)} · saved to your downloads
                 </p>
               </div>
               <button type="button" onClick={onClose} className="rounded-full p-1.5 text-muted-foreground hover:text-foreground" aria-label="Close">
@@ -224,6 +237,7 @@ export function usePortraitExport() {
   const [stage, setStage] = useState<Stage>("working");
   const [step, setStep] = useState(0);
   const [size, setSize] = useState(0);
+  const [pages, setPages] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const run = useRef(0);
 
@@ -232,7 +246,8 @@ export function usePortraitExport() {
     messages ? `Reading your ${messages.toLocaleString()} messages` : "Reading your conversations",
     "Developing your shape",
     "Pulling out patterns, in your own words",
-    `Binding ${PAGES} pages`,
+    "Adding your life and your people",
+    "Binding the pages",
   ];
 
   const close = useCallback(() => setOpen(false), []);
@@ -248,7 +263,7 @@ export function usePortraitExport() {
 
     // The steps tick along on their own; the last one waits for the real file.
     const ticker = window.setInterval(() => {
-      if (run.current === id) setStep((s) => Math.min(s + 1, 3));
+      if (run.current === id) setStep((s) => Math.min(s + 1, steps.length - 1));
     }, STEP_MS);
 
     try {
@@ -274,6 +289,7 @@ export function usePortraitExport() {
       window.setTimeout(() => URL.revokeObjectURL(url), 4000);
 
       setSize(blob.size);
+      setPages(await countPages(blob));
       setStage("done");
       window.setTimeout(() => run.current === id && setOpen(false), 4200);
     } catch (err) {
@@ -286,7 +302,7 @@ export function usePortraitExport() {
   }, [user?.id]);
 
   const overlay = open ? (
-    <PrintOverlay stage={stage} step={step} steps={steps} size={size} error={error} onClose={close} onRetry={() => void start()} />
+    <PrintOverlay stage={stage} step={step} steps={steps} size={size} pages={pages} error={error} onClose={close} onRetry={() => void start()} />
   ) : null;
 
   return { start, overlay, busy: open && stage === "working" };

@@ -208,7 +208,7 @@ export function ArchitecturePage() {
             <Panel title="You" hint={you.mirror.replies_measured ? `measured over ${you.mirror.replies_measured} Mirror replies` : undefined}>
               <Fact label="Model writing your replies" value={rules.ai.reply_model ?? "none configured"} />
               {rules.ai.fast_model ? <Fact label={`Backup if that takes over ${rules.ai.hedge_seconds}s`} value={rules.ai.fast_model} /> : null}
-              <Fact label="Samples of your writing Mirror can copy" value={`${you.voice_samples_available} of ${rules.mirror.voice_samples}`} />
+              <Fact label="Samples of your writing Mirror can copy" value={`${Math.min(you.voice_samples_available, rules.mirror.voice_samples)} per reply, from ${you.voice_samples_available}`} />
               <Fact label="Average Mirror reply time" value={you.mirror.avg_seconds != null ? `${you.mirror.avg_seconds}s` : "not measured yet"} />
               <Fact label="Mirror replies that needed the simpler fallback" value={you.mirror.fallback_rate != null ? `${Math.round(you.mirror.fallback_rate * 100)}%` : "–"} />
               <Fact label="Reflection replies you rated good" value={rated(you.feedback?.replies.reflection?.up, you.feedback?.replies.reflection?.down)} />

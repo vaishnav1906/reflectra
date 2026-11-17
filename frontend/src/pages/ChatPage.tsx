@@ -48,6 +48,7 @@ export function ChatPage() {
   const {
     activeConversationId,
     setActiveConversationId,
+    adoptNewConversation,
     loadingMessages,
     messages,
     setMessages,
@@ -208,7 +209,7 @@ export function ChatPage() {
 
       // Update conversation ID for new conversations
       if (!isIncognito && !activeConversationId && data.conversation_id) {
-        setActiveConversationId(data.conversation_id);
+        adoptNewConversation(data.conversation_id);
         setConversationTitle(data.title);
         setSearchParams({ 
           conversation_id: data.conversation_id,

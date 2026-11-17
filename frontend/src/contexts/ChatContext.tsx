@@ -33,6 +33,8 @@ export interface RememberedMoment {
 interface ChatContextType {
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
+  /** A conversation the chat just created: its messages are already on screen, so don't reload them. */
+  adoptNewConversation: (id: string) => void;
   loadingMessages: boolean;
   isIncognito: boolean;
   incognitoSessionId: string | null;
@@ -68,6 +70,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [isIncognito, setIsIncognito] = useState(false);
   const [incognitoSessionId, setIncognitoSessionId] = useState<string | null>(null);
   const latestMessageRequestId = useRef(0);
+  // Set when the chat itself just created this conversation. Reloading it from the server
+  // would replace the reply on screen (losing its "remembered"/People chips) or show it twice.
+  const createdHere = useRef<string | null>(null);
+  const adoptNewConversation = (id: string) => {
+    createdHere.current = id;
+    setActiveConversationId(id);
+  };
 
   // Get mode from URL, default to reflection
   const modeParam = searchParams.get("mode");
@@ -150,6 +159,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   // Uses cancellation to prevent stale responses from overwriting current state.
   useEffect(() => {
     if (!activeConversationId || isIncognito) {
+      setLoadingMessages(false);
+      return;
+    }
+    if (createdHere.current === activeConversationId) {
+      createdHere.current = null; // opening it again later loads it normally
       setLoadingMessages(false);
       return;
     }
@@ -242,6 +256,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const value: ChatContextType = {
     activeConversationId,
     setActiveConversationId,
+    adoptNewConversation,
     loadingMessages,
     conversationId: activeConversationId,
     setConversationId: setActiveConversationId,

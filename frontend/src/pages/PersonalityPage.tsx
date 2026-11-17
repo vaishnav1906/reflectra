@@ -51,9 +51,7 @@ export function PersonalityPage() {
           {/* The shape */}
           <Panel className="iris-border overflow-hidden">
             <div className="grid items-center gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="lg:sticky lg:top-6">
-                <TraitShape traits={data.traits} preview={preview} />
-              </div>
+              <TraitShape traits={data.traits} preview={preview} />
               <div>
                 <p className="eyebrow mb-4">How to read it</p>
                 <p className="text-[15px] leading-relaxed text-foreground/80">
@@ -77,9 +75,9 @@ export function PersonalityPage() {
             {data.traits.map((trait) => (
               <Panel key={trait.key}>
                 <TraitSpectrum trait={trait} />
-                {/* Below desktop width the big shape is off-screen while you drag: show a small one here. */}
+                {/* The big shape is off-screen while you drag down here, so a small live copy shows beside the slider. */}
                 {preview?.key === trait.key ? (
-                  <div className="mx-auto mt-4 max-w-[260px] fade-in lg:hidden">
+                  <div className="mx-auto mt-4 max-w-[260px] fade-in">
                     <TraitShape traits={data.traits} preview={preview} />
                   </div>
                 ) : null}

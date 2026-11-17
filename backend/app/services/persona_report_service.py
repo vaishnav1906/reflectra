@@ -7,10 +7,15 @@ Two halves, so the rendering can be tested without a database:
 What goes in, and where it comes from:
   - Trait readings + confidence ......... user_persona_metrics
   - How the traits moved ................ persona_snapshots (one point per day)
+  - Your own corrections ................ feedback (traits you confirmed or re-placed,
+                                           reflections you agreed with or rejected, reply ratings)
   - What keeps coming up ................ evidence-backed reflections (with the user's quotes)
+  - Your life ........................... life_facts (active, in their words) + open follow-ups
+  - People .............................. people (active cards: who they are to the user)
   - Rhythm (when, how often) ............ message timestamps
-  - Voice (how they write) .............. their own messages + linguistic fingerprint
-  - How Reflectra adapts ................ derived from the trait readings
+  - Voice (how they write) .............. their own messages + linguistic fingerprint + voice import
+  - How Reflectra adapts ................ derived from the trait readings and reply feedback
+  - Colours ............................. the user's colour theme, if they picked one
 
 ReportLab is pure Python, so export works on Windows, Linux and serverless without
 system libraries (the old WeasyPrint/matplotlib stack needed GTK and failed to import).
@@ -18,6 +23,7 @@ system libraries (the old WeasyPrint/matplotlib stack needed GTK and failed to i
 
 from __future__ import annotations
 
+import colorsys
 import io
 import math
 import re
@@ -122,6 +128,14 @@ class ReportData:
     hour_histogram: List[int] = field(default_factory=lambda: [0] * 24)
     weekday_histogram: List[int] = field(default_factory=lambda: [0] * 7)
     voice: Dict[str, object] = field(default_factory=dict)
+    # Added with People, Your life, corrections and colour themes.
+    trait_feedback: Dict[str, Dict[str, object]] = field(default_factory=dict)  # trait -> {verdict, self_score}
+    feedback: Dict[str, object] = field(default_factory=dict)  # feedback_service.summary()
+    life_facts: List[Dict[str, object]] = field(default_factory=list)  # active facts, most important first
+    loose_ends: List[Dict[str, object]] = field(default_factory=list)  # open follow-ups
+    people: List[Dict[str, object]] = field(default_factory=list)  # active People cards
+    voice_import: Optional[Dict[str, object]] = None  # {"samples", "format"} of an imported chat export
+    theme: Optional[Dict[str, int]] = None  # {"hue", "saturation"}; None = Reflectra's violet
 
 
 def side(score: float) -> str:
@@ -163,6 +177,33 @@ def adaptation_lines(traits: List[TraitReading], voice: Dict[str, object]) -> Li
     elif voice.get("emoji_share", 0) >= 0.25:
         lines.append("It uses the emojis you use, about as often as you do.")
     return lines or ["Nothing yet. It needs more conversation before it changes how it talks to you."]
+
+
+# What the user's thumbs-down reasons changed, worded for them.
+FEEDBACK_ADAPTATION = {
+    "too_long": "Keeps replies shorter, since you said some ran long.",
+    "missed_point": "Sticks to exactly what you said; you felt some replies missed the point.",
+    "wrong_about_me": "Assumes less about you and your situation; some replies got you wrong.",
+    "too_preachy": "Holds back advice unless you ask; you found some replies preachy.",
+    "unrelated": "Leaves old topics alone unless you bring them up.",
+    "not_my_voice": "In Mirror mode, copies your real messages more closely; some replies didn't sound like you.",
+}
+
+IMPORT_FORMAT = {"whatsapp": "WhatsApp", "telegram": "Telegram", "instagram": "Instagram", "plain": "pasted messages"}
+
+
+def feedback_adaptation(feedback: Dict[str, object]) -> List[str]:
+    """The reasons the user gave most often (at least twice, or once if that's all), as plain lines."""
+    reasons = [r for r in feedback.get("reasons", []) or [] if r.get("reason") in FEEDBACK_ADAPTATION]
+    return [FEEDBACK_ADAPTATION[r["reason"]] for r in reasons[:3]]
+
+
+def order_life_facts(facts: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Pinned first, then what comes up most, then the most recent."""
+    return sorted(
+        facts,
+        key=lambda f: (not f.get("pinned"), -int(f.get("mention_count") or 0), str(f.get("last_seen") or "")),
+    )
 
 
 def voice_profile(texts: List[str], fingerprint_abbreviations: Dict[str, int], phrases: List[str]) -> Dict[str, object]:
@@ -230,6 +271,10 @@ async def collect_report_data(db: AsyncSession, user_id: UUID, tz_offset_minutes
     abbreviations = dict(fingerprint.abbreviation_stats or {}) if fingerprint else {}
     phrases = list(fingerprint.characteristic_phrases or []) if fingerprint else []
 
+    extras = await _collect_extras(db, user_id, tz_offset_minutes)
+    # A reflection the user said was wrong doesn't belong in their portrait.
+    reflections = [r for r in reflections_state["reflections"] if r.get("feedback") != "disagree"]
+
     return ReportData(
         name=name,
         generated_at=datetime.now(timezone.utc) + offset,
@@ -244,12 +289,61 @@ async def collect_report_data(db: AsyncSession, user_id: UUID, tz_offset_minutes
         traits=traits,
         trait_series=timeline["trait_series"],
         milestones=timeline["milestones"],
-        reflections=reflections_state["reflections"],
+        reflections=reflections,
         reflections_read=reflections_state["status"]["messages_read"],
         hour_histogram=hours,
         weekday_histogram=weekdays,
         voice=voice_profile([content for content, _ in rows], abbreviations, phrases),
+        **extras,
     )
+
+
+async def _collect_extras(db: AsyncSession, user_id: UUID, tz_offset_minutes: int) -> Dict[str, object]:
+    """People, Your life, corrections, voice import and colour. Each part is optional:
+    if one can't be read, the report is still made without it."""
+    from app.db.models import UserSettings
+    from app.services import feedback_service, followup_service, life_memory_service, people_service, voice_import_service
+    from app.services.notification_prefs import clean_theme
+
+    out: Dict[str, object] = {}
+
+    async def attempt(key: str, load) -> None:
+        try:
+            out[key] = await load()
+        except Exception:
+            await db.rollback()
+
+    async def life():
+        facts = await life_memory_service.facts_for(db, user_id, statuses=(life_memory_service.ACTIVE,))
+        return order_life_facts([life_memory_service.serialize(f) for f in facts])
+
+    async def loose_ends():
+        today = followup_service.local_today(tz_offset_minutes)
+        rows = await followup_service._open_rows(db, user_id)  # read-only: nothing is expired or closed here
+        return [followup_service.serialize(row, today) for row in rows][:8]
+
+    async def people():
+        cards = await people_service.all_people(db, user_id)
+        return sorted(
+            (people_service.serialize(p) for p in cards),
+            key=lambda p: (-int(p.get("mention_count") or 0), str(p.get("name") or "").lower()),
+        )
+
+    async def theme():
+        settings = (await db.execute(select(UserSettings).where(UserSettings.user_id == user_id))).scalar_one_or_none()
+        try:
+            return clean_theme(settings.theme) if settings and settings.theme else None
+        except Exception:
+            return None
+
+    await attempt("trait_feedback", lambda: feedback_service.trait_verdicts(db, user_id))
+    await attempt("feedback", lambda: feedback_service.summary(db, user_id))
+    await attempt("life_facts", life)
+    await attempt("loose_ends", loose_ends)
+    await attempt("people", people)
+    await attempt("voice_import", lambda: voice_import_service.current_import(db, user_id))
+    await attempt("theme", theme)
+    return out
 
 
 async def build_persona_report_pdf(db: AsyncSession, user_id: UUID, tz_offset_minutes: int = 0) -> bytes:
@@ -308,11 +402,67 @@ def _mix(a: Color, b: Color, t: float) -> Color:
     return Color(a.red + (b.red - a.red) * t, a.green + (b.green - a.green) * t, a.blue + (b.blue - a.blue) * t)
 
 
-def _iris(t: float) -> Color:
-    stops = [HexColor("#C4BAFF"), HexColor("#96E8F5"), HexColor("#FFCDB0"), HexColor("#C4BAFF")]
+def _iris(t: float, stops: Optional[List[Color]] = None) -> Color:
+    stops = stops or DEFAULT_PALETTE.iris
     x = (t % 1) * 3
     i = min(int(x), 2)
     return _mix(stops[i], stops[i + 1], x - i)
+
+
+def _hsl(h: float, s: float, l: float) -> Color:
+    r, g, b = colorsys.hls_to_rgb((h % 360) / 360, max(0.0, min(1.0, l)), max(0.0, min(1.0, s)))
+    return Color(r, g, b)
+
+
+def _luminance(color: Color) -> float:
+    def channel(v: float) -> float:
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(color.red) + 0.7152 * channel(color.green) + 0.0722 * channel(color.blue)
+
+
+DEFAULT_THEME_HUE = 252  # the app's default violet (see frontend lib/theme.ts)
+DEFAULT_THEME_SATURATION = 92
+
+
+@dataclass
+class Palette:
+    violet: Color  # headings' italic words, eyebrows, numbering: the main colour
+    cyan: Color  # bullets: the second colour
+    peach: Color  # quote rules, weekday bars: the accent
+    iris: List[Color]  # the cover mirror's rim
+    name: Color  # the person's name on the cover
+
+
+DEFAULT_PALETTE = Palette(
+    violet=VIOLET,
+    cyan=CYAN,
+    peach=PEACH,
+    iris=[HexColor("#C4BAFF"), HexColor("#96E8F5"), HexColor("#FFCDB0"), HexColor("#C4BAFF")],
+    name=HexColor("#C4BAFF"),
+)
+
+
+def palette_for(theme: Optional[Dict[str, int]]) -> Palette:
+    """The report's colours in the user's theme: the same hue relationships as the app
+    (second colour 64 degrees below the main one, accent 130 above), darkened where needed
+    so text stays readable on paper."""
+    if not theme:
+        return DEFAULT_PALETTE
+    hue = int(theme.get("hue", DEFAULT_THEME_HUE))
+    sat = max(0.3, min(1.0, int(theme.get("saturation", DEFAULT_THEME_SATURATION)) / DEFAULT_THEME_SATURATION))
+    if hue == DEFAULT_THEME_HUE and sat == 1.0:
+        return DEFAULT_PALETTE
+    shift = hue - DEFAULT_THEME_HUE
+    violet = _hsl(247 + shift, 0.84 * sat, 0.68)
+    lightness = 0.68
+    while _luminance(violet) > 0.24 and lightness > 0.3:  # yellows and greens print too pale
+        lightness -= 0.03
+        violet = _hsl(247 + shift, 0.84 * sat, lightness)
+    cyan = _hsl(188 + shift, 0.72 * sat, 0.43)
+    peach = _hsl(19 + shift, 0.81 * sat, 0.66)
+    iris = [_hsl(248 + shift, sat, 0.86), _hsl(188 + shift, 0.82 * sat, 0.77), _hsl(22 + shift, sat, 0.85)]
+    return Palette(violet=violet, cyan=cyan, peach=peach, iris=[*iris, iris[0]], name=iris[0])
 
 
 def _fmt_date(iso: Optional[str]) -> str:
@@ -334,6 +484,7 @@ class _Doc:
         self.c.setTitle(pdf_safe(f"Reflectra: a portrait of {data.name}"))
         self.c.setAuthor("Reflectra")
         self.data = data
+        self.colors = palette_for(data.theme)
         self.page = 0
         self.y = PAGE_H - MARGIN
 
@@ -369,7 +520,7 @@ class _Doc:
 
     def eyebrow(self, text: str) -> None:
         self.c.setFont(MONO, 7.5)
-        self.c.setFillColor(VIOLET)
+        self.c.setFillColor(self.colors.violet)
         self.c.drawString(MARGIN, self.y - 7.5, pdf_safe(text).upper())
         self.y -= 18
 
@@ -380,7 +531,7 @@ class _Doc:
         if italic:
             x = MARGIN + self.c.stringWidth(pdf_safe(plain) + " ", SERIF, size)
             self.c.setFont(SERIF_I, size)
-            self.c.setFillColor(VIOLET)
+            self.c.setFillColor(self.colors.violet)
             self.c.drawString(x, self.y - size, pdf_safe(italic))
         self.y -= size * 1.5
 
@@ -408,7 +559,7 @@ def _cover(doc: _Doc) -> None:
     segments = 240
     for i in range(segments):
         a0, a1 = 2 * math.pi * i / segments, 2 * math.pi * (i + 1.4) / segments
-        c.setStrokeColor(_iris(i / segments + 0.1))
+        c.setStrokeColor(_iris(i / segments + 0.1, doc.colors.iris))
         c.line(cx + rx * math.cos(a0), cy + ry * math.sin(a0), cx + rx * math.cos(a1), cy + ry * math.sin(a1))
 
     c.setFillColor(HexColor("#F3F1FA"))
@@ -422,7 +573,7 @@ def _cover(doc: _Doc) -> None:
     c.setFont(SERIF, 30)
     c.drawCentredString(cx, 262, "A portrait of")
     c.setFont(SERIF_I, 40)
-    c.setFillColor(HexColor("#C4BAFF"))
+    c.setFillColor(doc.colors.name)
     c.drawCentredString(cx, 218, pdf_safe(d.name))
 
     c.setFont(SANS, 10.5)
@@ -493,8 +644,14 @@ def _trait_bar(doc: _Doc, trait: TraitReading) -> None:
 
     doc.y = track_y - 26
     doc.text(meta[f"read_{side(trait.score)}"], SANS, 10, INK)
+    verdict = doc.data.trait_feedback.get(trait.key) or {}
+    yours = ""
+    if verdict.get("verdict") == "agree":
+        yours = " You said this reads you right."
+    elif verdict.get("verdict") == "disagree" and verdict.get("self_score") is not None:
+        yours = f" You put yourself at {round(float(verdict['self_score']) * 100)}, and that's part of this score."
     doc.text(
-        f"{round(trait.confidence * 100)}% sure ({confidence_label(trait.confidence)}), from {trait.evidence_count} signals in your messages.",
+        f"{round(trait.confidence * 100)}% sure ({confidence_label(trait.confidence)}), from {trait.evidence_count} signals in your messages.{yours}",
         SANS, 8.5, SOFT, gap=14,
     )
 
@@ -551,14 +708,16 @@ def _reflections(doc: _Doc) -> None:
         doc.ensure(min(needed, 420), section)
 
         doc.c.setFont(SERIF, 30)
-        doc.c.setFillColor(Color(VIOLET.red, VIOLET.green, VIOLET.blue, alpha=0.35))
+        violet = doc.colors.violet
+        doc.c.setFillColor(Color(violet.red, violet.green, violet.blue, alpha=0.35))
         doc.c.drawString(MARGIN, doc.y - 26, f"{index:02d}")
         top = doc.y
         doc.text(reflection.get("title", ""), SERIF, 17, INK, x=MARGIN + 44, width=CONTENT_W - 44, leading=20)
         doc.c.setFont(MONO, 7)
         doc.c.setFillColor(FAINT)
         confidence = reflection.get("confidence") or 0
-        doc.c.drawString(MARGIN + 44, doc.y - 8, pdf_safe(f"{reflection.get('theme', 'other')}  /  seen {len(reflection.get('evidence', []))} times  /  {round(confidence * 100)}% sure").upper())
+        agreed = "  /  you said: spot on" if reflection.get("feedback") == "agree" else ""
+        doc.c.drawString(MARGIN + 44, doc.y - 8, pdf_safe(f"{reflection.get('theme', 'other')}  /  seen {len(reflection.get('evidence', []))} times  /  {round(confidence * 100)}% sure{agreed}").upper())
         doc.y = min(doc.y - 20, top - 44)
         doc.text(reflection.get("insight", ""), SANS, 10, INK, x=MARGIN + 44, width=CONTENT_W - 44, gap=6)
         for quote in quotes:
@@ -567,13 +726,137 @@ def _reflections(doc: _Doc) -> None:
             doc.c.setFont(MONO, 6.5)
             doc.c.setFillColor(FAINT)
             doc.c.drawString(MARGIN + 58, doc.y - 8, pdf_safe(_fmt_date(quote.get("date"))).upper())
-            doc.c.setStrokeColor(PEACH)
+            doc.c.setStrokeColor(doc.colors.peach)
             doc.c.setLineWidth(1.4)
             doc.c.line(MARGIN + 48, start - 2, MARGIN + 48, doc.y - 9)
             doc.y -= 16
         doc.y -= 8
         if index < len(d.reflections):
             doc.rule(16)
+
+
+LIFE_KIND_ORDER = ["about", "situation", "goal", "routine", "preference", "place"]
+LIFE_KIND_LABEL = {
+    "about": "About you",
+    "situation": "Going on now",
+    "goal": "Working toward",
+    "preference": "Likes and dislikes",
+    "routine": "Routines",
+    "place": "Places",
+}
+MAX_LIFE_FACTS = 24
+MAX_PEOPLE = 12
+
+
+def _sentence(text: str) -> str:
+    text = str(text or "").strip()
+    return text[:1].upper() + text[1:]
+
+
+def _bullet(doc: _Doc, color: Color, text: str, note: str = "", size: float = 10.5) -> None:
+    doc.c.setFillColor(color)
+    doc.c.circle(MARGIN + 3, doc.y - size * 0.62, 2.2, stroke=0, fill=1)
+    doc.text(text, SANS, size, INK, x=MARGIN + 16, width=CONTENT_W - 16, gap=1)
+    if note:
+        doc.text(note, SERIF_I, 9.5, SOFT, x=MARGIN + 16, width=CONTENT_W - 16, leading=12.5)
+    doc.y -= 6
+
+
+def _life(doc: _Doc) -> None:
+    d = doc.data
+    section = "Your life"
+    doc.new_page(section)
+    doc.eyebrow("03 / Your life")
+    doc.heading("What Reflectra", "knows about you")
+    facts = [f for f in d.life_facts if printable(str(f.get("text", "")))][:MAX_LIFE_FACTS]
+    if not facts:
+        doc.text(
+            "Nothing saved yet. As you talk, Reflectra keeps the lasting things you mention (what you do, what's going "
+            "on, what you're working toward). You can also add them yourself, or have it read your past chats, on the "
+            "Your life page in the app.",
+            SANS, 10.5, SOFT, gap=10,
+        )
+    else:
+        doc.text(
+            "The lasting things you've told it, each kept in your own words. Its replies see the most relevant few; "
+            "pinned ones always.",
+            SANS, 10, SOFT, gap=12,
+        )
+        for kind in LIFE_KIND_ORDER:
+            group = [f for f in facts if f.get("kind") == kind]
+            if not group:
+                continue
+            doc.ensure(50, section)
+            doc.c.setFont(MONO, 7.5)
+            doc.c.setFillColor(FAINT)
+            doc.c.drawString(MARGIN, doc.y - 7.5, LIFE_KIND_LABEL[kind].upper())
+            doc.y -= 18
+            for fact in group:
+                quote = str(fact.get("quote") or "")
+                note = f'"{quote}"' if quote and printable(quote) and quote.strip().lower() != str(fact.get("text", "")).strip().lower() else ""
+                doc.ensure(34 if note else 22, section)
+                pin = "Pinned: " if fact.get("pinned") else ""
+                _bullet(doc, doc.colors.violet, pin + _sentence(fact["text"]), note, size=10.5)
+            doc.y -= 4
+
+    ends = [e for e in d.loose_ends if printable(str(e.get("what", "")))]
+    if ends:
+        doc.ensure(70, section)
+        doc.y -= 6
+        doc.rule(16)
+        doc.eyebrow("Loose ends")
+        doc.text("Things you said you'd do that are still open. Reflectra asks about them when the time comes.", SANS, 10, SOFT, gap=10)
+        for end in ends:
+            doc.ensure(24, section)
+            due = _fmt_date(str(end.get("due") or ""))
+            _bullet(doc, doc.colors.peach, _sentence(end["what"]) + (f"  (by {due})" if due else ""), size=10)
+
+
+def _people(doc: _Doc) -> None:
+    d = doc.data
+    section = "People"
+    cards = [p for p in d.people if printable(str(p.get("name", "")))][:MAX_PEOPLE]
+    doc.ensure(160, section)
+    doc.y -= 8
+    doc.rule(18)
+    doc.eyebrow("04 / People")
+    doc.heading("The people in", "your story", size=24)
+    if not cards:
+        doc.text(
+            "No one added yet. When you add the people you talk about (or say yes when Reflectra notices someone "
+            "keeps coming up), it knows who they are to you whenever their name appears in a chat.",
+            SANS, 10.5, SOFT,
+        )
+        return
+    doc.text("When one of them comes up in a chat, Reflectra already knows who they are to you.", SANS, 10, SOFT, gap=12)
+    for person in cards:
+        description = str(person.get("description") or "").strip()
+        if not description:
+            notes = person.get("notes") or []
+            latest = notes[0] if notes else {}
+            description = str(latest.get("text") or "").strip()
+        lines = len(simpleSplit(pdf_safe(description), SANS, 9.5, CONTENT_W - 16)) if description else 0
+        doc.ensure(40 + lines * 13, section)
+        top = doc.y
+        doc.c.setFont(SERIF, 15)
+        doc.c.setFillColor(INK)
+        doc.c.drawString(MARGIN, top - 15, pdf_safe(str(person["name"])))
+        name_w = doc.c.stringWidth(pdf_safe(str(person["name"])), SERIF, 15)
+        relationship = str(person.get("relationship") or "").strip()
+        if relationship:
+            doc.c.setFont(SERIF_I, 12)
+            doc.c.setFillColor(doc.colors.violet)
+            doc.c.drawString(MARGIN + name_w + 8, top - 15, pdf_safe(relationship))
+        mentions = int(person.get("mention_count") or 0)
+        last = str(person.get("last_mentioned_at") or "")[:10]
+        meta = (f"came up {mentions}x" if mentions else "not mentioned yet") + (f"  /  last {_fmt_date(last)}" if last else "")
+        doc.c.setFont(MONO, 6.5)
+        doc.c.setFillColor(FAINT)
+        doc.c.drawRightString(PAGE_W - MARGIN, top - 13, pdf_safe(meta).upper())
+        doc.y = top - 24
+        if description and printable(description):
+            doc.text(description, SANS, 9.5, SOFT, width=CONTENT_W - 16, leading=13)
+        doc.y -= 10
 
 
 def _trajectory_chart(doc: _Doc, height: float = 150) -> None:
@@ -645,7 +928,7 @@ def _change_and_rhythm(doc: _Doc) -> None:
     d = doc.data
     section = "Over time"
     doc.new_page(section)
-    doc.eyebrow("03 / Over time")
+    doc.eyebrow("05 / Over time")
     doc.heading("How you've", "moved")
     if len(d.trait_series) >= 2:
         doc.text("Your four readings, one point for each day you talked (gaps between days are not shown). Early swings are normal: the first few messages count for a lot until a pattern forms.", SANS, 10, SOFT, gap=14)
@@ -658,7 +941,7 @@ def _change_and_rhythm(doc: _Doc) -> None:
         doc.ensure(30 + 18 * len(notable), section)
         for milestone in reversed(notable):
             doc.c.setFont(MONO, 7)
-            doc.c.setFillColor(VIOLET)
+            doc.c.setFillColor(doc.colors.violet)
             doc.c.drawString(MARGIN, doc.y - 8, pdf_safe(_fmt_date(str(milestone["date"]))).upper())
             doc.text(str(milestone["text"]), SANS, 9.5, INK, x=MARGIN + 86, width=CONTENT_W - 86, gap=4)
 
@@ -682,8 +965,8 @@ def _change_and_rhythm(doc: _Doc) -> None:
         SANS, 10, INK, gap=14,
     )
     half = (CONTENT_W - 30) * 0.68
-    _bars(doc, d.hour_histogram, {0: "12A", 6: "6A", 12: "12P", 18: "6P", 23: "11P"}, MARGIN, half, 70, VIOLET)
-    _bars(doc, d.weekday_histogram, {i: day[0] for i, day in enumerate(days)}, MARGIN + half + 30, CONTENT_W - half - 30, 70, PEACH)
+    _bars(doc, d.hour_histogram, {0: "12A", 6: "6A", 12: "12P", 18: "6P", 23: "11P"}, MARGIN, half, 70, doc.colors.violet)
+    _bars(doc, d.weekday_histogram, {i: day[0] for i, day in enumerate(days)}, MARGIN + half + 30, CONTENT_W - half - 30, 70, doc.colors.peach)
     doc.y -= 96
 
 
@@ -691,13 +974,18 @@ def _voice_and_adaptation(doc: _Doc) -> None:
     d = doc.data
     section = "Your voice"
     doc.new_page(section)
-    doc.eyebrow("04 / Your voice")
+    doc.eyebrow("06 / Your voice")
     doc.heading("How you", "write")
     voice = d.voice
     if voice.get("messages", 0) < 5:
         doc.text("Not enough messages yet to describe how you write.", SANS, 10, SOFT, gap=20)
     else:
-        doc.text(f"Measured across your {voice['messages']} most recent messages. This is what Mirror mode copies.", SANS, 10, SOFT, gap=16)
+        imported = d.voice_import or {}
+        extra = ""
+        if imported.get("samples"):
+            source = IMPORT_FORMAT.get(str(imported.get("format") or ""), "an imported chat")
+            extra = f" Mirror also learns from {imported['samples']} of your messages imported from {source}."
+        doc.text(f"Measured across your {voice['messages']} most recent messages. This is what Mirror mode copies.{extra}", SANS, 10, SOFT, gap=16)
         stats = [
             (str(voice["median_words"]), "words in a typical message"),
             (f"{round(voice['lowercase_share'] * 100)}%", "typed with no capitals"),
@@ -726,13 +1014,30 @@ def _voice_and_adaptation(doc: _Doc) -> None:
     doc.rule(18)
     doc.eyebrow("Because of all this")
     doc.heading("How Reflectra", "talks to you", size=22)
-    for line in adaptation_lines(d.traits, voice):
+    for line in adaptation_lines(d.traits, voice) + feedback_adaptation(d.feedback):
         doc.ensure(24, section)
-        doc.c.setFillColor(CYAN)
+        doc.c.setFillColor(doc.colors.cyan)
         doc.c.circle(MARGIN + 3, doc.y - 6.5, 2.2, stroke=0, fill=1)
         doc.text(line, SANS, 10.5, INK, x=MARGIN + 16, width=CONTENT_W - 16, gap=5)
 
-    doc.ensure(110, section)
+    replies = d.feedback.get("replies") or {}
+    up = sum(int(m.get("up", 0)) for m in replies.values())
+    down = sum(int(m.get("down", 0)) for m in replies.values())
+    traits_fb = d.feedback.get("traits") or {}
+    reflections_fb = d.feedback.get("reflections") or {}
+    told = []
+    if up or down:
+        told.append(f"rated {up + down} {'reply' if up + down == 1 else 'replies'} ({up} good, {down} not)")
+    if traits_fb.get("agree") or traits_fb.get("disagree"):
+        told.append(f"confirmed {traits_fb.get('agree', 0)} and corrected {traits_fb.get('disagree', 0)} trait readings")
+    if reflections_fb.get("agree") or reflections_fb.get("disagree"):
+        told.append(f"agreed with {reflections_fb.get('agree', 0)} and rejected {reflections_fb.get('disagree', 0)} reflections")
+    if told:
+        doc.ensure(40, section)
+        doc.y -= 4
+        doc.text("You've also " + "; ".join(told) + ". All of that feeds back into how it reads you and talks to you.", SANS, 9.5, SOFT)
+
+    doc.ensure(120, section)
     doc.y -= 12
     doc.rule(16)
     doc.eyebrow("How to read this report")
@@ -740,7 +1045,9 @@ def _voice_and_adaptation(doc: _Doc) -> None:
         "Everything here is computed from conversations stored in your account. Trait scores are a running "
         "average that each message nudges by at most a fifth of the way, so one bad day cannot rewrite you. "
         "Reflections are written by an AI model, then checked: any pattern whose quotes are not found word for "
-        "word in your messages is thrown out. Incognito conversations are never stored and are not part of this. "
+        "word in your messages is thrown out. Where you corrected a trait or rejected a reflection, your view wins. "
+        "Your life and People are what you told Reflectra or what it picked up and kept, and you can edit or delete "
+        "any of it in the app. Incognito conversations are never stored and are not part of this. "
         "This is a mirror, not a diagnosis.",
         SANS, 8.8, SOFT,
     )
@@ -751,9 +1058,20 @@ def render_report(data: ReportData) -> bytes:
     _cover(doc)
     _glance(doc)
     _reflections(doc)
+    _life(doc)
+    _people(doc)
     _change_and_rhythm(doc)
     _voice_and_adaptation(doc)
     return doc.finish()
 
 
-__all__ = ["ReportData", "TraitReading", "build_persona_report_pdf", "collect_report_data", "render_report"]
+__all__ = [
+    "ReportData",
+    "TraitReading",
+    "build_persona_report_pdf",
+    "collect_report_data",
+    "feedback_adaptation",
+    "order_life_facts",
+    "palette_for",
+    "render_report",
+]
