@@ -18,6 +18,10 @@ https://<name>.vercel.app/api/*  ->  backend service (backend/, FastAPI, /api st
 https://<name>.vercel.app/*      ->  frontend service (frontend/, static Vite build)
 ```
 
+The backend runs in Vercel's Singapore region (`"regions": ["sin1"]` in `vercel.json`), next to
+the Supabase database (ap-southeast-1). Every database query is a round trip, so keep these two in the
+same part of the world; if your database lives elsewhere, change the region to match.
+
 Serverless functions can't keep a worker running between requests, so the learning that
 normally happens in the background runs two ways instead:
 
