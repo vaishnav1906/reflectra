@@ -39,8 +39,10 @@ const vapid = existsSync(vapidFile) ? JSON.parse(readFileSync(vapidFile, "utf8")
 const VARS = [
   ["DATABASE_URL", backend.DATABASE_URL, true],
   ["SUPABASE_URL", backend.SUPABASE_URL, true],
-  ["SUPABASE_JWT_SECRET", backend.SUPABASE_JWT_SECRET, true],
-  ["SUPABASE_SERVICE_ROLE_KEY", backend.SUPABASE_SERVICE_ROLE_KEY, true],
+  // Only for Supabase projects still on the legacy HS256 JWT secret; newer ones are checked via JWKS.
+  ["SUPABASE_JWT_SECRET", backend.SUPABASE_JWT_SECRET, false],
+  // Optional: lets "Delete account" also remove the Supabase sign-in record.
+  ["SUPABASE_SERVICE_ROLE_KEY", backend.SUPABASE_SERVICE_ROLE_KEY, false],
   ["AUTH_REQUIRE_VERIFIED_EMAIL", backend.AUTH_REQUIRE_VERIFIED_EMAIL, false],
   ["GEMINI_API_KEY", backend.GEMINI_API_KEY || process.env.GEMINI_API_KEY, true],
   ["MISTRAL_API_KEY", backend.MISTRAL_API_KEY, false],
@@ -57,7 +59,8 @@ function run(cmd, cmdArgs, input) {
   return spawnSync(cmd, cmdArgs, { cwd: ROOT, input, encoding: "utf8", shell, stdio: [input === undefined ? "inherit" : "pipe", "pipe", "pipe"] });
 }
 
-if (!existsSync(join(ROOT, ".vercel", "project.json"))) {
+// `vercel link` writes project.json, or repo.json when it links the whole repository.
+if (!["project.json", "repo.json"].some((file) => existsSync(join(ROOT, ".vercel", file)))) {
   console.error("This folder isn't linked to a Vercel project yet. Run `vercel login` and `vercel link` here first.");
   process.exit(1);
 }
