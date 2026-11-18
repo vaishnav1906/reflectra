@@ -32,7 +32,11 @@ const scroll = (page, expression) =>
 const find = (selector, text) =>
   `[...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : "true"} && e.getBoundingClientRect().width > 0)`;
 
-// Each slide: page, how to get it into the right state, and what to point at.
+/** A page panel, found by its title. */
+const panel = (title) => `[...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent.includes(${JSON.stringify(title)}))`;
+
+// Each slide: page, how to get it into the right state, and what to point at. A slide
+// with `callouts` points at several things in turn; each gets its own position.
 const SLIDES = [
   {
     key: "navigate",
@@ -78,10 +82,43 @@ const SLIDES = [
     target: find(".trait-shape"),
   },
   {
+    key: "moved",
+    url: "/app/personality",
+    wait: 4000,
+    scrollTo: panel("How you've moved"),
+    callouts: {
+      lines: `${panel("How you've moved")}?.querySelector("svg")`,
+      legend: `${panel("How you've moved")}?.querySelector("svg")?.nextElementSibling`,
+    },
+  },
+  {
+    key: "rhythm",
+    url: "/app/personality",
+    wait: 4000,
+    scrollTo: panel("When you talk"),
+    callouts: {
+      clock: `${panel("When you talk")}?.querySelector("svg[role='img']")`,
+      bars: `${panel("When you talk")}?.querySelector("div[role='img']")`,
+    },
+  },
+  {
     key: "correct",
     url: "/app/personality",
     wait: 3000,
     target: find("button", "Not quite"),
+  },
+  {
+    key: "orbit",
+    url: "/app/people",
+    wait: 3500,
+    scrollTo: `document.querySelector(".people-orbit")`,
+    callouts: {
+      you: `document.querySelector(".people-you")`,
+      inner: `document.querySelector("[role='button'][aria-label^='Ananya']")`,
+      outer: `document.querySelector("[role='button'][aria-label^='Meera']")`,
+      legend: `document.querySelector(".people-orbit")?.nextElementSibling`,
+      open: `document.querySelector("[role='button'][aria-label^='Kabir']")`,
+    },
   },
   {
     key: "people",
@@ -134,24 +171,37 @@ for (const [device, viewport] of Object.entries(DEVICES)) {
         if (slide.prepare) await slide.prepare(page);
         lastUrl = slide.url;
       }
-      const target = typeof slide.target === "string" ? slide.target : slide.target[device];
+      const target = slide.callouts ? slide.scrollTo : typeof slide.target === "string" ? slide.target : slide.target[device];
       await scroll(page, target);
-      await sleep(500);
+      await sleep(slide.callouts ? 1500 : 500); // let charts finish drawing
       if (slide.hover && device === "desktop") {
         const { x, y } = await page.box(slide.hover);
         await page.moveTo(x, y, 0);
         await sleep(300);
       }
       await page.eval("document.activeElement?.blur?.()").catch(() => undefined);
-      const rect = await page.eval(`(() => {
-        const el = ${target};
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { x: r.left / innerWidth, y: r.top / innerHeight, w: r.width / innerWidth, h: r.height / innerHeight };
-      })()`);
-      if (!rect) throw new Error(`${device}/${slide.key}: target not found on ${lastUrl}`);
+      const measure = (expression) =>
+        page.eval(`(() => {
+          const el = ${expression};
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.left / innerWidth, y: r.top / innerHeight, w: r.width / innerWidth, h: r.height / innerHeight };
+        })()`);
       const round = (v) => Math.round(v * 10000) / 100; // percent, 2 decimals
-      manifest[device][slide.key] = { x: round(rect.x), y: round(rect.y), w: round(rect.w), h: round(rect.h) };
+      const asPercent = (r) => ({ x: round(r.x), y: round(r.y), w: round(r.w), h: round(r.h) });
+      if (slide.callouts) {
+        manifest[device][slide.key] = {};
+        for (const [id, expression] of Object.entries(slide.callouts)) {
+          const rect = await measure(expression);
+          if (!rect) throw new Error(`${device}/${slide.key}/${id}: not found on ${lastUrl}`);
+          if (rect.y < 0 || rect.y + rect.h > 1.01) throw new Error(`${device}/${slide.key}/${id}: off screen ${JSON.stringify(rect)}`);
+          manifest[device][slide.key][id] = asPercent(rect);
+        }
+      } else {
+        const rect = await measure(target);
+        if (!rect) throw new Error(`${device}/${slide.key}: target not found on ${lastUrl}`);
+        manifest[device][slide.key] = asPercent(rect);
+      }
 
       const png = join(out, `${slide.key}.png`);
       writeFileSync(png, await page.screenshot());

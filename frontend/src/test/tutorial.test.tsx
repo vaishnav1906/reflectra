@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Tutorial } from "@/components/tutorial/Tutorial";
-import { SLIDES, targetFor } from "@/components/tutorial/slides";
+import { SLIDES, calloutTarget, targetFor } from "@/components/tutorial/slides";
 import { isNewAccount, markTutorialDone, shouldAutoStartTutorial, tutorialDone } from "@/lib/tutorial";
 
 const DAY = 86_400_000;
@@ -52,15 +52,32 @@ describe("the tutorial", () => {
     expect(screen.getByRole("heading", { name: SLIDES[1].title })).toBeInTheDocument();
   });
 
-  it("every screen slide has a spot to point at, on a PC and on a phone", () => {
+  it("every screen slide has a spot to point at (every part, on multi-part slides), on a PC and on a phone", () => {
     for (const slide of SLIDES.filter((s) => s.kind === "screen")) {
       for (const device of ["desktop", "mobile"] as const) {
-        const target = targetFor(slide.key, device);
-        expect(target, `${device}/${slide.key}`).not.toBeNull();
-        expect(target!.x + target!.w).toBeLessThanOrEqual(100.5);
-        expect(target!.y + target!.h).toBeLessThanOrEqual(100.5);
+        const spots = slide.callouts ? slide.callouts.map((c) => calloutTarget(slide.key, c.id, device)) : [targetFor(slide.key, device)];
+        for (const target of spots) {
+          expect(target, `${device}/${slide.key}`).not.toBeNull();
+          expect(target!.x + target!.w).toBeLessThanOrEqual(100.5);
+          expect(target!.y + target!.h).toBeLessThanOrEqual(100.5);
+        }
       }
     }
+  });
+
+  it("explains the People orbit and the Persona graphs part by part", () => {
+    render(<Tutorial onClose={vi.fn()} />);
+    const dialog = screen.getByRole("dialog");
+    const orbit = SLIDES.findIndex((s) => s.key === "orbit");
+    for (let i = 0; i < orbit; i++) fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(screen.getByRole("heading", { name: /your people, in orbit/i })).toBeInTheDocument();
+    expect(screen.getByText(/in the middle/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Part 2" }));
+    expect(screen.getByText(/inner ring/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Part 3" }));
+    expect(screen.getByText(/outer ring/i)).toBeInTheDocument();
+    expect(SLIDES.some((s) => s.key === "moved")).toBe(true);
+    expect(SLIDES.some((s) => s.key === "rhythm")).toBe(true);
   });
 });
 

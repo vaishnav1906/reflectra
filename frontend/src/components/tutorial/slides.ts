@@ -9,6 +9,9 @@ import targets from "./targets.json";
 export type Device = "desktop" | "mobile";
 export type Target = { x: number; y: number; w: number; h: number }; // percent of the screen
 
+/** One stop on a slide that explains several parts of a screen in turn. */
+export type Callout = { id: string; label: string; gesture: "tap" | "look" };
+
 export type Slide = {
   key: string;
   title: string;
@@ -18,6 +21,8 @@ export type Slide = {
   kind: "intro" | "screen" | "end";
   /** What the pointer does on this slide. */
   gesture?: "tap" | "look";
+  /** Several parts of the screen, explained one after another. */
+  callouts?: Callout[];
 };
 
 export const SLIDES: Slide[] = [
@@ -73,6 +78,26 @@ export const SLIDES: Slide[] = [
     text: "Persona shows how you think, learned from how you write. The faint halo is doubt; it shrinks the more you talk.",
   },
   {
+    key: "moved",
+    kind: "screen",
+    title: "How you've changed",
+    text: "Persona also keeps a record of you over time.",
+    callouts: [
+      { id: "lines", gesture: "look", label: "Each line is one trait, with a point for every day you talked, so you can watch yourself change." },
+      { id: "legend", gesture: "tap", label: "Tap or hover any day to read that day's numbers for each trait." },
+    ],
+  },
+  {
+    key: "rhythm",
+    kind: "screen",
+    title: "When you talk",
+    text: "And it notices your rhythm.",
+    callouts: [
+      { id: "clock", gesture: "look", label: "The clock: the longer the spoke, the more you talk at that hour. The bright one is your busiest hour." },
+      { id: "bars", gesture: "look", label: "Your week: the tallest, brightest bar is the day you talk the most." },
+    ],
+  },
+  {
     key: "correct",
     kind: "screen",
     gesture: "tap",
@@ -80,10 +105,23 @@ export const SLIDES: Slide[] = [
     text: "Tap Not quite on any trait and drag to where you'd put yourself. You'll see the change before you save.",
   },
   {
+    key: "orbit",
+    kind: "screen",
+    title: "Your people, in orbit",
+    text: "Everyone you talk about circles around you, and every detail means something.",
+    callouts: [
+      { id: "you", gesture: "look", label: "That's you, in the middle." },
+      { id: "inner", gesture: "look", label: "Inner ring: someone you talked about this week. A bigger circle means they come up often." },
+      { id: "outer", gesture: "look", label: "Outer ring: it's been a while since they came up. They drift closer when you mention them again." },
+      { id: "legend", gesture: "look", label: "Colours tell friends, family and work apart." },
+      { id: "open", gesture: "tap", label: "Tap anyone to open their card: who they are to you, and what you've said about them." },
+    ],
+  },
+  {
     key: "people",
     kind: "screen",
     gesture: "tap",
-    title: "Your people",
+    title: "Add someone",
     text: "Add the people you talk about. When their name comes up, Reflectra already knows who they are to you.",
   },
   {
@@ -133,9 +171,22 @@ export function slideText(slide: Slide, device: Device): string {
   return typeof slide.text === "string" ? slide.text : slide.text[device];
 }
 
+type Targets = Record<Device, Record<string, Target | Record<string, Target>>>;
+
+const isTarget = (value: unknown): value is Target =>
+  Boolean(value) && typeof (value as Target).x === "number" && typeof (value as Target).w === "number";
+
+/** Where a single-target slide points. */
 export function targetFor(key: string, device: Device): Target | null {
-  const byDevice = (targets as Record<Device, Record<string, Target>>)[device];
-  return byDevice?.[key] ?? null;
+  const found = (targets as Targets)[device]?.[key];
+  return isTarget(found) ? found : null;
+}
+
+/** Where one part of a multi-part slide is. */
+export function calloutTarget(key: string, id: string, device: Device): Target | null {
+  const found = (targets as Targets)[device]?.[key];
+  if (!found || isTarget(found)) return null;
+  return found[id] ?? null;
 }
 
 export const screenSrc = (key: string, device: Device) => `/tutorial/${device}/${key}.webp`;
