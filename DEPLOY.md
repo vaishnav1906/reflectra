@@ -87,6 +87,16 @@ Supabase → Authentication → URL Configuration:
 
 Without this, confirmation and password-reset emails link back to localhost.
 
+#### Optional: Continue with Google
+
+The sign-in box always shows a **Continue with Google** button. It works once Google is switched on, which is free and needs no billing:
+
+1. Google Cloud Console → APIs & Services → Credentials → create an **OAuth client ID** of type *Web application*. Under *Authorized redirect URIs* add the callback URL that Supabase shows you.
+2. Supabase → Authentication → Providers → **Google**: paste the client ID and secret, and enable it.
+3. Make sure `https://<name>.vercel.app/**` is in the Supabase redirect URLs (above).
+
+Until Google is enabled, the button shows Supabase's "provider is not enabled" message. Email and password keep working either way.
+
 ### 5. Deploy
 
 Push to `main` (or run `vercel --prod`). Then check:

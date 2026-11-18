@@ -379,7 +379,7 @@ Everything runs on free tiers, with no payment method: **Vercel** (app + API), *
    ```bash
    node scripts/deploy/setup-env.mjs --app-url https://<your-app>.vercel.app
    ```
-3. In Supabase → Authentication → URL Configuration, set the Site URL and add `https://<your-app>.vercel.app/**` as a redirect URL.
+3. In Supabase → Authentication → URL Configuration, set the Site URL and add `https://<your-app>.vercel.app/**` as a redirect URL. (Optional: turn on **Continue with Google** under Providers → Google, see [DEPLOY.md](DEPLOY.md).)
 4. Push to `main`. Vercel deploys, and its daily cron starts the background tick.
 
 ### Configuration
