@@ -69,7 +69,7 @@ No value is ever printed. If you'd rather click, set the same names by hand:
 
 | Name | Value |
 |---|---|
-| `DATABASE_URL` | Supabase connection string (Session pooler) |
+| `DATABASE_URL` | Supabase connection string (the Session pooler one is fine: on Vercel the backend switches it to the Transaction pooler, port 6543, by itself, because session mode allows only 15 connections and serverless instances would run out) |
 | `SUPABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY` | from Supabase → Project settings → API |
 | `GEMINI_API_KEY` | from [Google AI Studio](https://aistudio.google.com/apikey) |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | from `backend/.vapid.json` (keep them; new keys break existing subscriptions) |

@@ -98,6 +98,23 @@ class CronTests(unittest.TestCase):
         self.assertIn({"path": "/api/internal/tick", "schedule": "0 13 * * *"}, config["crons"])
 
 
+class DatabaseUrlTests(unittest.TestCase):
+    def test_supabase_session_pooler_becomes_the_transaction_pooler(self):
+        from app.db.database import serverless_database_url
+
+        url = serverless_database_url("postgresql+asyncpg://postgres.abc:pw@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres")
+        self.assertIn("pooler.supabase.com:6543/postgres", url)
+        self.assertIn("prepared_statement_cache_size=0", url)
+        self.assertIn(":pw@", url)  # credentials are kept, not masked
+
+    def test_other_databases_keep_their_port(self):
+        from app.db.database import serverless_database_url
+
+        self.assertIn("db.example.com:5432", serverless_database_url("postgresql+asyncpg://u:p@db.example.com:5432/app"))
+        already = serverless_database_url("postgresql+asyncpg://u:p@x.pooler.supabase.com:6543/postgres")
+        self.assertIn(":6543/", already)
+
+
 class PushKeyTests(unittest.TestCase):
     def test_on_vercel_keys_must_come_from_the_environment(self):
         from app.services import push_service as ps
