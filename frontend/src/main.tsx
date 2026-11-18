@@ -4,6 +4,7 @@ import App from "./App.tsx";
 import "./index.css";
 import "./styles/motion.css";
 import "./styles/pwa.css";
+import "./styles/tutorial.css";
 import { applyTheme, storedTheme } from "./lib/theme";
 import { registerServiceWorker, setupInstall } from "./lib/install";
 

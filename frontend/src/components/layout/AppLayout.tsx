@@ -1,11 +1,15 @@
 import { ReactNode, useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Menu, X } from "lucide-react";
 import { AppSidebar } from "./AppSidebar";
 import { MirrorMark } from "@/components/MirrorMark";
 import { EnterMirror, clearEntranceRequest, entranceRequested } from "@/components/transitions/EnterMirror";
 import { useThemeSync } from "@/hooks/useThemeSync";
 import { OfflineBanner } from "@/components/pwa/InstallApp";
+import { Tutorial } from "@/components/tutorial/Tutorial";
+import { useProfile } from "@/components/settings/AboutYou";
+import { useAuth } from "@/contexts/AuthContext";
+import { markTutorialDone, shouldAutoStartTutorial } from "@/lib/tutorial";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -25,6 +29,20 @@ export function AppLayout({ children }: AppLayoutProps) {
   useEffect(() => {
     if (entering) clearEntranceRequest();
   }, [entering]);
+
+  // New here? The tour opens by itself once (after the entrance), and Skip is always there.
+  const { user } = useAuth();
+  const { data: profile } = useProfile();
+  const navigate = useNavigate();
+  const [touring, setTouring] = useState(false);
+  useEffect(() => {
+    if (!entering && profile && shouldAutoStartTutorial(user?.id, profile.member_since)) setTouring(true);
+  }, [entering, profile, user?.id]);
+  const endTour = (thenChat: boolean) => {
+    markTutorialDone(user?.id);
+    setTouring(false);
+    if (thenChat) navigate("/app/chat?mode=reflection");
+  };
 
   // Picking a destination closes the drawer.
   useEffect(() => {
@@ -85,6 +103,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       </main>
 
       <OfflineBanner />
+      {touring ? <Tutorial onClose={() => endTour(false)} onStart={() => endTour(true)} /> : null}
       {entering ? <EnterMirror onDone={() => setEntering(false)} /> : null}
     </div>
   );

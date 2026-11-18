@@ -12,6 +12,8 @@ import { TwoMirrorsScene } from "@/components/immersive/TwoMirrorsScene";
 import { ManifestoScene } from "@/components/immersive/ManifestoScene";
 import { FinalCTA, ImmersiveFooter, PrivacySection } from "@/components/immersive/ClosingSections";
 import "@/components/immersive/immersive.css";
+import { Tutorial } from "@/components/tutorial/Tutorial";
+import { markTutorialDone } from "@/lib/tutorial";
 
 /**
  * Immersive, scroll-driven landing page:
@@ -20,6 +22,7 @@ import "@/components/immersive/immersive.css";
  */
 export function LandingPage() {
   const [showLogin, setShowLogin] = useState(false);
+  const [touring, setTouring] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
 
@@ -35,7 +38,7 @@ export function LandingPage() {
   return (
     <div className="grain min-h-screen bg-background">
       <SmoothScroll />
-      <ImmersiveNav signedIn={Boolean(user)} onPrimary={start} />
+      <ImmersiveNav signedIn={Boolean(user)} onPrimary={start} onTutorial={() => setTouring(true)} />
       <main>
         <HeroMirror onStart={start} />
         <ConversationScene />
@@ -47,6 +50,19 @@ export function LandingPage() {
       </main>
       <ImmersiveFooter />
       <LoginModal isOpen={showLogin} onClose={() => setShowLogin(false)} />
+      {touring ? (
+        <Tutorial
+          onClose={() => {
+            markTutorialDone(user?.id);
+            setTouring(false);
+          }}
+          onStart={() => {
+            markTutorialDone(user?.id);
+            setTouring(false);
+            start();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

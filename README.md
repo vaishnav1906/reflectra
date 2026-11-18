@@ -52,6 +52,8 @@ Most chat apps forget you the moment you close them. Reflectra does the opposite
 
 Every time you talk to it, it quietly learns a little more about **how you think** (are you brief or wordy? quick to decide or careful?), **what's going on in your life** (your exams, your job hunt, your morning runs), and **who matters to you** (your best friend, your mum, your boss). Then it uses all of that to talk to you like someone who actually knows you.
 
+New here? A short **tutorial** walks you through it the first time you open the app, with each slide showing the exact button to tap on a real screen (PC or phone). Skip it anytime, and replay it from the **Tutorial** button at the top left of the homepage.
+
 It has two ways to talk:
 
 | | |
@@ -407,7 +409,7 @@ Everything runs on free tiers, with no payment method: **Vercel** (app + API), *
 
 ```bash
 pytest tests/backend               # 260 tests: traits, recall, jobs, serverless tick, People, life memory, reminders, PDF…
-cd frontend && npm test            # 55 tests: pages, corrections, streaming, theme, motion…
+cd frontend && npm test            # 62 tests: pages, corrections, streaming, theme, motion, tutorial…
 ```
 
 ### Regenerating the screenshots and video
@@ -418,6 +420,7 @@ The README media is produced by scripts that drive the real app in headless Edge
 cd frontend && npm run dev                 # in one terminal
 node scripts/media/screenshots.mjs         # docs/media/screenshots/
 node scripts/media/video.mjs               # docs/media/reflectra-demo.mp4 + .gif
+node scripts/media/tutorial-shots.mjs      # the in-app tutorial's PC and phone screens + tap targets
 python scripts/media/pdf_preview.py        # the PDF preview strip
 ```
 
@@ -438,10 +441,10 @@ backend/
 frontend/
   src/
     pages/          Chat, Persona, People, Your life, Timeline, Your week, Reflections, Settings…
-    components/     chat, portrait, people, settings, week, motion, transitions, pwa
+    components/     chat, portrait, people, settings, week, motion, transitions, pwa, tutorial
     lib/            API client, SSE streaming, theme engine, push, install, motion helpers
     styles/         motion.css, pwa.css
-  public/           service worker, manifest, icons
+  public/           service worker, manifest, icons, tutorial screens
 tests/backend/      pytest suite
 scripts/
   media/            screenshot and demo-video generators

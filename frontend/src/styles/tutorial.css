@@ -1,0 +1,204 @@
+/* ==========================================================================
+   The tutorial: tappable slides over real screens, with a pointer that shows
+   exactly where to tap.
+   ========================================================================== */
+
+.tutorial {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  outline: none;
+  overflow-y: auto;
+  background:
+    radial-gradient(70% 50% at 50% 0%, hsl(var(--iris-violet) / 0.16), transparent 70%),
+    hsl(calc(var(--ink-h) + -5) calc(22% * var(--ink-k)) 4% / 0.94);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  animation: page-enter 0.4s ease-out backwards;
+}
+
+.tutorial-top {
+  width: min(960px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.tutorial-progress { flex: 1; display: flex; gap: 0.25rem; }
+.tutorial-progress > span { flex: 1; height: 3px; border-radius: 3px; background: hsl(0 0% 100% / 0.14); transition: background 0.3s; }
+.tutorial-progress > span.is-done { background: hsl(var(--iris-violet) / 0.75); }
+.tutorial-progress > span.is-now { background: linear-gradient(90deg, hsl(var(--iris-violet)), hsl(var(--iris-cyan))); }
+.tutorial-skip {
+  flex-shrink: 0;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+  background: hsl(0 0% 100% / 0.07);
+  border: 1px solid hsl(0 0% 100% / 0.14);
+}
+.tutorial-skip:hover { background: hsl(0 0% 100% / 0.12); }
+
+.tutorial-slide {
+  width: min(960px, 100%);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  animation: page-enter 0.45s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/* The screen: a PC window or a phone, sized to fit above the words. */
+.tutorial-screen {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  flex-shrink: 0;
+  border: 1px solid hsl(0 0% 100% / 0.14);
+  box-shadow: 0 30px 90px -30px rgba(0, 0, 0, 0.85), 0 0 0 6px hsl(0 0% 100% / 0.03);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tutorial-screen img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.tutorial-screen.is-desktop { width: min(860px, 100%, calc(56dvh * 1.6)); aspect-ratio: 16 / 10; border-radius: 0.9rem; }
+.tutorial-screen.is-phone { height: min(54dvh, 560px); aspect-ratio: 390 / 844; border-radius: 1.6rem; }
+
+/* Spotlight: the rest of the screen dims, the button gets a pulsing ring. */
+.tut-spotlight {
+  position: absolute;
+  border-radius: 0.6rem;
+  box-shadow: 0 0 0 200vmax rgba(4, 3, 10, 0.55);
+  pointer-events: none;
+}
+.tut-spotlight::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 2px solid hsl(var(--iris-cyan));
+  box-shadow: 0 0 18px hsl(var(--iris-cyan) / 0.7);
+  animation: tut-ring 3.2s ease-in-out infinite;
+}
+.tut-spotlight.is-look::after { animation-name: tut-ring-look; }
+@keyframes tut-ring {
+  0%, 40% { opacity: 0.55; transform: scale(1.06); }
+  52% { opacity: 1; transform: scale(0.98); }
+  70%, 100% { opacity: 0.85; transform: scale(1); }
+}
+@keyframes tut-ring-look {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+
+/* The pointer: glides in from below right, presses, ripples, holds, fades, repeats. */
+.tut-pointer {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  animation: tut-glide 3.2s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+.tut-arrow, .tut-hand {
+  position: absolute;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.6));
+  animation: tut-press 3.2s ease-in-out infinite;
+}
+/* Place the tip of each pointer on the spot. */
+.tut-arrow { width: 26px; height: 26px; left: -5px; top: -3px; transform-origin: 5px 3px; }
+.tut-hand { width: 34px; height: 34px; left: -14px; top: -4px; transform-origin: 14px 4px; }
+.tut-ripple {
+  position: absolute;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid hsl(0 0% 100% / 0.9);
+  opacity: 0;
+  animation: tut-ripple 3.2s ease-out infinite;
+}
+@keyframes tut-glide {
+  0% { opacity: 0; transform: translate(70px, 80px); }
+  12% { opacity: 1; }
+  42% { transform: translate(0, 0); }
+  86% { opacity: 1; transform: translate(0, 0); }
+  100% { opacity: 0; transform: translate(0, 0); }
+}
+@keyframes tut-press {
+  0%, 44% { transform: scale(1); }
+  50% { transform: scale(0.8); }
+  58%, 100% { transform: scale(1); }
+}
+@keyframes tut-ripple {
+  0%, 48% { opacity: 0; transform: scale(0.3); }
+  52% { opacity: 1; transform: scale(0.5); }
+  75%, 100% { opacity: 0; transform: scale(2.2); }
+}
+
+/* The words under the screen. */
+.tutorial-copy { max-width: 560px; text-align: center; padding: 0 0.5rem; }
+.tutorial-title {
+  margin-top: 0.4rem;
+  font-family: 'Instrument Serif', 'Times New Roman', serif;
+  font-size: clamp(1.7rem, 4.2vw, 2.4rem);
+  line-height: 1.1;
+}
+.tutorial-text { margin-top: 0.5rem; font-size: 0.98rem; line-height: 1.55; color: hsl(var(--foreground) / 0.8); }
+.tutorial-note { margin-top: 0.6rem; font-size: 0.75rem; color: hsl(var(--muted-foreground)); }
+.tutorial-nav { display: flex; align-items: center; gap: 0.75rem; }
+.tutorial-nav button:disabled { opacity: 0.35; }
+
+/* The homepage button that replays the tour. */
+.tutorial-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: hsl(var(--foreground) / 0.9);
+  background: hsl(var(--iris-violet) / 0.14);
+  border: 1px solid hsl(var(--iris-violet) / 0.4);
+  transition: background 0.2s;
+}
+.tutorial-launch:hover { background: hsl(var(--iris-violet) / 0.24); }
+
+/* Welcome and ending. */
+.tutorial-hero { display: flex; flex-direction: column; align-items: center; gap: 1.25rem; padding-top: 4dvh; }
+.tutorial-slide.is-end .tutorial-hero svg { animation: tut-celebrate 1.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes tut-celebrate { from { transform: scale(0.6) rotate(-10deg); opacity: 0; } }
+.tutorial-pdf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: hsl(var(--iris-cyan));
+  border: 1px solid hsl(var(--iris-cyan) / 0.35);
+  background: hsl(var(--iris-cyan) / 0.08);
+}
+
+@media (max-width: 767px) {
+  .tutorial { gap: 0.5rem; }
+  .tutorial-slide { gap: 0.9rem; justify-content: flex-start; }
+  .tutorial-text { font-size: 0.92rem; }
+}
+
+/* Short screens (landscape phones, small laptops): keep the words in view. */
+@media (max-height: 640px) {
+  .tutorial-screen.is-phone { height: 48dvh; }
+  .tutorial-screen.is-desktop { width: min(860px, 100%, calc(48dvh * 1.6)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tutorial, .tutorial-slide, .tut-pointer, .tut-arrow, .tut-hand, .tut-spotlight::after, .tutorial-slide.is-end .tutorial-hero svg { animation: none !important; }
+  .tut-ripple { display: none; }
+}
