@@ -130,10 +130,9 @@ function rated(yes = 0, no = 0) {
 
 export function ArchitecturePage() {
   const { data, isLoading, error, refetch } = useSystemFacts();
-  // A dot of light travels down the steps as you scroll; after "It answers" it splits,
-  // because the learning happens in the background while you keep talking.
+  // A dot of light travels down the steps as you scroll, filling each step's ring.
   const steps = useRef<HTMLDivElement>(null);
-  useScrollLight(steps, [Boolean(data)]);
+  useScrollLight(steps, [Boolean(data)], { fill: ".station-badge" });
 
   if (isLoading) return <LoadingState label="Opening the hood…" />;
   if (error || !data) return <ErrorState message={error instanceof Error ? error.message : "Couldn't load this page."} onRetry={() => void refetch()} />;
