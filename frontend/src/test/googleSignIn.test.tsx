@@ -11,6 +11,7 @@ vi.mock("@/lib/supabase", () => ({
 vi.mock("@/contexts/AuthContext", () => ({ useAuth: () => ({ authError: null }) }));
 
 import { LoginModal } from "@/components/LoginModal";
+import { clearEntranceRequest, entranceRequested } from "@/components/transitions/EnterMirror";
 
 const open = () =>
   render(
@@ -19,7 +20,10 @@ const open = () =>
     </MemoryRouter>,
   );
 
-beforeEach(() => signInWithOAuth.mockReset());
+beforeEach(() => {
+  signInWithOAuth.mockReset();
+  clearEntranceRequest();
+});
 
 describe("Continue with Google", () => {
   it("starts Google sign-in and comes back to the chat", async () => {
@@ -33,12 +37,27 @@ describe("Continue with Google", () => {
     });
   });
 
+  it("plays the entrance when Google sends you back, even after a slow sign-in", async () => {
+    signInWithOAuth.mockResolvedValue({ error: null });
+    open();
+    fireEvent.click(screen.getByRole("button", { name: /continue with google/i }));
+    await waitFor(() => expect(signInWithOAuth).toHaveBeenCalled());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 60 * 1000);
+      expect(entranceRequested()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the reason when Google sign-in can't start", async () => {
     signInWithOAuth.mockResolvedValue({ error: { message: "Unsupported provider: provider is not enabled" } });
     open();
     fireEvent.click(screen.getByRole("button", { name: /continue with google/i }));
     expect(await screen.findByText(/provider is not enabled/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /continue with google/i })).toBeEnabled();
+    expect(entranceRequested()).toBe(false); // nothing left over from the failed try
   });
 
   it("is on sign in and create account, but not on the reset-password form", () => {

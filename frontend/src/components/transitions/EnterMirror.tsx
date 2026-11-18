@@ -323,10 +323,14 @@ export function EnterMirror({ onDone }: { onDone: () => void }) {
 
 const FLAG = "reflectra:enter";
 
-/** Ask the app to play the entrance on its next load (set right before navigating in). */
-export function requestEntrance() {
+/**
+ * Ask the app to play the entrance on its next load (set right before navigating in).
+ * `waitMs` is for a trip out and back, like Google sign-in, which can take a while:
+ * the entrance then stays due for that much longer.
+ */
+export function requestEntrance(waitMs = 0) {
   try {
-    sessionStorage.setItem(FLAG, String(Date.now()));
+    sessionStorage.setItem(FLAG, String(Date.now() + waitMs));
   } catch {
     /* storage blocked: no intro, nothing else changes */
   }

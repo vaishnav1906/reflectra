@@ -9,7 +9,7 @@ import { X } from "lucide-react";
 import { MirrorMark } from "@/components/MirrorMark";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
-import { requestEntrance } from "@/components/transitions/EnterMirror";
+import { clearEntranceRequest, requestEntrance } from "@/components/transitions/EnterMirror";
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -23,6 +23,9 @@ const MODE_COPY: Record<AuthMode, { description: string; submit: string; busy: s
   signup: { description: "Create your account", submit: "Create account", busy: "Creating account..." },
   forgot: { description: "We'll email you a reset link", submit: "Send reset link", busy: "Sending..." },
 };
+
+/** How long Google sign-in may take (picking an account, 2-step prompts) before the entrance is no longer due. */
+const GOOGLE_TRIP_MS = 5 * 60 * 1000;
 
 function GoogleMark() {
   return (
@@ -151,12 +154,15 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
       return;
     }
     setIsLoading(true);
+    // Google sends the browser away and back, so play the entrance when it returns.
+    requestEntrance(GOOGLE_TRIP_MS);
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}/app/chat` },
     });
     // On success the browser leaves for Google, so only a failure comes back here.
     if (oauthError) {
+      clearEntranceRequest();
       setError(oauthError.message);
       setIsLoading(false);
     }
