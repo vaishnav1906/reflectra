@@ -20,6 +20,26 @@
 }
 #app-sidebar { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
 
+/* The landing page's floating nav (Sign in / Open app). Without this, on notched and
+   Dynamic Island iPhones (Pro, Pro Max, Plus) it sits under the clock and battery, where
+   iOS swallows taps. */
+.immersive-nav {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Full-screen overlays whose buttons sit near the top or bottom edge. */
+.safe-overlay,
+.week-reel,
+.print-backdrop {
+  padding-top: max(1rem, env(safe-area-inset-top));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+.week-reel-stage { height: min(760px, calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem)); }
+
 .install-step {
   display: inline-grid;
   place-items: center;

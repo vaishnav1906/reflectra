@@ -72,7 +72,7 @@ export function ConversationHistoryModal({
       />
 
       {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+      <div className="safe-overlay fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col pointer-events-auto animate-in fade-in zoom-in-95 duration-200">
           <CardHeader className="border-b">
             <div className="flex items-center justify-between">
