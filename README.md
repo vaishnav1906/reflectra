@@ -16,6 +16,11 @@ notices patterns you can't see yourself, and slowly learns to talk back *as you*
 [![PostgreSQL](https://img.shields.io/badge/Postgres-pgvector-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
 [![Gemini](https://img.shields.io/badge/Gemini-streaming-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth_+_RLS-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com/)
+[![Vercel](https://img.shields.io/badge/Live_on-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://reflectra-persona.vercel.app)
+
+### [✨ Try it live → reflectra-persona.vercel.app](https://reflectra-persona.vercel.app)
+
+<sub>Free to use · works in any browser · install it on your phone like an app</sub>
 
 <br/>
 
@@ -35,7 +40,8 @@ notices patterns you can't see yourself, and slowly learns to talk back *as you*
 - [A tour of the app](#a-tour-of-the-app) *(screenshots, explained simply)*
 - [What it will never do](#what-it-will-never-do)
 - [Under the hood](#under-the-hood) *(for engineers: architecture, algorithms, data model)*
-- [Run it yourself](#run-it-yourself)
+- [Get it on your phone](#-get-it-on-your-phone)
+- [Run it yourself](#run-it-yourself) · [Deploy it for free](#deploy-it-for-free)
 - [Project layout](#project-layout)
 
 ---
@@ -141,7 +147,7 @@ The **How it works** page shows the real path one message takes, using the **act
 
 Export a printable PDF portrait: your traits, your patterns in your own words, your life and your people, how you've changed over time, and how you write. It's printed in your colour.
 
-### 📱 Made for your phone too
+### 📱 Get it on your phone
 
 <table>
 <tr>
@@ -150,7 +156,16 @@ Export a printable PDF portrait: your traits, your patterns in your own words, y
 </tr>
 </table>
 
-Install it to your home screen and turn on reminders: it can gently check in on something you said you'd do (*"Did you email Prof. Iyer?"*), wish your people a happy birthday, and send your week on Sunday evening. It never sends more than one a day, and never during your quiet hours.
+Reflectra installs straight from the browser, with no app store involved. Once it's on your home screen it opens full screen like any other app, starts even without a connection, and can send you reminders.
+
+| | How to install |
+|---|---|
+| **Android** | Open [reflectra-persona.vercel.app](https://reflectra-persona.vercel.app) in **Chrome**, then tap **Install** on the card at the top of the chat (or Settings → *Get the app*). |
+| **iPhone / iPad** | Open it in **Safari**, tap **Share** → **Add to Home Screen**, then open Reflectra from its new icon. |
+
+Then turn on reminders in Settings → *About you*. It can gently check in on something you said you'd do (*"Did you email Prof. Iyer?"*), wish your people a happy birthday, and send your week on Sunday evening. It never sends more than one a day, and never during your quiet hours.
+
+> On iPhone, notifications only work in the installed app (iOS 16.4 or later), not in a browser tab. Reflectra is already dark, so it asks browsers' night modes (Brave, Dark Reader, Samsung Internet) to leave its colours alone.
 
 ---
 
@@ -175,7 +190,7 @@ flowchart LR
     subgraph Client["Browser / installed PWA"]
         UI["React 18 + TypeScript<br/>Vite · Tailwind · shadcn/ui"]
         RQ["TanStack Query cache"]
-        SW["Service worker<br/>(Web Push)"]
+        SW["Service worker<br/>(offline shell · Web Push)"]
     end
 
     subgraph API["FastAPI (async)"]
@@ -183,7 +198,7 @@ flowchart LR
         Portrait["/persona · /analytics"]
         Life["/people · /life · /feedback"]
         Notif["/notifications"]
-        Worker["Job worker + reminder tick<br/>(in-process, lifespan)"]
+        Worker["Background jobs + reminders<br/>(local: in-process worker ·<br/>Vercel: after each reply + daily cron)"]
     end
 
     subgraph Data["Supabase"]
@@ -200,6 +215,16 @@ flowchart LR
     API --> PG
     Notif -->|VAPID push| SW
 ```
+
+### Where it runs
+
+| | |
+|---|---|
+| **Hosting** | One Vercel project with two [Services](https://vercel.com/docs/services): the Vite frontend at `/` and the FastAPI backend at `/api` (`vercel.json`). |
+| **Region** | Backend functions run in **Singapore** (`sin1`), next to the Supabase database (`ap-southeast-1`), because every query is a round trip. Moving them there took a warm request from ~1.8 s to ~0.12 s. |
+| **Background work** | Serverless can't keep a worker running, so the app calls `POST /api/jobs/run-mine` right after each reply, and **Vercel Cron** calls `/api/internal/tick` once a day (guarded by `CRON_SECRET`) for reminders, leftovers and cleanup. |
+| **Voice typing** | Whisper/PyTorch is several GB, so it's an optional install (`requirements-voice.txt`); without it `/transcribe` answers 503 and everything else works. |
+| **Cost** | Free tiers throughout: Vercel Hobby, Supabase Free, Gemini AI Studio key. No payment method anywhere. |
 
 ### The life of one message
 
@@ -276,7 +301,8 @@ No Redis, no Celery: a `jobs` table and `SELECT … FOR UPDATE SKIP LOCKED`.
 
 - Retries back off 20 s → 60 s → 180 s, max 4 attempts, with **per-user locks** so one person's jobs never race each other.
 - Jobs stuck "running" for 10 minutes are requeued (a crashed worker loses nothing). Dedupe keys stop duplicate work.
-- The worker runs inside the FastAPI lifespan (`REFLECTRA_WORKER=0` to disable) or standalone with `python -m app.worker`, and ticks reminders every 60 s.
+- Locally, the worker runs inside the FastAPI lifespan (`REFLECTRA_WORKER=0` to disable) or standalone with `python -m app.worker`, and ticks reminders every 60 s.
+- On serverless hosting (`VERCEL` set) there's no worker loop. The same jobs run through `drain()`: for one user, right after their reply (`POST /jobs/run-mine`), and for everyone on a schedule (`/internal/tick`, `CRON_SECRET` only). Both stop claiming new jobs when their time budget runs out, and always finish the ones they started.
 
 Handlers: `learn_from_message`, `follow_ups`, `people`, `index_memories`, `life_memory`, `life_memory_backfill`.
 
@@ -291,7 +317,7 @@ Handlers: `learn_from_message`, `follow_ups`, `people`, `index_memories`, `life_
 
 ### Reminders
 
-Web Push with VAPID (`pywebpush`), a service worker, and a picker that sends **at most one reminder a day**, in priority order *birthday → follow-up → weekly digest → check-in*, inside a time window in *your* timezone, never during quiet hours. Tapping a nudge opens a conversation with Reflectra's opener already written (and typed in on screen).
+Web Push with VAPID (`pywebpush`), a service worker, and a picker that sends **at most one reminder a day**, in priority order *birthday → follow-up → weekly digest → check-in*, inside a time window in *your* timezone, never during quiet hours. Tapping a nudge opens a conversation with Reflectra's opener already written (and typed in on screen). On Vercel's free plan the tick runs once a day (13:00 UTC, about 7 pm in India), so reminders arrive around then; any external scheduler can POST to the tick more often (see [DEPLOY.md](DEPLOY.md)).
 
 ### Security
 
@@ -303,6 +329,7 @@ Web Push with VAPID (`pywebpush`), a service worker, and a picker that sends **a
 
 - **Theme engine:** one hue drives the palette (`h`, `h − 64°`, `h + 130°`) and the ink of every dark surface through CSS variables. It's applied before first paint, synced to the account, and spreads with a View Transitions circle reveal.
 - **Motion system:** page transitions, a sliding nav highlight, a living People orbit, self-assembling reflections, scroll-linked light, a story reel. It's all `transform`/`opacity`, and all of it switches off under `prefers-reduced-motion`.
+- **Installable app (PWA):** PNG, maskable and Apple touch icons, a manifest with shortcuts, and a service worker that serves the last app shell when you're offline (pages network-first, hashed assets cache-first, never `/api`). It has an install button on Android and Add to Home Screen steps on iPhone, notch-safe spacing, `100dvh` layouts, and no zoom when focusing inputs on iOS.
 - **PDF portrait:** pure-Python ReportLab (no system libraries), in the user's own colours.
 
 ### Data model
@@ -341,7 +368,17 @@ npm install
 npm run dev                        # http://localhost:8080, proxies /api to :8000
 ```
 
-> **Deploying for free?** [DEPLOY.md](DEPLOY.md) walks through hosting everything on Vercel, Supabase and Gemini free tiers, with no payment method, and installing it on Android and iPhone as an app.
+### Deploy it for free
+
+Everything runs on free tiers, with no payment method: **Vercel** (app + API), **Supabase** (database + sign-in) and a **Gemini** key from AI Studio. [DEPLOY.md](DEPLOY.md) has the full walkthrough. In short:
+
+1. Import the repository on Vercel. It reads both services from `vercel.json`.
+2. `vercel link`, then copy your settings across without ever printing them:
+   ```bash
+   node scripts/deploy/setup-env.mjs --app-url https://<your-app>.vercel.app
+   ```
+3. In Supabase → Authentication → URL Configuration, set the Site URL and add `https://<your-app>.vercel.app/**` as a redirect URL.
+4. Push to `main`. Vercel deploys, and its daily cron starts the background tick.
 
 ### Configuration
 
@@ -356,7 +393,8 @@ npm run dev                        # http://localhost:8080, proxies /api to :800
 | `GEMINI_STREAM_HEDGE_SECONDS` | optional; when the backup model joins a slow stream (default 2.5) |
 | `ALLOWED_ORIGINS` | CORS origins for the frontend |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | optional; generated into `backend/.vapid.json` on first run if unset |
-| `REFLECTRA_WORKER` | set to `0` to run the job worker separately (`python -m app.worker`) |
+| `REFLECTRA_WORKER` | set to `0` to run the job worker separately (`python -m app.worker`); off automatically on Vercel |
+| `CRON_SECRET` | protects `/internal/tick`; Vercel Cron sends it automatically |
 
 `frontend/.env`
 
@@ -368,7 +406,7 @@ npm run dev                        # http://localhost:8080, proxies /api to :800
 ### Tests
 
 ```bash
-pytest tests/backend               # 254 tests: traits, recall, jobs, People, life memory, reminders, PDF…
+pytest tests/backend               # 260 tests: traits, recall, jobs, serverless tick, People, life memory, reminders, PDF…
 cd frontend && npm test            # 55 tests: pages, corrections, streaming, theme, motion…
 ```
 
@@ -390,21 +428,28 @@ python scripts/media/pdf_preview.py        # the PDF preview strip
 ```text
 backend/
   app/
-    api/            chat, persona, analytics, people, life, feedback, notifications, user
+    api/            chat, persona, analytics, people, life, feedback, notifications, jobs, user
     services/       mirror engine, trait learning, memory recall, embeddings, People,
                     life memory, follow-ups, reflections, jobs, reminders, push, PDF report
     db/             SQLAlchemy models
     worker.py       standalone job worker
   alembic/          database migrations
+  requirements-voice.txt   optional Whisper voice typing (not deployed)
 frontend/
   src/
     pages/          Chat, Persona, People, Your life, Timeline, Your week, Reflections, Settings…
-    components/     chat, portrait, people, settings, week, motion, transitions
-    lib/            API client, SSE streaming, theme engine, push, motion helpers
-    styles/         motion.css
-  public/           service worker, manifest, icon
+    components/     chat, portrait, people, settings, week, motion, transitions, pwa
+    lib/            API client, SSE streaming, theme engine, push, install, motion helpers
+    styles/         motion.css, pwa.css
+  public/           service worker, manifest, icons
 tests/backend/      pytest suite
-scripts/media/      screenshot and demo-video generators
+scripts/
+  media/            screenshot and demo-video generators
+  deploy/           setup-env.mjs: copies settings to Vercel and GitHub
+  pwa/              icons.mjs: app icons from the SVG logo
+.github/workflows/  CI, and an optional 10-minute background tick
+vercel.json         services, Singapore region, daily cron
+DEPLOY.md           free hosting walkthrough
 docs/               design notes and media
 ```
 
